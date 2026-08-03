@@ -225,7 +225,7 @@ export const ModelPickerPopover = memo(
                     activeTabSpec.providerId,
                     effectiveCatalog,
                     userConfig,
-                    liveState.status === "ok" ? liveState.models : null
+                    liveState.fetchedAt != null ? liveState.models : null
                 );
             }
             return [];
@@ -1657,7 +1657,7 @@ function buildProviderRows(
     // `/models` contributes account/deployment visibility only. Catalog
     // metadata remains authoritative for every known ID.
     const ids = new Set<string>();
-    if (liveModels && liveModels.length > 0) {
+    if (liveModels) {
         for (const m of liveModels) ids.add(m.id);
     } else {
         for (const m of provider?.models ?? []) ids.add(m.id);
@@ -1900,7 +1900,7 @@ export const ModelPickerInline = memo(
                     activeTabSpec.providerId,
                     effectiveCatalog,
                     userConfig,
-                    liveState.status === "ok" ? liveState.models : null
+                    liveState.fetchedAt != null ? liveState.models : null
                 );
             }
             return [];

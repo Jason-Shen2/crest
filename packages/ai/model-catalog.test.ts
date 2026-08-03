@@ -111,6 +111,33 @@ describe("ModelCatalogService", () => {
         expect(catalog.getRevision()).toBe(0);
     });
 
+    it("identifies the provider when model content changes", async () => {
+        const source = new FakeSource();
+        const catalog = createCatalog({ source });
+        const listener = vi.fn();
+        catalog.subscribe(listener);
+        source.next("openai", updated([remoteModel]));
+
+        await catalog.refreshProvider("openai", { force: true });
+
+        expect(listener).toHaveBeenCalledWith("openai");
+    });
+
+    it("isolates subscriber failures from refresh and other subscribers", async () => {
+        const source = new FakeSource();
+        const catalog = createCatalog({ source });
+        const listener = vi.fn();
+        catalog.subscribe(() => {
+            throw new Error("listener failed");
+        });
+        catalog.subscribe(listener);
+        source.next("openai", updated([remoteModel]));
+
+        await expect(catalog.refreshProvider("openai", { force: true })).resolves.toBeUndefined();
+
+        expect(listener).toHaveBeenCalledWith("openai");
+    });
+
     it("preserves the last good models after source errors", async () => {
         const source = new FakeSource();
         source.next("openai", updated([remoteModel]));

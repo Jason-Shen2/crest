@@ -78,6 +78,9 @@ const previewElectronApi: ElectronApi = {
     // model lists or persist ai.json. Only here to satisfy ElectronApi.
     ai: {
         listProviderModels: () => Promise.resolve([]),
+        listRegistryModels: () => Promise.resolve([]),
+        refreshRegistryModels: () => Promise.resolve([]),
+        onRegistryModelsRefreshed: () => () => {},
         getUserConfig: () => Promise.resolve({ status: "missing" }),
         writeUserConfig: () => Promise.resolve(),
     },

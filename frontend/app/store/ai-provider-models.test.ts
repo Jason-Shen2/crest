@@ -41,6 +41,23 @@ describe("provider availability state", () => {
         await Promise.all([first, second]);
     });
 
+    it("coalesces a manual refresh with an in-flight availability request", async () => {
+        let resolve!: (models: AiProviderModelInfo[]) => void;
+        mocks.listProviderModels.mockReturnValue(
+            new Promise<AiProviderModelInfo[]>((done) => {
+                resolve = done;
+            })
+        );
+
+        const initial = fetchProviderModels("openai", CONFIG);
+        const refresh = refreshProviderModels("openai", CONFIG);
+
+        expect(mocks.listProviderModels).toHaveBeenCalledTimes(1);
+        resolve([{ id: "gpt-5" }]);
+        await Promise.all([initial, refresh]);
+        expect(globalStore.get(providerModelsMapAtom).openai.models).toEqual([{ id: "gpt-5" }]);
+    });
+
     it("preserves availability and never writes catalog facts when refresh fails", async () => {
         mocks.listProviderModels.mockResolvedValueOnce([{ id: "gpt-5" }]);
         await fetchProviderModels("openai", CONFIG);

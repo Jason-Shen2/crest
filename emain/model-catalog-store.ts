@@ -14,7 +14,7 @@ import {
 
 const LockStaleMs = 2 * 60 * 1_000;
 const LockRetryMs = 20;
-const LockWaitMaxMs = 10_000;
+const LockWaitMaxMs = 60_000;
 
 export interface FileModelCatalogStoreOptions {
     rename?: (temporaryPath: string, targetPath: string) => Promise<void>;

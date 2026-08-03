@@ -8,6 +8,7 @@ import type { ModelCatalog } from "@crest/ai";
 const mocks = vi.hoisted(() => ({
     handlers: new Map<string, (...args: any[]) => any>(),
     getSecret: vi.fn(),
+    getAllWebContents: vi.fn(),
     listProviderModels: vi.fn(),
     listRegistryModels: vi.fn(),
 }));
@@ -17,6 +18,9 @@ vi.mock("electron", () => ({
         handle: vi.fn((channel: string, handler: (...args: any[]) => any) => {
             mocks.handlers.set(channel, handler);
         }),
+    },
+    webContents: {
+        getAllWebContents: mocks.getAllWebContents,
     },
 }));
 vi.mock("./aiconfig/list-provider-models", () => ({
@@ -37,6 +41,7 @@ describe("AI config IPC model catalog handlers", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.handlers.clear();
+        mocks.getAllWebContents.mockReturnValue([]);
         mocks.listRegistryModels.mockReturnValue([{ id: "gpt-next" }]);
         catalog = fakeCatalog();
         registerAiConfigIpcHandlers(catalog);
@@ -52,6 +57,15 @@ describe("AI config IPC model catalog handlers", () => {
         expect(mocks.listRegistryModels).toHaveBeenCalledWith(catalog, "openai");
     });
 
+    it("returns the last good registry snapshot when the freshness check fails", async () => {
+        vi.mocked(catalog.refreshProvider).mockRejectedValueOnce(new Error("catalog unavailable"));
+        const handler = mocks.handlers.get("ai:list-registry-models");
+
+        await expect(handler?.({}, "openai")).resolves.toEqual([{ id: "gpt-next" }]);
+
+        expect(mocks.listRegistryModels).toHaveBeenCalledWith(catalog, "openai");
+    });
+
     it("forces refresh before returning a manually refreshed registry snapshot", async () => {
         const handler = mocks.handlers.get("ai:refresh-registry-models");
 
@@ -60,6 +74,36 @@ describe("AI config IPC model catalog handlers", () => {
         expect(catalog.activateProvider).toHaveBeenCalledWith("openai");
         expect(catalog.refreshProvider).toHaveBeenCalledWith("openai", { force: true });
         expect(mocks.listRegistryModels).toHaveBeenCalledWith(catalog, "openai");
+    });
+
+    it("broadcasts changed providers to live renderer web contents", () => {
+        const send = vi.fn();
+        mocks.getAllWebContents.mockReturnValue([
+            { isDestroyed: () => false, send },
+            { isDestroyed: () => true, send: vi.fn() },
+        ]);
+        const listener = vi.mocked(catalog.subscribe).mock.calls[0]?.[0];
+
+        listener?.("openai");
+
+        expect(send).toHaveBeenCalledWith("ai:registry-models-refreshed", "openai");
+    });
+
+    it("continues broadcasting when one renderer closes during delivery", () => {
+        const send = vi.fn();
+        mocks.getAllWebContents.mockReturnValue([
+            {
+                isDestroyed: () => false,
+                send: () => {
+                    throw new Error("renderer closed");
+                },
+            },
+            { isDestroyed: () => false, send },
+        ]);
+        const listener = vi.mocked(catalog.subscribe).mock.calls[0]?.[0];
+
+        expect(() => listener?.("openai")).not.toThrow();
+        expect(send).toHaveBeenCalledWith("ai:registry-models-refreshed", "openai");
     });
 
     it("forwards provider discovery fields without mutating the shared catalog", async () => {

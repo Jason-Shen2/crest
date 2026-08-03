@@ -103,4 +103,26 @@ describe("AI catalog", () => {
         expect(projected).toHaveLength(1);
         expect(projected[0].models.some((model) => model.id === "only-in-registry")).toBe(true);
     });
+
+    it("projects the last good registry models while a later refresh is failing", () => {
+        const provider = findProvider("openai")!;
+        const projected = projectRegistryCatalog([provider], {
+            openai: {
+                status: "error",
+                models: [
+                    {
+                        id: "last-good-model",
+                        name: "Last good model",
+                        reasoning: false,
+                        thinkinglevels: [],
+                        inputmodalities: ["text"],
+                    },
+                ],
+                error: "catalog unavailable",
+                fetchedAt: 1,
+            },
+        });
+
+        expect(projected[0].models.some((model) => model.id === "last-good-model")).toBe(true);
+    });
 });

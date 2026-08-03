@@ -9,6 +9,11 @@ import { fetchRegistryModels, refreshRegistryModels, registryModelsMapAtom } fro
 const mocks = vi.hoisted(() => ({
     listRegistryModels: vi.fn(),
     refreshRegistryModels: vi.fn(),
+    registryRefreshedListener: undefined as ((providerId: string) => void) | undefined,
+    onRegistryModelsRefreshed: vi.fn((listener: (providerId: string) => void) => {
+        mocks.registryRefreshedListener = listener;
+        return vi.fn();
+    }),
 }));
 
 vi.mock("@/app/store/global", () => ({
@@ -77,5 +82,30 @@ describe("renderer registry model state", () => {
             error: "catalog unavailable",
             fetchedAt,
         });
+    });
+
+    it("reloads a provider when Electron reports refreshed catalog content", async () => {
+        mocks.listRegistryModels.mockResolvedValueOnce([MODEL]).mockResolvedValueOnce([{ ...MODEL, context: 300_000 }]);
+
+        await fetchRegistryModels("openai");
+        expect(mocks.registryRefreshedListener).toBeTypeOf("function");
+        mocks.registryRefreshedListener?.("openai");
+
+        await vi.waitFor(() => {
+            expect(globalStore.get(registryModelsMapAtom).openai.models[0].context).toBe(300_000);
+        });
+        expect(mocks.listRegistryModels).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not load an untouched provider after an Electron refresh event", async () => {
+        mocks.listRegistryModels.mockResolvedValue([MODEL]);
+        await fetchRegistryModels("openai");
+        mocks.listRegistryModels.mockClear();
+
+        mocks.registryRefreshedListener?.("anthropic");
+        await Promise.resolve();
+
+        expect(mocks.listRegistryModels).not.toHaveBeenCalled();
+        expect(globalStore.get(registryModelsMapAtom).anthropic).toBeUndefined();
     });
 });

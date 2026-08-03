@@ -170,4 +170,107 @@ describe("ModelPickerInline", () => {
         expect(screen.queryByText(/999k/)).toBeNull();
         expect(globalStore.get(registryModelsMapAtom)).toEqual({ openai: registryState });
     });
+
+    it("keeps filtering with the last good availability after a refresh error", async () => {
+        const userConfig = {
+            providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+            default: { provider: "openai", model: "available-model" },
+        };
+        globalStore.set(providerModelsMapAtom, {
+            openai: {
+                status: "error",
+                models: [{ id: "available-model" }],
+                error: "provider unavailable",
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <ModelPickerInline
+                    open
+                    onOpenChange={() => undefined}
+                    selection={{ provider: "openai", model: "available-model" }}
+                    onSelectionChange={vi.fn()}
+                    userConfig={userConfig}
+                    userConfigStatus="ok"
+                    catalog={[
+                        {
+                            id: "openai",
+                            displayName: "OpenAI",
+                            defaultEndpoint: "https://api.openai.com/v1",
+                            defaultApiType: "openai-responses",
+                            tokenSecretName: "OPENAI_API_KEY",
+                            icon: "stars-01",
+                            models: [
+                                {
+                                    id: "available-model",
+                                    displayName: "Available Model",
+                                    capabilities: ["tools"],
+                                    contextWindow: 100_000,
+                                },
+                                {
+                                    id: "unavailable-model",
+                                    displayName: "Unavailable Model",
+                                    capabilities: ["tools"],
+                                    contextWindow: 100_000,
+                                },
+                            ],
+                        },
+                    ]}
+                />
+            </Provider>
+        );
+
+        expect(await screen.findAllByText("Available Model")).not.toHaveLength(0);
+        expect(screen.queryByText("Unavailable Model")).toBeNull();
+    });
+
+    it("shows no catalog models when availability succeeds with an empty list", async () => {
+        const userConfig = {
+            providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+            default: { provider: "openai", model: "catalog-only-model" },
+        };
+        globalStore.set(providerModelsMapAtom, {
+            openai: {
+                status: "ok",
+                models: [],
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <ModelPickerInline
+                    open
+                    onOpenChange={() => undefined}
+                    selection={{ provider: "openai", model: "catalog-only-model" }}
+                    onSelectionChange={vi.fn()}
+                    userConfig={userConfig}
+                    userConfigStatus="ok"
+                    catalog={[
+                        {
+                            id: "openai",
+                            displayName: "OpenAI",
+                            defaultEndpoint: "https://api.openai.com/v1",
+                            defaultApiType: "openai-responses",
+                            tokenSecretName: "OPENAI_API_KEY",
+                            icon: "stars-01",
+                            models: [
+                                {
+                                    id: "catalog-only-model",
+                                    displayName: "Catalog Only Model",
+                                    capabilities: ["tools"],
+                                    contextWindow: 100_000,
+                                },
+                            ],
+                        },
+                    ]}
+                />
+            </Provider>
+        );
+
+        await waitFor(() => expect(mocks.fetchProviderModels).toHaveBeenCalled());
+        expect(screen.queryByText("Catalog Only Model")).toBeNull();
+    });
 });

@@ -28,6 +28,7 @@ export function registryModelsAtomFor(providerId: string) {
 }
 
 const inflight = new Map<string, Promise<void>>();
+let registryModelsListenerInitialized = false;
 
 function setSlice(providerId: string, next: RegistryModelsState): void {
     const current = globalStore.get(registryModelsMapAtom);
@@ -35,13 +36,25 @@ function setSlice(providerId: string, next: RegistryModelsState): void {
 }
 
 export function fetchRegistryModels(providerId: string): Promise<void> {
+    ensureRegistryModelsListener();
     const current = globalStore.get(registryModelsMapAtom)[providerId];
     if (current?.status === "ok") return Promise.resolve();
     return runFetch(providerId, false);
 }
 
 export function refreshRegistryModels(providerId: string): Promise<void> {
+    ensureRegistryModelsListener();
     return runFetch(providerId, true);
+}
+
+function ensureRegistryModelsListener(): void {
+    if (registryModelsListenerInitialized) return;
+    registryModelsListenerInitialized = true;
+    getApi().ai.onRegistryModelsRefreshed((providerId) => {
+        const current = globalStore.get(registryModelsMapAtom)[providerId];
+        if (current?.fetchedAt == null) return;
+        void runFetch(providerId, false);
+    });
 }
 
 function runFetch(providerId: string, force: boolean): Promise<void> {

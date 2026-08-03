@@ -130,6 +130,33 @@ describe("FileModelCatalogStore", () => {
 
         expect(calls).toEqual(["openai:first:start", "anthropic", "openai:first:end", "openai:second"]);
     });
+
+    it("waits through the full provider retry envelope for a valid refresh lock holder", async () => {
+        const first = new FileModelCatalogStore(cachePath);
+        const started = deferred<void>();
+        const release = deferred<void>();
+        const firstRefresh = first.withRefreshLock("openai", async () => {
+            started.resolve();
+            await release.promise;
+        });
+        await started.promise;
+
+        const clockStartedAt = Date.now();
+        let currentTime = clockStartedAt;
+        const second = new FileModelCatalogStore(cachePath, {
+            now: () => currentTime,
+            sleep: async () => {
+                currentTime += 1_000;
+                if (currentTime - clockStartedAt >= 35_000) {
+                    release.resolve();
+                    await firstRefresh;
+                }
+            },
+        });
+
+        await expect(second.withRefreshLock("openai", async () => "acquired")).resolves.toBe("acquired");
+        expect(currentTime - clockStartedAt).toBeGreaterThan(34_000);
+    });
 });
 
 function providerState(modelId: string, provider = "openai"): ModelCatalogProviderCache {

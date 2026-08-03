@@ -225,6 +225,11 @@ contextBridge.exposeInMainWorld("api", {
         listProviderModels: (input: unknown) => ipcRenderer.invoke("ai:list-provider-models", input),
         listRegistryModels: (provider: string) => ipcRenderer.invoke("ai:list-registry-models", provider),
         refreshRegistryModels: (provider: string) => ipcRenderer.invoke("ai:refresh-registry-models", provider),
+        onRegistryModelsRefreshed: (callback: (providerId: string) => void) => {
+            const listener = (_event: Electron.IpcRendererEvent, providerId: string) => callback(providerId);
+            ipcRenderer.on("ai:registry-models-refreshed", listener);
+            return () => ipcRenderer.removeListener("ai:registry-models-refreshed", listener);
+        },
         getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
         writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },

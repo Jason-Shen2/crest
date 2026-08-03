@@ -273,6 +273,7 @@ declare global {
             listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
             listRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
             refreshRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
+            onRegistryModelsRefreshed: (callback: (providerId: string) => void) => () => void;
             getUserConfig: () => Promise<AIUserConfigReadResult>;
             writeUserConfig: (cfg: unknown) => Promise<void>;
         };

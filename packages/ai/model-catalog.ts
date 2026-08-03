@@ -49,7 +49,7 @@ export interface ModelCatalog {
     activateProvider(providerId: string): void;
     refreshProvider(providerId: string, options?: { force?: boolean }): Promise<void>;
     refreshActive(options?: { force?: boolean }): Promise<void>;
-    subscribe(listener: () => void): () => void;
+    subscribe(listener: (providerId: string) => void): () => void;
     start(): void;
     stop(): void;
 }
@@ -68,7 +68,7 @@ export function createModelCatalogService(options: CreateModelCatalogServiceOpti
     const baseline = indexBaseline(options.baseline);
     const providerStates = new Map<string, ModelCatalogProviderCache>();
     const activeProviders = new Set<string>();
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(providerId: string) => void>();
     const inFlight = new Map<string, Promise<void>>();
     const controllers = new Map<string, AbortController>();
     const now = options.now ?? Date.now;
@@ -95,7 +95,13 @@ export function createModelCatalogService(options: CreateModelCatalogServiceOpti
         const after = mergedModels(providerId);
         if (sameModels(before, after)) return;
         revision += 1;
-        for (const listener of listeners) listener();
+        for (const listener of listeners) {
+            try {
+                listener(providerId);
+            } catch {
+                continue;
+            }
+        }
     }
 
     async function hydrate(): Promise<void> {

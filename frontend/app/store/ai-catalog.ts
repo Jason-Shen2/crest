@@ -334,7 +334,7 @@ export function projectRegistryCatalog(
 ): ProviderEntry[] {
     return catalog.map((provider) => {
         const state = states[provider.id];
-        return state?.status === "ok" ? projectRegistryModels(provider, state.models) : provider;
+        return state?.fetchedAt != null ? projectRegistryModels(provider, state.models) : provider;
     });
 }
 

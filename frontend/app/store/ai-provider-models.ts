@@ -129,6 +129,8 @@ export function refreshProviderModels(providerId: string, userConfig: UserConfig
 }
 
 function runFetch(providerId: string, userConfig: UserConfig | null): Promise<void> {
+    const existing = inflight.get(providerId);
+    if (existing) return existing;
     const inputs = resolveFetchInputs(providerId, userConfig);
     if (!inputs) {
         setSlice(providerId, {

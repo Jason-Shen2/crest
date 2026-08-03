@@ -40,6 +40,18 @@ interface ListProviderModelsIpcInput extends ListProviderModelsInput {
  * from emain-ipc.ts initIpcHandlers().
  */
 export function registerAiConfigIpcHandlers(catalog: ModelCatalog): void {
+    catalog.subscribe((providerId) => {
+        for (const webContents of electron.webContents.getAllWebContents()) {
+            if (!webContents.isDestroyed()) {
+                try {
+                    webContents.send("ai:registry-models-refreshed", providerId);
+                } catch {
+                    continue;
+                }
+            }
+        }
+    });
+
     electron.ipcMain.handle(
         "ai:list-provider-models",
         async (_event, input: ListProviderModelsIpcInput): Promise<ProviderModelInfo[]> => {
@@ -67,7 +79,7 @@ export function registerAiConfigIpcHandlers(catalog: ModelCatalog): void {
         "ai:list-registry-models",
         async (_event, provider: string): Promise<RegistryModelInfo[]> => {
             catalog.activateProvider(provider);
-            await catalog.refreshProvider(provider);
+            await catalog.refreshProvider(provider).catch(() => undefined);
             return listRegistryModels(catalog, provider);
         }
     );
