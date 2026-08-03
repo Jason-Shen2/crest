@@ -73,6 +73,18 @@ function activeBranch(entries: SessionTreeEntry[], leafId: string | null): Valid
     return { valid: true, entries: branch.reverse() };
 }
 
+export function countRevertedMessages(
+    entries: SessionTreeEntry[],
+    targetTurnId: string,
+    fromLeafId: string | null
+): number {
+    const branch = activeBranch(entries, fromLeafId);
+    if (!branch.valid) return 0;
+    const targetIndex = branch.entries.findIndex((entry) => entry.id === targetTurnId);
+    if (targetIndex < 0) return 0;
+    return branch.entries.slice(targetIndex).filter((entry) => entry.type === "message").length;
+}
+
 function displayLeafId(branch: SessionTreeEntry[]): string | null {
     for (let index = branch.length - 1; index >= 0; index--) {
         const entry = branch[index]!;
@@ -361,7 +373,11 @@ export async function buildAgentRewindSessionStateView(
             redo = {
                 operationId: state.operationId,
                 targetPrompt: userPrompt(entries, state.rewind.targetTurnId),
-                messageCount: 0,
+                messageCount: countRevertedMessages(
+                    entries,
+                    state.rewind.targetTurnId,
+                    state.rewind.fromLeafId
+                ),
                 fileCount: state.rewind.redoStates.length,
                 files: [],
             };

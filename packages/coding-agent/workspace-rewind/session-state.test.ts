@@ -140,6 +140,30 @@ function changedCheckpoint(turnId: string) {
 }
 
 describe("workspace rewind session state", () => {
+    it("reports one reverted message in the authoritative redo view", async () => {
+        const retained = message("retained", null, "assistant");
+        const reverted = message("reverted", retained.id, "user");
+        const rewindData = workspaceState("session-1", "rewind");
+        rewindData.rewind.fromLeafId = reverted.id;
+        rewindData.rewind.targetTurnId = reverted.id;
+        const rewind = custom("rewind", retained.id, WorkspaceControlCustomTypes.state, rewindData);
+
+        const view = await buildAgentRewindSessionStateView([retained, reverted, rewind], "session-1", {
+            enabled: true,
+            busy: false,
+            frozen: false,
+            verifySnapshot: async () => {},
+            getQuota: async () => ({
+                status: "ok",
+                usedBytes: 0,
+                softQuotaBytes: 100,
+                cleanupAvailable: false,
+            }),
+        });
+
+        expect(view.redo?.messageCount).toBe(1);
+    });
+
     it("verifies snapshot objects before advertising eligible rewind points", async () => {
         const u1 = message("u1", null, "user");
         const a1 = message("a1", "u1", "assistant");

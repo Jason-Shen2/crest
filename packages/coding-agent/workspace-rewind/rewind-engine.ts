@@ -28,7 +28,7 @@ import {
     type RestorePlanV1,
     type RestoreTargetV1,
 } from "./restore-plan";
-import { foldWorkspaceSessionState } from "./session-state";
+import { countRevertedMessages, foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
 import type { WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
@@ -148,23 +148,6 @@ interface ApplyRestoreInput {
     assertCurrent?: () => Promise<void>;
 }
 
-function rawActiveBranch(entries: SessionTreeEntry[], leafId: string | null): SessionTreeEntry[] {
-    if (leafId == null) return [];
-    const byId = new Map(entries.filter((entry) => entry.type !== "leaf").map((entry) => [entry.id, entry]));
-    const reverse: SessionTreeEntry[] = [];
-    const visited = new Set<string>();
-    let cursor: string | null = leafId;
-    while (cursor != null) {
-        if (visited.has(cursor)) return [];
-        const entry = byId.get(cursor);
-        if (!entry) return [];
-        reverse.push(entry);
-        visited.add(cursor);
-        cursor = entry.parentId;
-    }
-    return reverse.reverse();
-}
-
 function selectedUserEntry(
     entries: SessionTreeEntry[],
     targetTurnId: string | undefined
@@ -183,10 +166,8 @@ function previewMessageCount(
 ): number {
     const targetTurnId = plan.target.kind === "rewind" ? plan.target.targetTurnId : rewindState?.rewind.targetTurnId;
     const leafId = plan.target.kind === "rewind" ? plan.semanticLeafId : rewindState?.rewind.fromLeafId;
-    const branch = rawActiveBranch(entries, leafId ?? null);
-    const targetIndex = branch.findIndex((entry) => entry.id === targetTurnId);
-    if (targetIndex < 0) return 0;
-    return branch.slice(targetIndex).filter((entry) => entry.type === "message").length;
+    if (!targetTurnId) return 0;
+    return countRevertedMessages(entries, targetTurnId, leafId ?? null);
 }
 
 function baseFileRow(path: RestorePlanV1["paths"][number]): AgentRewindFileRowView {
