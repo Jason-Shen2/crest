@@ -3,20 +3,7 @@
 
 import type { WorkspaceAgentContextState } from "@/app/workspace/workspace-agent-model";
 import { ContextComposition } from "./context-composition";
-import {
-    formatContextAccuracy,
-    formatContextLifecycle,
-    formatContextPercent,
-    formatContextTimestamp,
-    formatContextTokens,
-} from "./context-format";
-
-function effectiveLifecycle(state: WorkspaceAgentContextState): AgentContextSnapshotLifecycleView {
-    if (state.status === "loading") return "updating";
-    if (state.status === "out_of_date") return "out_of_date";
-    if (state.status === "error") return "unavailable";
-    return state.snapshot?.lifecycle ?? "unavailable";
-}
+import { formatContextPercent, formatContextTokens } from "./context-format";
 
 function Stat({ label, value }: { label: string; value: string }) {
     return (
@@ -52,33 +39,8 @@ export function ContextInspector({ state }: { state?: WorkspaceAgentContextState
     }
 
     const snapshot = state.snapshot;
-    const lifecycle = effectiveLifecycle(state);
-    const statusTone =
-        lifecycle === "out_of_date" || lifecycle === "unavailable"
-            ? "bg-warning/15 text-foreground"
-            : "bg-accent/12 text-foreground";
     return (
         <section aria-label="Context Inspector" className="flex h-full min-w-0 flex-col overflow-hidden">
-            <header className="sticky top-0 z-10 border-b border-border/60 bg-panel/95 px-4 py-3 backdrop-blur-sm">
-                <div className="flex min-w-0 items-start justify-between gap-3">
-                    <div className="min-w-0">
-                        <h2 className="truncate text-sm font-semibold text-foreground">Current context</h2>
-                        <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{snapshot.modelLabel}</p>
-                    </div>
-                    <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${statusTone}`}>
-                            {formatContextLifecycle(lifecycle)}
-                        </span>
-                        <span className="rounded-full bg-fg-overlay-2 px-2 py-0.5 text-[10px] text-muted-foreground">
-                            {formatContextAccuracy(snapshot.accuracy)}
-                        </span>
-                    </div>
-                </div>
-                <div className="mt-2 text-[10px] text-muted-foreground">
-                    Updated {formatContextTimestamp(snapshot.generatedAt)}
-                </div>
-            </header>
-
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
                 <div className="mx-auto w-full max-w-3xl space-y-5">
                     <section aria-labelledby="context-capacity-title" className="space-y-3">

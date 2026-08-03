@@ -35,7 +35,7 @@ function snapshot(overrides: Partial<AgentContextSnapshotView> = {}): AgentConte
 }
 
 describe("ContextInspector", () => {
-    it("keeps capacity and lifecycle details while replacing composition diagnostics with the source ledger", () => {
+    it("starts with capacity and omits the context metadata header", () => {
         render(
             <ContextInspector
                 state={{
@@ -46,9 +46,11 @@ describe("ContextInspector", () => {
             />
         );
 
-        expect(screen.getByRole("region", { name: "Context Inspector" }).textContent).toContain("GPT-5");
-        expect(screen.getByText("Ready")).toBeTruthy();
-        expect(screen.getByText("Estimated")).toBeTruthy();
+        expect(screen.queryByRole("heading", { name: "Current context" })).toBeNull();
+        expect(screen.queryByText("GPT-5")).toBeNull();
+        expect(screen.queryByText("Ready")).toBeNull();
+        expect(screen.queryByText("Estimated")).toBeNull();
+        expect(screen.queryByText(/Updated/)).toBeNull();
         expect(screen.getByText("28.0k / 112.0k")).toBeTruthy();
         expect(screen.getByText("Full window").parentElement?.textContent).toContain("128.0k");
         expect(screen.getByText("Output reserve").parentElement?.textContent).toContain("16.0k");
@@ -77,42 +79,9 @@ describe("ContextInspector", () => {
             />
         );
 
-        expect(screen.getByText("Token count unavailable")).toBeTruthy();
+        expect(screen.queryByText("Token count unavailable")).toBeNull();
         expect(screen.getByText("Unavailable / 112.0k")).toBeTruthy();
         expect(screen.getByText("Conversation")).toBeTruthy();
-    });
-
-    it("labels provider-ready counts as exact", () => {
-        render(
-            <ContextInspector
-                state={{
-                    identity: { workspaceGeneration: 1, sessionGeneration: 0, modelKey: "openai/gpt-5" },
-                    status: "ready",
-                    snapshot: snapshot({ lifecycle: "in_use", accuracy: "exact" }),
-                }}
-            />
-        );
-        expect(screen.getByText("Exact")).toBeTruthy();
-        expect(screen.getByText("In use")).toBeTruthy();
-    });
-
-    it.each([
-        ["in_use", "In use"],
-        ["waiting_for_tool", "Waiting for tool result"],
-        ["updating", "Updating"],
-        ["out_of_date", "Out of date"],
-        ["unavailable", "Unavailable"],
-    ] as const)("labels %s lifecycle as %s", (lifecycle, label) => {
-        render(
-            <ContextInspector
-                state={{
-                    identity: { workspaceGeneration: 1, sessionGeneration: 0, modelKey: "openai/gpt-5" },
-                    status: lifecycle === "out_of_date" ? "out_of_date" : "ready",
-                    snapshot: snapshot({ lifecycle }),
-                }}
-            />
-        );
-        expect(screen.getByText(label)).toBeTruthy();
     });
 
     it("shows explicit loading and unavailable states without stale inventory", () => {
