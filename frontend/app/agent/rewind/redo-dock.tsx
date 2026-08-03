@@ -76,21 +76,22 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
             aria-busy={busy}
             className="overflow-hidden rounded-2xl border border-border bg-card"
         >
-            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-2 px-3 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto]">
+            <div className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2 gap-y-2 px-3 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] [@container(max-width:30rem)]:grid-cols-[auto_minmax(0,1fr)_auto]">
                 <span
                     aria-hidden="true"
                     className="grid size-8 shrink-0 place-items-center rounded-lg bg-orange-500/15 text-orange-400"
+                    data-slot="redo-status-icon"
                 >
                     <Undo2Icon className="size-4" />
                 </span>
-                <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap max-sm:block">
+                <div className="flex min-w-0 items-baseline gap-2 whitespace-nowrap max-sm:block [@container(max-width:30rem)]:block">
                     <p className="shrink-0 text-sm font-medium text-foreground">Changes reverted</p>
                     <p className="truncate text-xs text-muted-foreground">
                         {countLabel(redo.messageCount, "message")} · {countLabel(redo.fileCount, "file")}
                     </p>
                 </div>
                 <Button
-                    className="cursor-pointer max-sm:col-span-3 max-sm:row-start-2 max-sm:w-full"
+                    className="cursor-pointer max-sm:col-span-3 max-sm:row-start-2 max-sm:w-full [@container(max-width:30rem)]:col-span-3 [@container(max-width:30rem)]:row-start-2 [@container(max-width:30rem)]:w-full"
                     disabled={busy}
                     onClick={onRedo}
                     size="sm"
@@ -103,7 +104,7 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
                     aria-expanded={expanded}
                     aria-controls={detailsId}
                     aria-label={expanded ? "Hide reverted details" : "Show reverted details"}
-                    className="grid size-8 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-sm:col-start-3 max-sm:row-start-1"
+                    className="grid size-8 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background max-sm:col-start-3 max-sm:row-start-1 [@container(max-width:30rem)]:col-start-3 [@container(max-width:30rem)]:row-start-1"
                     onClick={() => setExpanded((current) => !current)}
                     type="button"
                 >
@@ -155,6 +156,10 @@ export function RedoDock({ redo, busy, onRedo }: RedoDockProps) {
                                             />
                                         ))}
                                     </ul>
+                                ) : redo.fileCount > 0 ? (
+                                    <p className="rounded-lg bg-muted/20 px-2.5 py-2 text-xs text-muted-foreground">
+                                        File details are available in the Redo preview.
+                                    </p>
                                 ) : null}
                             </div>
                         </div>

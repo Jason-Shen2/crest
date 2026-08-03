@@ -4,7 +4,7 @@
 
 **Goal:** Replace the current generic Redo Dock with the approved compact “revert receipt” UI in both collapsed and expanded states.
 
-**Architecture:** Keep `RedoDock` as a presentation-only component driven by the existing authoritative `AgentRedoView`. Reuse the existing Button and file icon system; keep expansion local, keep Redo execution caller-owned, and make no backend or API changes.
+**Architecture:** Keep `RedoDock` as a presentation-only component driven by the existing authoritative `AgentRedoView`. Reuse the existing Button and file icon system; keep expansion local, keep Redo execution caller-owned, and make no backend or API changes. Authoritative session state may carry a positive `fileCount` with an empty `files` array; in that case the Dock shows `File details are available in the Redo preview.` and does not call preview or introduce another API to hydrate the list.
 
 **Tech Stack:** React 19, TypeScript, Tailwind CSS v4, Radix-backed Crest Button, Lucide icons, Vitest, Testing Library.
 
@@ -67,7 +67,7 @@ it("expands the reverted prompt and review-style file rows without exposing oper
 });
 ```
 
-Keep the existing tests that prove `onRedo` fires once, the disclosure has correct `aria-controls`, details are internally scrollable, and busy disables duplicate Redo. Add a layout assertion that the action uses `max-sm:col-span-3 max-sm:row-start-2 max-sm:w-full` and the disclosure uses `max-sm:col-start-3 max-sm:row-start-1`.
+Keep the existing tests that prove `onRedo` fires once, the disclosure has correct `aria-controls`, details are internally scrollable, and busy disables duplicate Redo. Add a test for a positive `fileCount` with no inline file rows. Add layout assertions for both viewport `max-sm:` classes and equivalent `[@container(max-width:30rem)]:` variants so a narrow thread pane behaves like a narrow viewport.
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
@@ -113,7 +113,7 @@ In `redo-dock.tsx`:
 
 On narrow widths, keep the disclosure in the first row and move Redo to a full-width second row. Preserve visible keyboard focus styles on the icon button.
 
-Render the expanded body with `Reverted request`, the prompt, a `Files` heading, the file count, and the file rows. Keep `max-h-64 overflow-y-auto`; remove all rendering of `redo.operationId`. Keep the non-interactive details mounted inside a `grid` transition wrapper and switch between `grid-rows-[0fr] opacity-0 pointer-events-none` and `grid-rows-[1fr] opacity-100`; set `aria-hidden={!expanded}` and expose `role="region"` only while expanded. Use `duration-200 motion-reduce:transition-none` so both expand and collapse animate without leaving hidden interactive controls focusable.
+Render the expanded body with `Reverted request`, the prompt, a `Files` heading, the file count, and the file rows. When `fileCount > 0` but `files` is empty, render the muted preview notice instead of a blank Files body; do not fetch or preview from the Dock. Keep `max-h-64 overflow-y-auto`; remove all rendering of `redo.operationId`. Keep the non-interactive details mounted inside a `grid` transition wrapper and switch between `grid-rows-[0fr] opacity-0 pointer-events-none` and `grid-rows-[1fr] opacity-100`; set `aria-hidden={!expanded}` and expose `role="region"` only while expanded. Use `duration-200 motion-reduce:transition-none` so both expand and collapse animate without leaving hidden interactive controls focusable.
 
 - [ ] **Step 4: Run focused tests and verify GREEN**
 

@@ -45,6 +45,8 @@
 
 文件列表使用淡灰 hover，不使用蓝色选中背景。此处只用于解释 Redo 范围，不新增文件选择、单文件恢复或新的审阅入口。
 
+权威 session state 可能只携带 `fileCount`，而不携带 `files` 行。此时若 `fileCount > 0`，Files 区显示 muted 提示 `File details are available in the Redo preview.`，不留下与文件数矛盾的空白区域。Dock 不为补齐文件明细发起 preview，也不新增 API 或后端字段。
+
 展开内容设合理最大高度并在内部滚动，避免长文件列表挤压 composer。展开状态只保存在组件内存中；重新挂载时回到收缩态。
 
 ## 动效与状态
@@ -82,6 +84,7 @@
 - 展开态显示原始请求和文件列表，不显示 `operationId`；
 - 文件 icon 与现有文件列表一致，diff 数字沿用成功色与破坏色；
 - 窄宽度下 `Redo` 使用全宽第二行布局；
+- 宽桌面中的窄 thread pane 通过 container query 使用相同的第二行布局；
 - busy 时不可重复触发 Redo；
 - 展开/收起的 ARIA 关联正确；
 - 现有权威 Redo 数据流和安全行为保持不变。
@@ -90,7 +93,8 @@
 
 - `redo-dock.test.tsx` 覆盖收缩态内容、展开态内容、无内部 operation id、busy 禁用和 ARIA 关系；
 - 覆盖文件 icon、路径、diff 统计与 `A/M/D` 状态；
-- 增加布局类断言，锁定中性边框、无左侧强调边和窄宽度全宽 Redo；
+- 覆盖权威 state 只有文件数而无文件行时的 preview 提示；
+- 增加布局类断言，锁定中性边框、无左侧强调边，以及 viewport/container 窄宽度下的全宽 Redo；
 - `agent-content.test.tsx` 保留现有权威 Redo 数据流验证。
 
 ## 非目标

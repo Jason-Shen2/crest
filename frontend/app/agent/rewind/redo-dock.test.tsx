@@ -58,7 +58,9 @@ describe("RedoDock", () => {
         expect(dock.className).toContain("border-border");
         expect(dock.className).toContain("bg-card");
         expect(dock.className).not.toMatch(/border-l|before:|after:/);
-        expect(dock.querySelector(".lucide-undo-2")?.parentElement?.className).toMatch(/bg-orange/);
+        const statusIcon = dock.querySelector('[data-slot="redo-status-icon"]');
+        expect(statusIcon).not.toBeNull();
+        expect(statusIcon?.className).toMatch(/bg-orange/);
         expect(screen.getByText("Changes reverted")).not.toBeNull();
         expect(screen.getByText("3 messages · 2 files")).not.toBeNull();
         expect(screen.queryByText(/Operation/)).toBeNull();
@@ -129,17 +131,44 @@ describe("RedoDock", () => {
         expect(scrollingBody?.className).toContain("overflow-y-auto");
     });
 
+    it("explains authoritative file counts when session state has no inline file rows", () => {
+        render(<RedoDock redo={makeRedo({ fileCount: 1, files: [] })} busy={false} onRedo={vi.fn()} />);
+
+        fireEvent.click(screen.getByRole("button", { name: "Show reverted details" }));
+
+        expect(screen.getByText("1 file")).not.toBeNull();
+        const notice = screen.getByText("File details are available in the Redo preview.");
+        expect(notice.className).toContain("text-muted-foreground");
+        expect(getFileIconMock).not.toHaveBeenCalled();
+    });
+
     it("uses explicit narrow-width placement for the Redo and toggle controls", () => {
         render(<RedoDock redo={makeRedo()} busy={false} onRedo={vi.fn()} />);
+
+        const statusIcon = screen
+            .getByRole("region", { name: "Reverted workspace changes" })
+            .querySelector('[data-slot="redo-status-icon"]');
+        expect(statusIcon).not.toBeNull();
+        expect(statusIcon?.parentElement?.className).toContain(
+            "[@container(max-width:30rem)]:grid-cols-[auto_minmax(0,1fr)_auto]"
+        );
+
+        const titleArea = screen.getByText("Changes reverted").parentElement;
+        expect(titleArea?.className).toContain("[@container(max-width:30rem)]:block");
 
         const redoButton = screen.getByRole("button", { name: "Redo" });
         expect(redoButton.className).toContain("max-sm:col-span-3");
         expect(redoButton.className).toContain("max-sm:row-start-2");
         expect(redoButton.className).toContain("max-sm:w-full");
+        expect(redoButton.className).toContain("[@container(max-width:30rem)]:col-span-3");
+        expect(redoButton.className).toContain("[@container(max-width:30rem)]:row-start-2");
+        expect(redoButton.className).toContain("[@container(max-width:30rem)]:w-full");
 
         const toggle = screen.getByRole("button", { name: "Show reverted details" });
         expect(toggle.className).toContain("max-sm:col-start-3");
         expect(toggle.className).toContain("max-sm:row-start-1");
+        expect(toggle.className).toContain("[@container(max-width:30rem)]:col-start-3");
+        expect(toggle.className).toContain("[@container(max-width:30rem)]:row-start-1");
         expect(toggle.className).toContain("focus-visible:ring");
     });
 
