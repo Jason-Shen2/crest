@@ -503,6 +503,7 @@ declare global {
         id: string;
         name?: string;
         reasoning: boolean;
+        supportstools?: boolean;
         thinkinglevels: string[];
         inputmodalities: string[];
         context?: number;

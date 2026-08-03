@@ -55,6 +55,10 @@ export interface RegistryModelInfo {
     id: string;
     name?: string;
     reasoning: boolean;
+    // Optional because the shared Model shape does not yet expose this
+    // fact for every provider. Consumers preserve an existing renderer
+    // fact when it is absent.
+    supportstools?: boolean;
     // pi ThinkingLevels the model actually accepts ("off" filtered out).
     // Empty when reasoning is false.
     thinkinglevels: string[];

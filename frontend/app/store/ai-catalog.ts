@@ -142,6 +142,7 @@ export interface ModelEntry {
 // fetched at picker open time. See ProviderKind comment above.
 
 import { MODELS_BY_PROVIDER } from "./ai-catalog-models.gen";
+import type { RegistryModelsState } from "./ai-registry-models";
 
 // minimax M-series model list — curated inline because LiteLLM's
 // minimax provider doesn't currently expose the full emain-registered
@@ -165,11 +166,7 @@ import { MODELS_BY_PROVIDER } from "./ai-catalog-models.gen";
 // etc.) becomes available automatically without us hand-curating
 // here.  The inline set is also what the picker shows on first
 // mount before the live fetch resolves.
-function makeMinimaxModel(
-    id: string,
-    displayName: string,
-    contextWindow: number
-): ModelEntry {
+function makeMinimaxModel(id: string, displayName: string, contextWindow: number): ModelEntry {
     return {
         id,
         displayName,
@@ -224,8 +221,7 @@ export const CATALOG: ProviderEntry[] = [
         id: "google",
         displayName: "Google Gemini",
         // {model} placeholder — resolver substitutes the selected model id.
-        defaultEndpoint:
-            "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent",
+        defaultEndpoint: "https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent",
         defaultApiType: "google-gemini",
         tokenSecretName: "GOOGLE_AI_KEY",
         icon: "stars-01",
@@ -302,10 +298,7 @@ export function findProvider(providerId: string): ProviderEntry | undefined {
 // findModel — looks up a model within a specific provider.  Does not
 // search across providers (model ids are not globally unique —
 // "openai/gpt-5" is an OpenRouter id, not an OpenAI id).
-export function findModel(
-    providerId: string,
-    modelId: string
-): ModelEntry | undefined {
+export function findModel(providerId: string, modelId: string): ModelEntry | undefined {
     const provider = findProvider(providerId);
     return provider?.models.find((m) => m.id === modelId);
 }
@@ -321,4 +314,56 @@ export function resolveApiType(provider: ProviderEntry, model: ModelEntry): ApiT
 // providers without the placeholder.
 export function resolveEndpoint(provider: ProviderEntry, model: ModelEntry): string {
     return provider.defaultEndpoint.replace("{model}", model.id);
+}
+
+const CAPABILITY_ORDER: Capability[] = ["tools", "images", "pdfs", "reasoning"];
+const RENDERER_REASONING_LEVELS = new Set<ReasoningLevel>(["low", "medium", "high"]);
+
+export function projectRegistryModels(
+    provider: ProviderEntry,
+    registryModels: readonly RegistryModelInfo[]
+): ProviderEntry {
+    const staticById = new Map(provider.models.map((model) => [model.id, model]));
+    const models = registryModels.map((registryModel): ModelEntry => {
+        const staticModel = staticById.get(registryModel.id);
+        const capabilities = new Set(staticModel?.capabilities ?? []);
+
+        if (registryModel.supportstools != null) {
+            setCapability(capabilities, "tools", registryModel.supportstools);
+        }
+        setCapability(capabilities, "images", registryModel.inputmodalities.includes("image"));
+        setCapability(capabilities, "reasoning", registryModel.reasoning);
+
+        const reasoningLevels = registryModel.reasoning
+            ? registryModel.thinkinglevels.filter((level): level is ReasoningLevel =>
+                  RENDERER_REASONING_LEVELS.has(level as ReasoningLevel)
+              )
+            : undefined;
+
+        return {
+            ...(staticModel ?? {}),
+            id: registryModel.id,
+            displayName: registryModel.name ?? staticModel?.displayName ?? registryModel.id,
+            capabilities: CAPABILITY_ORDER.filter((capability) => capabilities.has(capability)),
+            contextWindow: registryModel.context ?? staticModel?.contextWindow ?? 0,
+            ...(reasoningLevels?.length ? { reasoningLevels } : { reasoningLevels: undefined }),
+        };
+    });
+
+    return { ...provider, models };
+}
+
+export function projectRegistryCatalog(
+    catalog: readonly ProviderEntry[],
+    states: Readonly<Record<string, RegistryModelsState>>
+): ProviderEntry[] {
+    return catalog.map((provider) => {
+        const state = states[provider.id];
+        return state?.status === "ok" ? projectRegistryModels(provider, state.models) : provider;
+    });
+}
+
+function setCapability(capabilities: Set<Capability>, capability: Capability, supported: boolean): void {
+    if (supported) capabilities.add(capability);
+    else capabilities.delete(capability);
 }
