@@ -579,7 +579,8 @@ describe("AgentContent", () => {
                 }),
             });
         });
-        await waitFor(() => expect(turnDialogProps.latest.open).toBe(false));
+        expect(turnDialogProps.latest.processingLabel).toBe("Undoing 1 file…");
+        await act(async () => new Promise((resolve) => setTimeout(resolve, 450)));
         expect(globalStore.get(ToastModel.getInstance().toastsAtom)).toEqual([
             expect.objectContaining({
                 source: "crest-agent",
@@ -588,6 +589,7 @@ describe("AgentContent", () => {
                 body: "1 file restored.",
             }),
         ]);
+        expect(turnDialogProps.latest.open).toBe(false);
     });
 
     it("keeps checkpoint coverage diagnostics out of the turn undo dialog", async () => {

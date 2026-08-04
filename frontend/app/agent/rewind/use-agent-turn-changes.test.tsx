@@ -272,6 +272,8 @@ describe("useAgentTurnChanges", () => {
                 { turnId: "turn-2", action: "undo" },
             ]),
         });
+        expect(result.current.dialog).toMatchObject({ open: true, kind: "undo", phase: "applying" });
+        expect(onMutationComplete).not.toHaveBeenCalled();
         await waitFor(() => expect(result.current.awaitingAuthoritativeAck).toBe(false));
         expect(result.current.cards.get("turn-1")?.action).toBe("redo");
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");

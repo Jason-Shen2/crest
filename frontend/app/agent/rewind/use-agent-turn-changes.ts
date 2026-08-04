@@ -69,11 +69,13 @@ interface PendingAck {
     expectedAction: "undo" | "redo";
     action: "undo" | "redo";
     fileCount: number;
+    startedAt: number;
     resultReceived: boolean;
 }
 
 const SummaryRetryLimit = 3;
 const SummaryRetryDelayMs = 50;
+const MutationFeedbackMinimumMs = 400;
 
 const ClosedDialog: AgentTurnChangesDialogState = {
     open: false,
@@ -129,11 +131,19 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
     optionsRef.current = options;
 
     const completePendingAck = useCallback((pending: PendingAck) => {
-        if (pendingAckRef.current !== pending) return;
-        pendingAckRef.current = undefined;
-        setAwaitingAuthoritativeAck(false);
-        setDialog(ClosedDialog);
-        optionsRef.current.onMutationComplete({ action: pending.action, fileCount: pending.fileCount });
+        const finish = () => {
+            if (pendingAckRef.current !== pending) return;
+            pendingAckRef.current = undefined;
+            setAwaitingAuthoritativeAck(false);
+            setDialog(ClosedDialog);
+            optionsRef.current.onMutationComplete({ action: pending.action, fileCount: pending.fileCount });
+        };
+        const remainingMs = pending.startedAt + MutationFeedbackMinimumMs - Date.now();
+        if (remainingMs > 0) {
+            setTimeout(finish, remainingMs);
+            return;
+        }
+        finish();
     }, []);
 
     const currentIdentity = options.sessionMetadata?.path
@@ -455,6 +465,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 expectedAction: confirmation.action === "undo" ? "redo" : "undo",
                 action: confirmation.action,
                 fileCount: confirmation.fileCount,
+                startedAt: Date.now(),
                 resultReceived: false,
             };
             confirmationRef.current = undefined;
