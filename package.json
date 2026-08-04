@@ -89,6 +89,7 @@
         "@hugeicons/core-free-icons": "^4.2.2",
         "@hugeicons/react": "^1.1.8",
         "@observablehq/plot": "^0.6.17",
+        "@parcel/watcher": "^2.5.1",
         "@pierre/diffs": "1.2.10",
         "@react-hook/resize-observer": "^2.0.2",
         "@shikijs/themes": "4.2.0",
