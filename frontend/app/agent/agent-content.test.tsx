@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
 
+import { ToastModel } from "@/app/notifications/toast-model";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -416,6 +417,7 @@ function makeModel(): WorkspaceAgentModel {
 
 afterEach(async () => {
     cleanup();
+    ToastModel.getInstance().clear();
     hostProps.skipReady = false;
     hostProps.simulateMissingSessionSelectorError = false;
     hostProps.rejectSubmitWithRestore = false;
@@ -527,6 +529,65 @@ describe("AgentContent", () => {
         });
         expect(turnDialogProps.latest.locked).toBe(true);
         expect(screen.getByRole("button", { name: "Undo 1 file" }).hasAttribute("disabled")).toBe(true);
+    });
+
+    it("keeps the diff visible while undo applies and toasts only after authoritative completion", async () => {
+        let resolveApply!: (result: AgentRewindMutationResult) => void;
+        const applyTurnUndo = vi.fn(
+            () =>
+                new Promise<AgentRewindMutationResult>((resolve) => {
+                    resolveApply = resolve;
+                })
+        );
+        const { session } = renderRewindContent(
+            makeRewindClient({
+                previewTurnUndo: vi.fn(async () => makeTurnPreview("turn-undo")),
+                applyTurnUndo,
+            })
+        );
+        act(() => {
+            hostProps.latest.onTurnsChange([{ turnId: "turn-a", responseMessages: [], status: "done" }]);
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({ turnChanges: [{ turnId: "turn-a", action: "undo" }] }),
+            });
+        });
+        await waitFor(() => expect(threadProps.latest.turnChanges.cards.has("turn-a")).toBe(true));
+        await act(async () => threadProps.latest.turnChanges.openMutation("turn-a"));
+
+        fireEvent.click(screen.getByRole("button", { name: "Undo 1 file" }));
+        await waitFor(() => expect(applyTurnUndo).toHaveBeenCalledOnce());
+        expect(turnDialogProps.latest.files).toHaveLength(1);
+        expect(turnDialogProps.latest.processingLabel).toBe("Undoing 1 file…");
+        expect(screen.getByRole("button", { name: "Undoing…" }).hasAttribute("disabled")).toBe(true);
+
+        await act(async () => {
+            resolveApply({ sessionMetadata: session, semanticLeafId: "leaf-undone", displayLeafId: "turn-a" });
+        });
+        expect(globalStore.get(ToastModel.getInstance().toastsAtom)).toHaveLength(0);
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                rewindState: makeRewindState({
+                    semanticLeafId: "leaf-undone",
+                    turnChanges: [{ turnId: "turn-a", action: "redo", undoOperationId: "undo-a" }],
+                }),
+            });
+        });
+        await waitFor(() => expect(turnDialogProps.latest.open).toBe(false));
+        expect(globalStore.get(ToastModel.getInstance().toastsAtom)).toEqual([
+            expect.objectContaining({
+                source: "crest-agent",
+                kind: "completed",
+                title: "Changes undone",
+                body: "1 file restored.",
+            }),
+        ]);
     });
 
     it("keeps checkpoint coverage diagnostics out of the turn undo dialog", async () => {

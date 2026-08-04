@@ -236,19 +236,35 @@ describe("DiffReviewDialog", () => {
         expect(summary?.textContent).toBe("0 files+0-0");
     });
 
-    it("shows only the loading summary while files are loading and omits color explanation copy", () => {
-        const { rerender, props } = renderDialog({ loading: true });
+    it("shows structured loading skeletons without an empty state or safe-undo copy", () => {
+        const { rerender, props } = renderDialog({
+            loading: true,
+            loadingFileCount: 2,
+            files: [],
+            emptyMessage: "No workspace files will change.",
+        });
 
-        const summary = screen.getByText("Loading files…");
+        const summary = screen.getByText("Loading changes…");
         expect(summary.parentElement?.getAttribute("role")).toBe("status");
         expect(summary.parentElement?.getAttribute("aria-atomic")).toBe("true");
-        expect(summary.parentElement?.textContent).toBe("Loading files…");
+        expect(screen.getAllByTestId("diff-review-file-skeleton")).toHaveLength(2);
+        expect(screen.getByTestId("diff-review-code-skeleton")).not.toBeNull();
+        expect(screen.queryByText("No workspace files will change.")).toBeNull();
+        expect(screen.queryByText("Preparing safe undo…")).toBeNull();
         rerender(<DiffReviewDialog {...props} loading={false} />);
         expect(screen.getAllByRole("status").find((status) => !status.hasAttribute("aria-label"))?.textContent).toBe(
-            "1 file+3-2"
+            "0 files+0-0"
         );
         expect(screen.queryByText(/red (will|was)/i)).toBeNull();
         expect(screen.queryByText(/green (will|was)/i)).toBeNull();
+    });
+
+    it("keeps the selected diff visible under a processing overlay", () => {
+        renderDialog({ processingLabel: "Undoing 1 file…", locked: true });
+
+        expect(screen.getByTestId("backend-diff").textContent).toBe("backend alpha patch");
+        const status = screen.getByRole("status", { name: "Undoing 1 file…" });
+        expect(status.textContent).toContain("Undoing 1 file…");
     });
 
     it("does not show coverage text for a normal file row", () => {

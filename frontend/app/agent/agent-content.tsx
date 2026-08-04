@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { ToastModel } from "@/app/notifications/toast-model";
 import { CATALOG } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
@@ -18,6 +19,7 @@ import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { Button } from "@/shadcn/ui/button";
 import { useAtomValue } from "jotai";
+import { LoaderCircleIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
     AgentChatHost,
@@ -435,6 +437,18 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         userErrorWriteGenerationRef.current++;
         setUserErrorMessage(message);
     }, []);
+    const onTurnMutationComplete = useCallback((result: { action: "undo" | "redo"; fileCount: number }) => {
+        const fileLabel = `${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}`;
+        ToastModel.getInstance().push({
+            id: `agent-turn-${result.action}:${crypto.randomUUID()}`,
+            source: "crest-agent",
+            kind: "completed",
+            title: result.action === "undo" ? "Changes undone" : "Changes redone",
+            body: `${fileLabel} ${result.action === "undo" ? "restored" : "reapplied"}.`,
+            ts: Date.now(),
+            read: false,
+        });
+    }, []);
     const onUserMessage = useCallback((message: string) => {
         setUserNotification((current) => ({
             message,
@@ -633,6 +647,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         turns: agentTurns,
         running: hostState.status === "streaming",
         onError: onUserError,
+        onMutationComplete: onTurnMutationComplete,
     });
     const recoveryFrozen = hostState.rewindState.frozen;
     const rewindPreview = rewindController.preview.result;
@@ -653,6 +668,15 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         (turnChangesController.controlsDisabled ||
             turnChangesController.dialog.phase === "applying" ||
             turnChangesController.awaitingAuthoritativeAck);
+    const turnMutationFileCount =
+        turnChangesController.dialog.preview?.fileCount ??
+        turnChangesController.dialog.fileCountHint ??
+        turnChangesController.dialog.files.length;
+    const turnMutationFileLabel = `${turnMutationFileCount} ${turnMutationFileCount === 1 ? "file" : "files"}`;
+    const turnMutationProcessingLabel =
+        turnChangesController.dialog.phase === "applying"
+            ? `${turnChangesController.dialog.kind === "undo" ? "Undoing" : "Redoing"} ${turnMutationFileLabel}…`
+            : undefined;
 
     useEffect(() => {
         setRewindSelectedPath(undefined);
@@ -1204,6 +1228,8 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                         files={turnChangesController.dialog.files}
                         selectedPath={turnChangesController.dialog.selectedPath}
                         loading={turnChangesController.dialog.phase === "loading"}
+                        loadingFileCount={turnChangesController.dialog.fileCountHint}
+                        processingLabel={turnMutationProcessingLabel}
                         errorMessage={turnChangesController.dialog.errorMessage}
                         locked={turnMutationControlsLocked}
                         emptyMessage="No workspace files will change."
@@ -1226,6 +1252,15 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                                     >
                                         Cancel
                                     </Button>
+                                    {turnChangesController.dialog.phase === "applying" && (
+                                        <Button className="cursor-pointer" disabled>
+                                            <LoaderCircleIcon
+                                                aria-hidden="true"
+                                                className="animate-spin motion-reduce:animate-none"
+                                            />
+                                            {turnChangesController.dialog.kind === "undo" ? "Undoing…" : "Redoing…"}
+                                        </Button>
+                                    )}
                                     {turnChangesController.dialog.phase === "ready" &&
                                         !turnChangesController.dialog.preview?.hardBlocked &&
                                         turnChangesController.dialog.kind === "undo" &&

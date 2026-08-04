@@ -13,6 +13,7 @@ export interface UseAgentTurnChangesOptions {
     turns: PiTurn[];
     running: boolean;
     onError(message: string): void;
+    onMutationComplete(result: { action: "undo" | "redo"; fileCount: number }): void;
 }
 
 export interface AgentTurnChangesCardState {
@@ -30,6 +31,7 @@ export interface AgentTurnChangesDialogState {
     selectedPath?: string;
     preview?: AgentTurnMutationPreviewResult;
     errorMessage?: string;
+    fileCountHint?: number;
 }
 
 export interface AgentTurnChangesController {
@@ -56,6 +58,7 @@ interface TurnConfirmation {
     turnId: string;
     action: "undo" | "redo";
     undoOperationId?: string;
+    fileCount: number;
     token: string;
 }
 
@@ -64,6 +67,8 @@ interface PendingAck {
     operationEpoch: number;
     turnId: string;
     expectedAction: "undo" | "redo";
+    action: "undo" | "redo";
+    fileCount: number;
     resultReceived: boolean;
 }
 
@@ -122,6 +127,14 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
     const mountedRef = useRef(false);
     const optionsRef = useRef(options);
     optionsRef.current = options;
+
+    const completePendingAck = useCallback((pending: PendingAck) => {
+        if (pendingAckRef.current !== pending) return;
+        pendingAckRef.current = undefined;
+        setAwaitingAuthoritativeAck(false);
+        setDialog(ClosedDialog);
+        optionsRef.current.onMutationComplete({ action: pending.action, fileCount: pending.fileCount });
+    }, []);
 
     const currentIdentity = options.sessionMetadata?.path
         ? {
@@ -265,10 +278,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         }
         const authority = authorityByTurn.get(pending.turnId);
         if (authority?.action !== pending.expectedAction) return;
-        pendingAckRef.current = undefined;
-        setAwaitingAuthoritativeAck(false);
-        setDialog(ClosedDialog);
-    }, [authorityByTurn]);
+        completePendingAck(pending);
+    }, [authorityByTurn, completePendingAck]);
 
     const globallyDisabled =
         options.running ||
@@ -290,12 +301,15 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         return next;
     }, [authorityByTurn, currentIdentity, doneTurnIds, globallyDisabled, options.rewindState.enabled, summaryCache]);
 
-    const beginDialogRequest = useCallback((kind: AgentTurnChangesDialogState["kind"], turnId: string) => {
-        const epoch = ++dialogEpochRef.current;
-        confirmationRef.current = undefined;
-        setDialog({ open: true, kind, turnId, phase: "loading", files: [] });
-        return epoch;
-    }, []);
+    const beginDialogRequest = useCallback(
+        (kind: AgentTurnChangesDialogState["kind"], turnId: string, fileCountHint: number) => {
+            const epoch = ++dialogEpochRef.current;
+            confirmationRef.current = undefined;
+            setDialog({ open: true, kind, turnId, phase: "loading", files: [], fileCountHint });
+            return epoch;
+        },
+        []
+    );
 
     const requestIsCurrent = useCallback((identity: RequestIdentity, epoch: number): boolean => {
         return mountedRef.current && epoch === dialogEpochRef.current && sameIdentity(identity, identityRef.current);
@@ -313,7 +327,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
         async (turnId: string): Promise<void> => {
             const identity = identityRef.current;
             if (!identity || globallyDisabled || !cards.has(turnId)) return;
-            const epoch = beginDialogRequest("review", turnId);
+            const fileCountHint = cards.get(turnId)!.summary.fileCount;
+            const epoch = beginDialogRequest("review", turnId, fileCountHint);
             try {
                 const result = await optionsRef.current.client.reviewTurnChanges({
                     sessionMetadata: identity.sessionMetadata,
@@ -334,11 +349,20 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                     phase: "ready",
                     files: result.files,
                     selectedPath: result.files[0]?.path,
+                    fileCountHint,
                 });
             } catch (error) {
                 if (!requestIsCurrent(identity, epoch)) return;
                 const errorMessage = messageFromError(error);
-                setDialog({ open: true, kind: "review", turnId, phase: "error", files: [], errorMessage });
+                setDialog({
+                    open: true,
+                    kind: "review",
+                    turnId,
+                    phase: "error",
+                    files: [],
+                    errorMessage,
+                    fileCountHint,
+                });
                 optionsRef.current.onError(errorMessage);
             }
         },
@@ -351,7 +375,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
             const authority = authorityByTurn.get(turnId);
             if (!identity || globallyDisabled || !cards.has(turnId) || !authority) return;
             const action = authority.action;
-            const epoch = beginDialogRequest(action, turnId);
+            const fileCountHint = cards.get(turnId)!.summary.fileCount;
+            const epoch = beginDialogRequest(action, turnId, fileCountHint);
             try {
                 const input: AgentPreviewTurnMutationInput = {
                     sessionMetadata: identity.sessionMetadata,
@@ -376,6 +401,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                         turnId,
                         action,
                         undoOperationId: authority.undoOperationId,
+                        fileCount: result.fileCount,
                         token: result.confirmationToken,
                     };
                 }
@@ -387,11 +413,20 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                     files: result.files,
                     selectedPath: result.files[0]?.path,
                     preview: result,
+                    fileCountHint,
                 });
             } catch (error) {
                 if (!requestIsCurrent(identity, epoch)) return;
                 const errorMessage = messageFromError(error);
-                setDialog({ open: true, kind: action, turnId, phase: "error", files: [], errorMessage });
+                setDialog({
+                    open: true,
+                    kind: action,
+                    turnId,
+                    phase: "error",
+                    files: [],
+                    errorMessage,
+                    fileCountHint,
+                });
                 optionsRef.current.onError(errorMessage);
             }
         },
@@ -418,6 +453,8 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 operationEpoch,
                 turnId: confirmation.turnId,
                 expectedAction: confirmation.action === "undo" ? "redo" : "undo",
+                action: confirmation.action,
+                fileCount: confirmation.fileCount,
                 resultReceived: false,
             };
             confirmationRef.current = undefined;
@@ -444,9 +481,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                     optionsRef.current.rewindState.turnChanges.map((item) => [item.turnId, item])
                 ).get(confirmation.turnId);
                 if (pending && authority?.action === pending.expectedAction) {
-                    pendingAckRef.current = undefined;
-                    setAwaitingAuthoritativeAck(false);
-                    setDialog(ClosedDialog);
+                    completePendingAck(pending);
                     return;
                 }
                 setDialog((current) => ({ ...current, phase: "applying" }));
@@ -460,7 +495,7 @@ export function useAgentTurnChanges(options: UseAgentTurnChangesOptions): AgentT
                 optionsRef.current.onError(errorMessage);
             }
         },
-        [globallyDisabled, mutationIsCurrent]
+        [completePendingAck, globallyDisabled, mutationIsCurrent]
     );
 
     const closeDialog = useCallback(() => {

@@ -419,8 +419,8 @@ export class WorkspaceRewindEngine {
         ) {
             throw new Error("checkpoint workspace identity or incarnation does not match");
         }
-        await this.store.verify(checkpoint.before);
-        await this.store.verify(checkpoint.after);
+        await this.store.verifyUntrustedSnapshot(checkpoint.before);
+        await this.store.verifyUntrustedSnapshot(checkpoint.after);
         return { semanticLeafId: folded.semanticLeafId, checkpoint };
     }
 
@@ -525,7 +525,7 @@ export class WorkspaceRewindEngine {
             sourceTurnId: input.sourceTurnId,
             inspectLivePath: this.inspectPath,
             inspectLivePaths: this.inspectPaths,
-            verifySnapshot: (snapshot) => this.store.verify(snapshot),
+            verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
         });
         return { entries, plan };
     }
@@ -541,7 +541,7 @@ export class WorkspaceRewindEngine {
             undoOperationId: input.undoOperationId,
             inspectLivePath: this.inspectPath,
             inspectLivePaths: this.inspectPaths,
-            verifySnapshot: (snapshot) => this.store.verify(snapshot),
+            verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
         });
         return { entries, plan };
     }

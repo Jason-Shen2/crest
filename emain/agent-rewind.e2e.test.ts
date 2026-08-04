@@ -241,6 +241,7 @@ function TurnChangesE2EUi(props: {
         turns: [{ turnId: props.turnId, responseMessages: [], status: "done" }],
         running: false,
         onError: vi.fn(),
+        onMutationComplete: vi.fn(),
     });
     const card = controller.cards.get(props.turnId);
     return createElement(

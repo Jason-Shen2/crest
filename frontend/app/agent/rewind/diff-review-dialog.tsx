@@ -7,7 +7,7 @@ import { DiffViewer } from "@/app/agent/assistant-ui/diff-viewer";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/shadcn/ui/dialog";
 import { cn } from "@/util/util";
-import { FileDiffIcon } from "lucide-react";
+import { FileDiffIcon, LoaderCircleIcon } from "lucide-react";
 import {
     useCallback,
     useEffect,
@@ -28,6 +28,8 @@ export interface DiffReviewDialogProps {
     files: AgentRewindFileRowView[];
     selectedPath?: string;
     loading?: boolean;
+    loadingFileCount?: number;
+    processingLabel?: string;
     errorMessage?: string;
     locked?: boolean;
     emptyMessage?: string;
@@ -207,6 +209,55 @@ function SelectedFileDiff({ file }: { file?: AgentRewindFileRowView }) {
     return <DiffViewer patch={file.diff} size="sm" className="m-0" />;
 }
 
+function FileListSkeleton({ count }: { count: number }) {
+    const rowCount = Math.max(1, Math.min(count || 2, 3));
+    return (
+        <div aria-hidden="true" className="space-y-1.5">
+            {Array.from({ length: rowCount }, (_, index) => (
+                <div
+                    key={index}
+                    data-testid="diff-review-file-skeleton"
+                    className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2 py-2.5"
+                >
+                    <span className="size-4 rounded bg-muted/60 animate-pulse motion-reduce:animate-none" />
+                    <span className="space-y-1.5">
+                        <span
+                            className={cn(
+                                "block h-3 rounded bg-muted/60 animate-pulse motion-reduce:animate-none",
+                                index % 2 === 0 ? "w-28" : "w-20"
+                            )}
+                        />
+                        <span className="block h-2 w-16 rounded bg-muted/35 animate-pulse motion-reduce:animate-none" />
+                    </span>
+                    <span className="h-2.5 w-10 rounded bg-muted/40 animate-pulse motion-reduce:animate-none" />
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function DiffSkeleton() {
+    const widths = ["w-2/5", "w-3/4", "w-1/2", "w-4/5", "w-3/5", "w-1/3", "w-2/3"];
+    return (
+        <div data-testid="diff-review-code-skeleton" aria-hidden="true" className="h-full overflow-hidden rounded-md">
+            <div className="mb-3 flex h-9 items-center gap-2 rounded-md bg-muted/35 px-3">
+                <span className="size-4 rounded bg-muted/70 animate-pulse motion-reduce:animate-none" />
+                <span className="h-3 w-24 rounded bg-muted/60 animate-pulse motion-reduce:animate-none" />
+            </div>
+            <div className="space-y-2 px-3 py-2">
+                {widths.map((width, index) => (
+                    <div key={index} className={cn("flex h-5 items-center gap-3", index === 3 && "bg-success/5")}>
+                        <span className="h-2.5 w-5 rounded bg-muted/35 animate-pulse motion-reduce:animate-none" />
+                        <span
+                            className={cn("h-2.5 rounded bg-muted/55 animate-pulse motion-reduce:animate-none", width)}
+                        />
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function FilePaneResizeHandle({ onResize }: { onResize(clientX: number): void }) {
     const [dragging, setDragging] = useState(false);
 
@@ -244,6 +295,8 @@ export function DiffReviewDialog({
     files,
     selectedPath,
     loading = false,
+    loadingFileCount = 2,
+    processingLabel,
     errorMessage,
     locked = false,
     emptyMessage = "No workspace files will change.",
@@ -303,7 +356,7 @@ export function DiffReviewDialog({
                                 className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground"
                             >
                                 {loading ? (
-                                    <span>Loading files…</span>
+                                    <span>Loading changes…</span>
                                 ) : (
                                     <>
                                         <span>{files.length === 1 ? "1 file" : `${files.length} files`}</span>
@@ -324,11 +377,13 @@ export function DiffReviewDialog({
                     ref={reviewBodyRef}
                     data-testid="diff-review-body"
                     style={{ "--diff-review-file-pane-width": `${filePaneWidth}px` } as CSSProperties}
-                    className="flex min-h-0 flex-col md:flex-row"
+                    className="relative flex min-h-0 flex-col md:flex-row"
                 >
                     <aside className="relative flex min-h-[120px] w-full shrink-0 basis-[35%] flex-col border-b border-border md:min-h-0 md:w-[var(--diff-review-file-pane-width)] md:max-w-[60%] md:basis-auto md:border-r md:border-b-0">
                         <div className="flex-1 overflow-y-auto p-2">
-                            {files.length === 0 ? (
+                            {loading ? (
+                                <FileListSkeleton count={loadingFileCount} />
+                            ) : files.length === 0 ? (
                                 <div className="grid h-full place-items-center p-6 text-center text-sm text-muted-foreground">
                                     {emptyMessage}
                                 </div>
@@ -355,14 +410,25 @@ export function DiffReviewDialog({
                         <FilePaneResizeHandle onResize={handleFilePaneResize} />
                     </aside>
                     <main className="min-h-0 min-w-0 flex-1 overflow-auto bg-muted/10 p-3">
-                        {loading ? (
-                            <div className="grid h-full place-items-center text-sm text-muted-foreground">
-                                Loading diff…
-                            </div>
-                        ) : (
-                            <SelectedFileDiff file={selectedFile} />
-                        )}
+                        {loading ? <DiffSkeleton /> : <SelectedFileDiff file={selectedFile} />}
                     </main>
+                    {processingLabel && (
+                        <div
+                            role="status"
+                            aria-label={processingLabel}
+                            aria-live="polite"
+                            className="absolute inset-0 z-10 grid place-items-center bg-background/45 backdrop-blur-[1px]"
+                        >
+                            <div className="flex items-center gap-2.5 rounded-full border border-border/80 bg-background/95 px-4 py-2 text-sm font-medium text-foreground shadow-lg">
+                                <LoaderCircleIcon
+                                    aria-hidden="true"
+                                    size={16}
+                                    className="animate-spin text-muted-foreground motion-reduce:animate-none"
+                                />
+                                <span>{processingLabel}</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <DialogFooter className="shrink-0 border-t border-border px-5 py-3">{footer}</DialogFooter>

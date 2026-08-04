@@ -115,6 +115,7 @@ function options(overrides: Partial<UseAgentTurnChangesOptions> = {}): UseAgentT
         turns: [turn("turn-1")],
         running: false,
         onError: vi.fn(),
+        onMutationComplete: vi.fn(),
         ...overrides,
     };
 }
@@ -235,8 +236,10 @@ describe("useAgentTurnChanges", () => {
 
     it("waits for authoritative turn action before releasing undo and isolates other turns", async () => {
         const runtime = client();
+        const onMutationComplete = vi.fn();
         const initial = options({
             client: runtime,
+            onMutationComplete,
             turns: [turn("turn-1"), turn("turn-2")],
             rewindState: rewindState([
                 { turnId: "turn-1", action: "undo" },
@@ -250,6 +253,7 @@ describe("useAgentTurnChanges", () => {
 
         await act(async () => result.current.openMutation("turn-1"));
         expect(result.current.dialog.kind).toBe("undo");
+        expect(result.current.dialog.fileCountHint).toBe(1);
         await act(async () => result.current.confirmMutation("normal"));
 
         expect(runtime.applyTurnUndo).toHaveBeenCalledWith(
@@ -259,6 +263,7 @@ describe("useAgentTurnChanges", () => {
         expect(result.current.controlsDisabled).toBe(true);
         expect(result.current.cards.get("turn-1")?.action).toBe("undo");
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");
+        expect(onMutationComplete).not.toHaveBeenCalled();
 
         rerender({
             ...initial,
@@ -270,6 +275,8 @@ describe("useAgentTurnChanges", () => {
         await waitFor(() => expect(result.current.awaitingAuthoritativeAck).toBe(false));
         expect(result.current.cards.get("turn-1")?.action).toBe("redo");
         expect(result.current.cards.get("turn-2")?.action).toBe("undo");
+        expect(onMutationComplete).toHaveBeenCalledOnce();
+        expect(onMutationComplete).toHaveBeenCalledWith({ action: "undo", fileCount: 1 });
     });
 
     it("preserves an in-flight apply across semantic leaf advance until its turn action is acknowledged", async () => {

@@ -208,6 +208,7 @@ function makeHarness(input: {
             return Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
         }),
         verify: vi.fn(async () => {}),
+        verifyUntrustedSnapshot: vi.fn(async () => {}),
         anchorSnapshot: vi.fn(async () => {
             if (!order.includes("anchor-session-refs")) order.push("anchor-session-refs");
         }),
@@ -1026,6 +1027,8 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(issue).not.toHaveBeenCalled();
         expect(value.options.inspectLivePath).not.toHaveBeenCalled();
         expect(value.options.inspectLivePaths).not.toHaveBeenCalled();
+        expect(value.store.verifyUntrustedSnapshot).toHaveBeenCalledTimes(8);
+        expect(value.store.verify).not.toHaveBeenCalled();
 
         entries.push({ ...userEntry(), id: "turn-2", parentId: null });
         await expect(
