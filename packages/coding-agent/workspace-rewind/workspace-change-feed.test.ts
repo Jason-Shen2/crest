@@ -186,6 +186,14 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cursor-missing" });
     });
 
+    test("reports a missing cursor before an existing callback gap", async () => {
+        await feed.initializeAfterReconcile();
+        watcher.callback?.(new Error("callback failed"), []);
+        await unlink(join(storeRoot, "tracker", "committed.cursor"));
+
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cursor-missing" });
+    });
+
     test("fails closed on historical query and callback errors", async () => {
         await feed.initializeAfterReconcile();
         watcher.queryError = new Error("query failed");

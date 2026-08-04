@@ -100,7 +100,6 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
 
     async readChanges(): Promise<WorkspaceChangeRead> {
         const state = getState(this);
-        if (state.gap) return { status: "gap", reason: "query-failed" };
 
         let trackerExists: boolean;
         let cursorExists: boolean;
@@ -111,10 +110,10 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             state.gap = true;
             return { status: "gap", reason: "query-failed" };
         }
-        if (state.gap) return { status: "gap", reason: "query-failed" };
         if (!cursorExists) {
             return { status: "gap", reason: state.initialized || trackerExists ? "cursor-missing" : "cold-start" };
         }
+        if (state.gap) return { status: "gap", reason: "query-failed" };
         try {
             await ensureSubscription(state);
         } catch {

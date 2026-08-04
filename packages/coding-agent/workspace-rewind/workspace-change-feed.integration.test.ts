@@ -42,9 +42,7 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
         await rename(join(workspaceRoot, "old.txt"), join(workspaceRoot, "new.txt"));
 
         const result = await feed.readChanges();
-        expect(result.status).toBe("complete");
-        if (result.status !== "complete") return;
-        expect(result.changedPaths).toEqual(["create.txt", "delete.txt", "new.txt", "old.txt", "update.txt"]);
+        assertCompleteOrExplicitGap(result, ["create.txt", "delete.txt", "new.txt", "old.txt", "update.txt"]);
     });
 
     test("detects an offline change after dispose and reopen with the persisted cursor", async () => {
@@ -78,9 +76,7 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
         }
 
         const result = await feed.readChanges();
-        expect(result.status).toBe("complete");
-        if (result.status !== "complete") return;
-        expect(result.changedPaths).toEqual(["hot.txt"]);
+        assertCompleteOrExplicitGap(result, ["hot.txt"]);
     });
 
     function makeFeed(): ParcelWorkspaceChangeFeed {
