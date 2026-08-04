@@ -8,7 +8,7 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SessionMutationBarrier } from "../session-mutation-barrier";
 import { registerWorkspaceCheckpointManager } from "./checkpoint-manager";
@@ -154,6 +154,24 @@ function pathChanges(checkpoint: WorkspaceCheckpointV1): string[] {
 }
 
 describe("turn-boundary workspace capture is tool-independent", () => {
+    it("uses the full snapshot store as the default capture source", async () => {
+        const value = await makeFixture("default-source");
+        const capture = vi.spyOn(value.store, "capture");
+        const diff = vi.spyOn(value.store, "diff");
+
+        const checkpoint = await runTurn(value, "default-source", () =>
+            writeFile(join(value.workspaceRoot, "result.txt"), "default")
+        );
+
+        expect(checkpoint.status).toBe("available");
+        expect(capture.mock.calls.map(([options]) => options.profile)).toEqual(["pre-turn", "terminal"]);
+        if (checkpoint.status !== "available") {
+            throw new Error("Expected an available checkpoint");
+        }
+        expect(diff).toHaveBeenCalledWith(checkpoint.before, checkpoint.after);
+        await value.manager.dispose();
+    }, 30_000);
+
     it("captures shell, PTY-shaped direct, CLI child-process, and unknown future writes without metadata", async () => {
         const value = await makeFixture("writers");
         const checkpoint = await runTurn(

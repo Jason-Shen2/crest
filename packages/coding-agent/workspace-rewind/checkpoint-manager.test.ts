@@ -11,8 +11,13 @@ import {
     type WorkspaceCheckpointManagerDependencies,
 } from "./checkpoint-manager";
 import type { ProcessOwnerIdentity } from "./process-owner";
+import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
-import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
+import {
+    WorkspaceControlCustomTypes,
+    type WorkspacePathChangeV1,
+    type WorkspaceSnapshotRefV1,
+} from "./types";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
@@ -125,6 +130,97 @@ function makeFixture() {
 }
 
 describe("WorkspaceCheckpointManager", () => {
+    it("uses an injected snapshot source for ordered capture and diff while retaining store identity", async () => {
+        const fixture = makeFixture();
+        const before = snapshot("source-before");
+        const after = snapshot("source-after");
+        const sourceOrder: string[] = [];
+        const snapshotSource: WorkspaceCheckpointSnapshotSource = {
+            capture: vi
+                .fn()
+                .mockImplementationOnce(async (options) => {
+                    sourceOrder.push(`capture:${options.profile}`);
+                    return {
+                        ref: before,
+                        coverage: { complete: true, eligibleEntryCount: 2, newlyHashedBytes: 3, exclusions: [] },
+                    };
+                })
+                .mockImplementationOnce(async (options) => {
+                    sourceOrder.push(`capture:${options.profile}`);
+                    return {
+                        ref: after,
+                        coverage: { complete: true, eligibleEntryCount: 4, newlyHashedBytes: 5, exclusions: [] },
+                    };
+                }),
+            diff: vi.fn(async (actualBefore, actualAfter): Promise<WorkspacePathChangeV1[]> => {
+                sourceOrder.push("diff");
+                expect(actualBefore).toBe(before);
+                expect(actualAfter).toBe(after);
+                return [
+                    {
+                        path: "changed.txt",
+                        before: { state: "absent" },
+                        after: { state: "file", oid: OidA, executable: false },
+                    },
+                ];
+            }),
+        };
+        await fixture.manager.dispose();
+        const manager = registerWorkspaceCheckpointManager({
+            harness: fixture.harness,
+            session: fixture.session as never,
+            sessionId: "session-1",
+            workspaceRoot: "/workspace",
+            store: fixture.store as never,
+            snapshotSource,
+            mutationBarrier: new SessionMutationBarrier(),
+            hasRunningHostedCommands: () => false,
+            processOwner: Owner,
+            onCheckpointCommitted: async () => undefined,
+            dependencies: { pendingStore: fixture.pending as never },
+        });
+
+        await fixture.emit({
+            type: "session_before_user_turn",
+            boundaryToken: "boundary-source",
+            userMessage: { role: "user", content: [] },
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_committed",
+            boundaryToken: "boundary-source",
+            userEntryId: "user-source",
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_terminal",
+            boundaryToken: "boundary-source",
+            reason: "agent_end",
+        } as AgentHarnessEvent);
+
+        expect(sourceOrder).toEqual(["capture:pre-turn", "capture:terminal", "diff"]);
+        expect(fixture.store.capture).not.toHaveBeenCalled();
+        expect(fixture.store.diff).not.toHaveBeenCalled();
+        expect(fixture.pending.begin).toHaveBeenCalledWith(
+            expect.objectContaining({
+                workspaceIdentity: "workspace-1",
+                workspaceIncarnation: "incarnation-1",
+                before,
+            })
+        );
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: {
+                status: "available",
+                turnId: "user-source",
+                workspaceIdentity: "workspace-1",
+                workspaceIncarnation: "incarnation-1",
+                before,
+                after,
+                changes: [{ path: "changed.txt" }],
+                coverage: { eligibleEntryCount: 4, newlyHashedBytes: 5 },
+            },
+        });
+        await manager.dispose();
+    });
+
     it("persists the exact capture, bind, terminal checkpoint, refresh, and pending removal order", async () => {
         const fixture = makeFixture();
 

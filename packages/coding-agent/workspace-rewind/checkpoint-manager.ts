@@ -15,6 +15,7 @@ import type { SessionMutationBarrier } from "../session-mutation-barrier";
 import { PendingBoundaryStore, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import type { ProcessOwnerIdentity } from "./process-owner";
 import { decodeWorkspaceCheckpointEntry } from "./session-state";
+import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStoreError, type WorkspaceSnapshotStore } from "./snapshot-store";
 import {
     WorkspaceControlCustomTypes,
@@ -55,6 +56,7 @@ export function registerWorkspaceCheckpointManager(input: {
     sessionId: string;
     workspaceRoot: string;
     store: WorkspaceSnapshotStore;
+    snapshotSource?: WorkspaceCheckpointSnapshotSource;
     mutationBarrier: SessionMutationBarrier;
     hasRunningHostedCommands: () => boolean;
     processOwner: ProcessOwnerIdentity;
@@ -62,6 +64,7 @@ export function registerWorkspaceCheckpointManager(input: {
     dependencies?: WorkspaceCheckpointManagerDependencies;
 }): WorkspaceCheckpointManager {
     const pendingStore = input.dependencies?.pendingStore ?? new PendingBoundaryStore(input.store);
+    const snapshotSource = input.snapshotSource ?? input.store;
     const now = input.dependencies?.now ?? (() => new Date().toISOString());
     const boundaries = new Map<string, ActiveBoundary>();
     const inFlight = new Set<Promise<unknown>>();
@@ -131,7 +134,7 @@ export function registerWorkspaceCheckpointManager(input: {
         const boundary: ActiveBoundary = { token: boundaryToken, pending: false };
         boundaries.set(boundaryToken, boundary);
         try {
-            const captured = await input.store.capture({ profile: "pre-turn" });
+            const captured = await snapshotSource.capture({ profile: "pre-turn" });
             boundary.before = captured.ref;
             await pendingStore.begin({
                 boundaryToken,
@@ -204,7 +207,7 @@ export function registerWorkspaceCheckpointManager(input: {
             }
             let captured;
             try {
-                captured = await input.store.capture({ profile: "terminal" });
+                captured = await snapshotSource.capture({ profile: "terminal" });
             } catch (error) {
                 await appendUnavailable(boundary.userEntryId, classifyCheckpointFailure(error));
                 await retirePendingAfterUnavailable(boundary);
@@ -213,7 +216,7 @@ export function registerWorkspaceCheckpointManager(input: {
             await pendingStore.recordAfter(boundaryToken, captured.ref);
             let changes;
             try {
-                changes = await input.store.diff(boundary.before, captured.ref);
+                changes = await snapshotSource.diff(boundary.before, captured.ref);
             } catch (error) {
                 await appendUnavailable(boundary.userEntryId, classifyCheckpointFailure(error));
                 await retirePendingAfterUnavailable(boundary);
