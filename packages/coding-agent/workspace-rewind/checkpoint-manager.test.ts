@@ -13,11 +13,7 @@ import {
 import type { ProcessOwnerIdentity } from "./process-owner";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
-import {
-    WorkspaceControlCustomTypes,
-    type WorkspacePathChangeV1,
-    type WorkspaceSnapshotRefV1,
-} from "./types";
+import { WorkspaceControlCustomTypes, type WorkspacePathChangeV1, type WorkspaceSnapshotRefV1 } from "./types";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
