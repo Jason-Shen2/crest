@@ -202,6 +202,14 @@ V11 tree
 旧 checkpoint 永远引用 immutable version，不会因 tracker 前进而改变。现有 restore
 planner、preview、Redo 和 snapshot retention 可以继续消费相同的 snapshot ref 契约。
 
+当前 `scopeManifest` 内部使用单个 v1 JSON blob 保存全部 path state。即使 workspace
+tree 改为 copy-on-write，如果每个边界仍然重写这份 flat manifest，正常路径仍然是
+O(workspace entries)，因此该格式也必须一起增量化。目标实现增加内部 manifest v2：
+`WorkspaceSnapshotRefV1.scopeManifest` 仍然是一个 immutable object id，但它指向的
+descriptor 保存 scope policy、coverage 和一棵 content-addressed path-state tree。只有
+变化 path 及其祖先会生成新 state-tree object；v1 reader 继续用于读取已有快照，新的
+tracker 只写 v2。这个变化不修改 checkpoint、IPC 或 restore planner 的公开类型。
+
 ### Watcher 是 hint，不是 authority
 
 tracker 必须记录 watcher/journal generation，并把以下状态视为 incremental gap：
