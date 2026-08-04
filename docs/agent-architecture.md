@@ -340,6 +340,15 @@ changed-path manifest. The 5 GiB per-workspace soft quota cleans only unowned
 objects; referenced trashed-session data requires an owner-specific confirmed
 purge.
 
+This per-boundary full capture is the current correctness baseline, but it is
+not the intended monorepo hot path. The approved follow-up keeps the same
+per-turn checkpoint contract while moving physical snapshot generation to one
+canonical-workspace incremental tracker shared by Agent Sessions. Watcher
+events remain hints rather than authority; startup, event gaps, overflow, or
+failed consistency checks fall back to full reconciliation or an explicit
+unavailable checkpoint. The root-cause analysis and target constraints are in
+[`2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`](superpowers/specs/2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md).
+
 Revert restores only paths in the selected active-branch suffix. Normal mode
 does no mutation on drift. `Force revert` may overwrite only previewed red
 drift rows and shows the exact warning

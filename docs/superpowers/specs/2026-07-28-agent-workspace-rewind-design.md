@@ -10,6 +10,12 @@
 
 **Crest-owned hardening:** multi-session ownership checks, drift detection, durable refs, crash journal, and workspace locking
 
+**Performance addendum:** The implemented full-capture path is the correctness
+baseline, not the long-term monorepo hot path. The approved incremental
+snapshot direction, root-cause analysis, preserved invariants, and rollout
+constraints are recorded in
+[`2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`](./2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md).
+
 ## Purpose
 
 Crest can already move an agent session's append-only conversation tree to an
