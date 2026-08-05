@@ -176,6 +176,73 @@ describe("anchored reader", () => {
         expect(active).toBe(0);
     });
 
+    test("drains every blocked sibling before an external abort returns", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-anchored-external-abort-"));
+        cleanupRoots.push(root);
+        const firstParent = join(root, "first");
+        const secondParent = join(root, "second");
+        await mkdir(firstParent);
+        await mkdir(secondParent);
+        await writeFile(join(firstParent, "file.txt"), "first");
+        await writeFile(join(secondParent, "file.txt"), "second");
+        const [firstParentStat, secondParentStat, firstEntry, secondEntry] = await Promise.all([
+            lstat(firstParent, { bigint: true }),
+            lstat(secondParent, { bigint: true }),
+            lstat(join(firstParent, "file.txt"), { bigint: true }),
+            lstat(join(secondParent, "file.txt"), { bigint: true }),
+        ]);
+        let active = 0;
+        vi.doMock("node:child_process", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:child_process")>();
+            return {
+                ...actual,
+                spawn: (...args: Parameters<typeof actual.spawn>) => {
+                    args[1] = ["-e", "process.stdin.resume(); setTimeout(() => {}, 5000)"];
+                    const child = actual.spawn(...args);
+                    active += 1;
+                    child.once("exit", () => {
+                        active -= 1;
+                    });
+                    return child;
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./anchored-reader");
+        const controller = new AbortController();
+        const pending = isolated.runAnchoredReaderBatch({
+            rootPath: root,
+            entries: [
+                {
+                    path: "first/file.txt",
+                    name: "file.txt",
+                    kind: "file",
+                    stagingPath: join(root, "first-stage"),
+                    parentIdentity: identity(firstParentStat),
+                    identity: entryIdentity(firstEntry),
+                },
+                {
+                    path: "second/file.txt",
+                    name: "file.txt",
+                    kind: "file",
+                    stagingPath: join(root, "second-stage"),
+                    parentIdentity: identity(secondParentStat),
+                    identity: entryIdentity(secondEntry),
+                },
+            ],
+            maxSingleFileBytes: 1024,
+            maxTotalBytes: 1024,
+            timeoutMs: 10_000,
+            signal: controller.signal,
+        });
+        await vi.waitFor(() => expect(active).toBe(2));
+
+        controller.abort();
+
+        await expect(pending).rejects.toMatchObject({ code: "aborted" });
+        expect(active).toBe(0);
+    });
+
     test("rehashes a same-size rewrite when an otherwise identical fingerprint is inside the racy window", async () => {
         const fixture = await makeReaderFixture("racy.txt", "other");
         const result = await runAnchoredReader({

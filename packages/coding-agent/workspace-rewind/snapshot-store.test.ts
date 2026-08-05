@@ -1103,6 +1103,119 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
     });
 
+    test("rejects captured batch semantic tampering before quota, object, or ref work", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "a.txt"), "before");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const scope = await discoverWorkspaceScope({
+            identity: fixture.identity,
+            git: fixture.git,
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+        });
+        const pathCapture = new IncrementalPathCapture({
+            identity: fixture.identity,
+            git: fixture.git,
+            storeRoot: fixture.storeRoot,
+            scope: scope.manifest,
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+            maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+            timeoutMs: 10_000,
+            base: { readNodeKind: (path) => fixture.store.readNodeKind(base, path) },
+        });
+        await writeFile(join(fixture.workspace, "a.txt"), "after");
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        type CapturedResult = Extract<Awaited<ReturnType<typeof pathCapture.capture>>, { status: "captured" }>;
+        const attempts: Array<
+            (
+                result: CapturedResult,
+                oid: string
+            ) => Pick<typeof input, "newlyHashedBytes"> & {
+                mutations: CapturedResult["mutations"];
+            }
+        > = [
+            (result) => ({
+                mutations: [{ ...result.mutations[0]!, path: "b.txt" }],
+                newlyHashedBytes: result.newlyHashedBytes,
+            }),
+            (result) => ({
+                mutations: [
+                    {
+                        ...result.mutations[0]!,
+                        state: { state: "file" as const, oid: "0".repeat(40), executable: false },
+                    },
+                ],
+                newlyHashedBytes: result.newlyHashedBytes,
+            }),
+            (result, oid) => ({
+                mutations: [
+                    {
+                        ...result.mutations[0]!,
+                        state: { state: "file" as const, oid, executable: true },
+                    },
+                ],
+                newlyHashedBytes: result.newlyHashedBytes,
+            }),
+            (result) => ({
+                mutations: [{ path: result.mutations[0]!.path, state: { state: "absent" as const } }],
+                newlyHashedBytes: result.newlyHashedBytes,
+            }),
+            (result) => ({
+                mutations: result.mutations,
+                newlyHashedBytes: 0,
+            }),
+            (result) => ({
+                mutations: result.mutations,
+                newlyHashedBytes: result.newlyHashedBytes + 1,
+            }),
+        ];
+
+        for (const tamper of attempts) {
+            const result = await pathCapture.capture(["a.txt"]);
+            if (result.status !== "captured") throw new Error("expected captured mutation");
+            const state = result.mutations[0]!.state;
+            if (state.state !== "file") throw new Error("expected captured file mutation");
+            const semanticInput = tamper(result, state.oid);
+            fixture.git.calls.length = 0;
+
+            await expect(
+                pathCapture.consumeCaptured(result, (batch) =>
+                    fixture.store.commitCapturedIncrementalSnapshot({
+                        ...input,
+                        scope: scope.manifest,
+                        ...semanticInput,
+                        batch,
+                    })
+                )
+            ).rejects.toThrow(/captured batch semantics/i);
+            expect(fixture.git.calls).toEqual([]);
+        }
+
+        await writeFile(join(fixture.workspace, "b.txt"), "other");
+        const resultA = await pathCapture.capture(["a.txt"]);
+        const resultB = await pathCapture.capture(["b.txt"]);
+        if (resultA.status !== "captured" || resultB.status !== "captured") {
+            throw new Error("expected two captured results");
+        }
+        fixture.git.calls.length = 0;
+        await expect(
+            pathCapture.consumeCaptured(resultA, (batch) =>
+                fixture.store.commitCapturedIncrementalSnapshot({
+                    ...input,
+                    scope: scope.manifest,
+                    mutations: resultB.mutations,
+                    newlyHashedBytes: resultB.newlyHashedBytes,
+                    batch,
+                })
+            )
+        ).rejects.toThrow(/captured batch semantics/i);
+        expect(fixture.git.calls).toEqual([]);
+        await pathCapture.discardCaptured(resultB);
+    });
+
     test("commits deterministic incremental snapshot ids independent of mutation order", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "base.txt"), "base");

@@ -183,6 +183,13 @@ class WorkspaceBudgetExceeded extends Error {
     }
 }
 
+export class WorkspaceScopeObservedPathRace extends Error {
+    constructor(message: string, options?: { cause?: unknown }) {
+        super(message, options);
+        this.name = "WorkspaceScopeObservedPathRace";
+    }
+}
+
 export async function discoverWorkspaceScope(input: WorkspaceScopeInput): Promise<WorkspaceScope> {
     validateLimits(input.maxEntries, input.maxUntrackedBytes);
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -272,6 +279,9 @@ export async function classifyIncrementalWorkspacePaths(input: {
         if (error instanceof WorkspaceBudgetExceeded) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isWorkspaceGitRunnerFailure(error, "aborted")) throw error;
         if (error instanceof WorkspaceGitRunnerError) return { status: "reconcile", reason: "unsafe-evidence" };
+        if (error instanceof WorkspaceScopeObservedPathRace) {
+            return { status: "reconcile", reason: "unstable-path" };
+        }
         if (isUnsafeIncrementalEvidence(error)) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isScopeInvalidation(error)) return { status: "reconcile", reason: "scope-invalidated" };
         return { status: "reconcile", reason: "unsafe-evidence" };
@@ -1282,9 +1292,22 @@ function manifestLocatorBytes(value: WorkspaceScopeManifestPath): Buffer {
 }
 
 async function readDirectoryIdentity(path: Buffer): Promise<DirectoryIdentity> {
-    const value = await lstat(path, { bigint: true });
+    let value: BigIntStats;
+    try {
+        value = await lstat(path, { bigint: true });
+    } catch (error) {
+        if (isMissing(error)) {
+            throw new WorkspaceScopeObservedPathRace(
+                `Workspace directory changed during scope discovery: ${displayPath(path)}`,
+                { cause: error }
+            );
+        }
+        throw error;
+    }
     if (!value.isDirectory()) {
-        throw new Error(`Workspace directory changed during scope discovery: ${displayPath(path)}`);
+        throw new WorkspaceScopeObservedPathRace(
+            `Workspace directory changed during scope discovery: ${displayPath(path)}`
+        );
     }
     return {
         dev: value.dev,
@@ -1303,7 +1326,7 @@ function assertSameDirectory(expected: DirectoryIdentity, actual: DirectoryIdent
         expected.mtimeNs !== actual.mtimeNs ||
         expected.ctimeNs !== actual.ctimeNs
     ) {
-        throw new Error("Workspace directory changed during scope discovery");
+        throw new WorkspaceScopeObservedPathRace("Workspace directory changed during scope discovery");
     }
 }
 

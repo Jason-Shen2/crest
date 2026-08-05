@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
-import { IncrementalPathCapture } from "./incremental-path-capture";
+import { IncrementalPathCapture, materializeIncrementalCapturedBatch } from "./incremental-path-capture";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -37,6 +37,7 @@ describe("IncrementalPathCapture", () => {
     afterEach(async () => {
         await Promise.all(capturesForCleanup.splice(0).map((capture) => capture.dispose()));
         vi.doUnmock("node:child_process");
+        vi.doUnmock("node:fs/promises");
         vi.doUnmock("./anchored-reader");
         vi.resetModules();
         if (previousDataHome == null) delete process.env.WAVETERM_DATA_HOME;
@@ -326,6 +327,56 @@ describe("IncrementalPathCapture", () => {
         expect(replaced).toBe(true);
     });
 
+    test("propagates an anchored-reader abort and removes private staging", async () => {
+        const firstParent = join(workspace, "first");
+        const secondParent = join(workspace, "second");
+        await mkdir(firstParent);
+        await mkdir(secondParent);
+        await writeFile(join(firstParent, "file.txt"), "before");
+        await writeFile(join(secondParent, "file.txt"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(firstParent, "file.txt"), "after");
+        await writeFile(join(secondParent, "file.txt"), "after");
+        let stagingRoot: string | undefined;
+        vi.doMock("./anchored-reader", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./anchored-reader")>();
+            return {
+                ...actual,
+                runAnchoredReaderBatch: async (
+                    input: Parameters<typeof actual.runAnchoredReaderBatch>[0]
+                ): Promise<never> =>
+                    await new Promise((_, reject) => {
+                        input.signal.addEventListener("abort", () => {
+                            reject(new actual.AnchoredReaderError("aborted", "Anchored reader aborted"));
+                        });
+                    }),
+            };
+        });
+        vi.doMock("node:fs/promises", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:fs/promises")>();
+            return {
+                ...actual,
+                mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+                    const result = await actual.mkdtemp(...args);
+                    if (String(args[0]).includes("crest-incremental-path-capture-")) stagingRoot = result;
+                    return result;
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        const controller = new AbortController();
+        const pending = capture.capture(["first/file.txt", "second/file.txt"], controller.signal);
+        await vi.waitFor(() => expect(stagingRoot).toBeDefined());
+
+        controller.abort();
+
+        await expect(pending).rejects.toMatchObject({ code: "aborted" });
+        await expect(stat(stagingRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
     test("maps Git runner failures to unsafe evidence instead of a path race", async () => {
         await writeFile(join(workspace, "README.md"), "value");
         const fixture = await makeCaptureFixture(root, workspace, git);
@@ -394,21 +445,38 @@ describe("IncrementalPathCapture", () => {
         });
     });
 
-    test("returns an empty capture without hashing or Git path classification", async () => {
+    test("consumes an exact empty pending batch without workers, Git calls, staging, or blobs", async () => {
         const fixture = await makeCaptureFixture(root, workspace, git);
         const calls: string[][] = [];
+        const writeBlob = vi.fn(async () => "0".repeat(40));
         const originalRun = git.run.bind(git);
         git.run = async (args, options) => {
             calls.push([...args]);
             return originalRun(args, options);
         };
 
-        await expect(fixture.capture.capture([])).resolves.toEqual({
+        const result = await fixture.capture.capture([]);
+        expect(result).toEqual({
             status: "captured",
             mutations: [],
             newlyHashedBytes: 0,
         });
+        await expect(
+            fixture.capture.consumeCaptured(result, (batch) =>
+                materializeIncrementalCapturedBatch(batch, { storeRoot: fixture.store.storeRoot, writeBlob })
+            )
+        ).resolves.toBeUndefined();
+        await expect(fixture.capture.discardCaptured(result)).rejects.toThrow(/consumed|discarded|pending/i);
         expect(calls).toEqual([]);
+        expect(writeBlob).not.toHaveBeenCalled();
+    });
+
+    test("discards an exact empty pending batch once", async () => {
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        const result = await fixture.capture.capture([]);
+
+        await expect(fixture.capture.discardCaptured(result)).resolves.toBeUndefined();
+        await expect(fixture.capture.discardCaptured(result)).rejects.toThrow(/consumed|discarded|pending/i);
     });
 
     test("classifies tracked and ignored dirty paths with batched Git commands", async () => {

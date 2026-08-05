@@ -327,6 +327,109 @@ describe("discoverWorkspaceScope", () => {
         }
     });
 
+    test("classifies an observed parent replacement during incremental enumeration as unstable", async () => {
+        const workspace = join(root, "workspace");
+        const parent = join(workspace, "parent");
+        const backup = join(workspace, "parent-before");
+        const target = join(parent, "file.txt");
+        await mkdir(parent, { recursive: true });
+        await writeFile(target, "before");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        let replaced = false;
+        vi.resetModules();
+        vi.doMock("node:fs/promises", async () => {
+            const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+            return {
+                ...actual,
+                lstat: async (...args: Parameters<typeof actual.lstat>) => {
+                    const path = Buffer.isBuffer(args[0]) ? args[0].toString() : String(args[0]);
+                    if (!replaced && path.endsWith("/parent/file.txt")) {
+                        replaced = true;
+                        await actual.rename(parent, backup);
+                        await actual.mkdir(parent);
+                        await actual.writeFile(target, "after");
+                    }
+                    return actual.lstat(...args);
+                },
+            };
+        });
+        try {
+            const [isolatedScope, isolatedGit] = await Promise.all([
+                import("./workspace-scope"),
+                import("./git-runner"),
+            ]);
+
+            await expect(
+                isolatedScope.classifyIncrementalWorkspacePaths({
+                    identity,
+                    git: new isolatedGit.WorkspaceGitRunner(),
+                    scope: scope.manifest,
+                    paths: ["parent/file.txt"],
+                    maxEntries: 10_000,
+                    maxUntrackedBytes: TwoMiB,
+                })
+            ).resolves.toEqual({ status: "reconcile", reason: "unstable-path" });
+            expect(replaced).toBe(true);
+        } finally {
+            vi.doUnmock("node:fs/promises");
+            vi.resetModules();
+        }
+    });
+
+    test("classifies an incremental enumeration permission failure as unsafe", async () => {
+        const workspace = join(root, "workspace");
+        const target = join(workspace, "private.txt");
+        await mkdir(workspace);
+        await writeFile(target, "private");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        vi.resetModules();
+        vi.doMock("node:fs/promises", async () => {
+            const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+            return {
+                ...actual,
+                lstat: async (...args: Parameters<typeof actual.lstat>) => {
+                    const path = Buffer.isBuffer(args[0]) ? args[0].toString() : String(args[0]);
+                    if (path.endsWith("/private.txt")) {
+                        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+                    }
+                    return actual.lstat(...args);
+                },
+            };
+        });
+        try {
+            const [isolatedScope, isolatedGit] = await Promise.all([
+                import("./workspace-scope"),
+                import("./git-runner"),
+            ]);
+
+            await expect(
+                isolatedScope.classifyIncrementalWorkspacePaths({
+                    identity,
+                    git: new isolatedGit.WorkspaceGitRunner(),
+                    scope: scope.manifest,
+                    paths: ["private.txt"],
+                    maxEntries: 10_000,
+                    maxUntrackedBytes: TwoMiB,
+                })
+            ).resolves.toEqual({ status: "reconcile", reason: "unsafe-evidence" });
+        } finally {
+            vi.doUnmock("node:fs/promises");
+            vi.resetModules();
+        }
+    });
+
     test.runIf(process.platform === "linux")("excludes filenames that are not valid UTF-8", async () => {
         const workspace = join(root, "workspace");
         await mkdir(workspace);

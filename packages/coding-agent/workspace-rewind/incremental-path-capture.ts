@@ -51,9 +51,12 @@ export interface IncrementalCapturedBatch {
 
 interface IncrementalCapturedBatchRecord {
     storeRoot: string;
+    mutations: ReadonlyArray<IncrementalPathMutation>;
+    newlyHashedBytes: number;
     stagingRoot?: string;
     stagingRootIdentity?: AnchoredReaderEntryIdentity;
     files: Array<{
+        path: string;
         stagingPath: string;
         oid: string;
         identity: AnchoredReaderEntryIdentity;
@@ -102,7 +105,13 @@ export class IncrementalPathCapture {
 
     async capture(paths: readonly string[], signal?: AbortSignal): Promise<IncrementalPathCaptureResult> {
         if (paths.length === 0) {
-            return { status: "captured", mutations: [], newlyHashedBytes: 0 };
+            const result: IncrementalPathCaptureResult = {
+                status: "captured",
+                mutations: [],
+                newlyHashedBytes: 0,
+            };
+            this.registerPendingCapture(result, { storeRoot: this.storeRoot, files: [] });
+            return result;
         }
         const ownedPaths = [...paths];
         const scope = await classifyIncrementalWorkspacePaths({
@@ -186,6 +195,7 @@ export class IncrementalPathCapture {
                 stagingRootIdentity: rootIdentity,
                 files: await Promise.all(
                     results.map(async (item, index) => ({
+                        path: item.path,
                         stagingPath: item.stagingPath!,
                         oid: oids[index]!,
                         identity: serializeEntryIdentity(await lstat(item.stagingPath!, { bigint: true })),
@@ -196,6 +206,7 @@ export class IncrementalPathCapture {
             return result;
         } catch (error) {
             if (error instanceof WorkspaceGitRunnerError && error.code === "aborted") throw error;
+            if (error instanceof AnchoredReaderError && error.code === "aborted") throw error;
             if (error instanceof AnchoredReaderError && error.code === "unstable_file") {
                 return { status: "reconcile", reason: "unstable-path" };
             }
@@ -232,14 +243,23 @@ export class IncrementalPathCapture {
         }
     }
 
-    registerPendingCapture(result: IncrementalPathCaptureResult, record: IncrementalCapturedBatchRecord): void {
+    registerPendingCapture(
+        result: IncrementalPathCaptureResult,
+        record: Omit<IncrementalCapturedBatchRecord, "mutations" | "newlyHashedBytes">
+    ): void {
+        if (result.status !== "captured") throw new Error("Cannot register a non-captured incremental batch");
+        const mutations = freezeMutations(result.mutations);
         const batch = Object.freeze(
             Object.defineProperty({}, "kind", {
                 value: "incremental-captured-batch",
                 enumerable: false,
             }) as IncrementalCapturedBatch
         );
-        CapturedBatchRecords.set(batch, record);
+        CapturedBatchRecords.set(batch, {
+            ...record,
+            mutations,
+            newlyHashedBytes: result.newlyHashedBytes,
+        });
         this.pendingCaptures.set(result, batch);
         this.pendingBatches.add(batch);
     }
@@ -335,6 +355,41 @@ export async function materializeIncrementalCapturedBatch(
     if (!sameSerializedIdentity(await lstat(record.stagingRoot, { bigint: true }), record.stagingRootIdentity!)) {
         throw new Error("Incremental capture staging root changed during commit");
     }
+}
+
+export function readIncrementalCapturedBatchSemantics(
+    batch: IncrementalCapturedBatch,
+    storeRoot: string
+): { mutations: IncrementalPathMutation[]; newlyHashedBytes: number } {
+    const record = CapturedBatchRecords.get(batch);
+    if (!record || record.storeRoot !== storeRoot) {
+        throw new Error("Invalid incremental captured batch");
+    }
+    const staged = record.files
+        .map((file) => ({ path: file.path, oid: file.oid }))
+        .sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+    const semantic = record.mutations
+        .filter((mutation) => mutation.state.state === "file" || mutation.state.state === "symlink")
+        .map((mutation) => ({ path: mutation.path, oid: "oid" in mutation.state ? mutation.state.oid : "" }));
+    if (JSON.stringify(staged) !== JSON.stringify(semantic)) {
+        throw new Error("Incremental captured batch staging does not match its semantics");
+    }
+    return {
+        mutations: normalizeIncrementalMutations(record.mutations.map(cloneMutation)),
+        newlyHashedBytes: record.newlyHashedBytes,
+    };
+}
+
+function freezeMutations(mutations: IncrementalPathMutation[]): ReadonlyArray<IncrementalPathMutation> {
+    return Object.freeze(
+        normalizeIncrementalMutations(mutations).map((mutation) =>
+            Object.freeze({ path: mutation.path, state: Object.freeze({ ...mutation.state }) })
+        )
+    );
+}
+
+function cloneMutation(mutation: IncrementalPathMutation): IncrementalPathMutation {
+    return { path: mutation.path, state: { ...mutation.state } };
 }
 
 function sameSerializedIdentity(value: BigIntStats, expected: AnchoredReaderEntryIdentity): boolean {

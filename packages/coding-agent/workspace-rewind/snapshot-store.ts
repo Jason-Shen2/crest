@@ -27,7 +27,11 @@ import {
 } from "./anchored-reader";
 import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
-import { materializeIncrementalCapturedBatch, type IncrementalCapturedBatch } from "./incremental-path-capture";
+import {
+    materializeIncrementalCapturedBatch,
+    readIncrementalCapturedBatchSemantics,
+    type IncrementalCapturedBatch,
+} from "./incremental-path-capture";
 import {
     applyIncrementalTrees,
     normalizeIncrementalMutations,
@@ -281,14 +285,23 @@ export class WorkspaceSnapshotStore {
     }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
         const batch = input.batch;
         const ownedInput = cloneIncrementalCommitInput(input);
-        return this.withWorkspaceLock(() =>
-            this.#commitIncrementalSnapshot(ownedInput, (runtime) =>
-                materializeIncrementalCapturedBatch(batch, {
-                    storeRoot: this.storeRoot,
-                    writeBlob: (bytes) => this.writeBlob(bytes, runtime),
-                })
-            )
-        );
+        return this.withWorkspaceLock(() => {
+            const semantics = readIncrementalCapturedBatchSemantics(batch, this.storeRoot);
+            if (
+                ownedInput.newlyHashedBytes !== semantics.newlyHashedBytes ||
+                JSON.stringify(ownedInput.mutations) !== JSON.stringify(semantics.mutations)
+            ) {
+                throw new Error("Incremental captured batch semantics do not match commit input");
+            }
+            return this.#commitIncrementalSnapshot(
+                { ...ownedInput, mutations: semantics.mutations, newlyHashedBytes: semantics.newlyHashedBytes },
+                (runtime) =>
+                    materializeIncrementalCapturedBatch(batch, {
+                        storeRoot: this.storeRoot,
+                        writeBlob: (bytes) => this.writeBlob(bytes, runtime),
+                    })
+            );
+        });
     }
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
