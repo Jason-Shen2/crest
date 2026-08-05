@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { renameSync } from "node:fs";
 import {
     chmod,
     copyFile,
@@ -34,6 +35,8 @@ class FakeWatcher implements WorkspaceChangeWatcher {
     onQuery?: () => void;
     onSnapshot?: () => void;
     snapshot = 0;
+    snapshotGate?: Promise<void>;
+    snapshotStarted?: () => void;
     subscribeError?: Error;
     subscribeGate?: Promise<void>;
     subscribeStarted?: () => void;
@@ -62,6 +65,8 @@ class FakeWatcher implements WorkspaceChangeWatcher {
     async writeSnapshot(_directory: string, snapshotPath: string): Promise<string> {
         const { writeFile } = await import("node:fs/promises");
         this.onSnapshot?.();
+        this.snapshotStarted?.();
+        await this.snapshotGate;
         await writeFile(snapshotPath, String(++this.snapshot), { mode: 0o600 });
         return snapshotPath;
     }
@@ -115,6 +120,33 @@ describe("ParcelWorkspaceChangeFeed", () => {
     test("fails closed when post-reconcile initialization was not prepared", async () => {
         await expect(feed.initializeAfterReconcile()).rejects.toThrow(/prepare/i);
         await expect(feed.readChanges()).resolves.toMatchObject({ status: "gap" });
+    });
+
+    test("preserves an existing gap reason before initialization", async () => {
+        feed.markGap();
+
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "query-failed" });
+    });
+
+    test("removes a reconcile cursor published after disposal begins", async () => {
+        let releaseSnapshot!: () => void;
+        let signalSnapshotStarted!: () => void;
+        watcher.snapshotGate = new Promise<void>((resolve) => {
+            releaseSnapshot = resolve;
+        });
+        const snapshotStarted = new Promise<void>((resolve) => {
+            signalSnapshotStarted = resolve;
+        });
+        watcher.snapshotStarted = signalSnapshotStarted;
+        const preparing = feed.prepareForReconcile();
+        await snapshotStarted;
+
+        const disposing = feed.dispose();
+        releaseSnapshot();
+
+        await expect(preparing).rejects.toThrow(/continuity|disposed/i);
+        await disposing;
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name === "reconcile.cursor")).toEqual([]);
     });
 
     test("fails closed when reconcile preparation is repeated", async () => {
@@ -300,7 +332,7 @@ describe("ParcelWorkspaceChangeFeed", () => {
         watcher.subscribeError = new Error("subscribe failed");
 
         await expect(feed.prepareForReconcile()).rejects.toThrow("subscribe failed");
-        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "query-failed" });
     });
 
     test("fails closed when a callback error races an historical query", async () => {
@@ -410,7 +442,9 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await writeFile(candidate, "forged", { mode: 0o600 });
 
         await expect(feed.commitCursor(result.candidateCursor)).rejects.toThrow(/candidate cursor/i);
-    });
+        await expect(reconcile(feed)).resolves.toBeUndefined();
+        await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+    }, 15_000);
 
     test("rejects a candidate whose content changed in place before commit", async () => {
         await reconcile(feed);
@@ -421,7 +455,9 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await writeFile(candidate, Buffer.alloc(size, 0x78));
 
         await expect(feed.commitCursor(result.candidateCursor)).rejects.toThrow(/candidate cursor/i);
-    });
+        await expect(reconcile(feed)).resolves.toBeUndefined();
+        await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+    }, 15_000);
 
     test("rejects a hardlinked candidate before commit", async () => {
         await reconcile(feed);
@@ -461,6 +497,48 @@ describe("ParcelWorkspaceChangeFeed", () => {
 
         await expect(feed.commitCursor(result.candidateCursor)).rejects.toThrow(/candidate cursor|anchor|changed/i);
         expect(await readdir(trackerRoot)).toContain(`candidate-${result.candidateCursor}.cursor`);
+    });
+
+    test("rejects a tracker exchange between committed read and candidate publication", async () => {
+        await reconcile(feed);
+        const trackerRoot = join(storeRoot, "tracker");
+        const held = join(storeRoot, "read-held");
+        const replacement = join(storeRoot, "read-replacement");
+        await mkdir(replacement, { mode: 0o700 });
+        await copyFile(join(trackerRoot, "committed.cursor"), join(replacement, "committed.cursor"));
+        watcher.onSnapshot = () => {
+            watcher.onSnapshot = undefined;
+            renameSync(trackerRoot, held);
+            renameSync(replacement, trackerRoot);
+        };
+
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "query-failed" });
+        expect((await readdir(trackerRoot)).filter((name) => name.startsWith("candidate-"))).toEqual([]);
+    });
+
+    test("does not establish tracker storage through an intermediate symlink", async () => {
+        await feed.dispose();
+        const outsideStore = join(root, "outside-store");
+        const linkedStore = join(root, "linked-store");
+        await mkdir(outsideStore, { mode: 0o700 });
+        await symlink(outsideStore, linkedStore, "dir");
+        feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot: linkedStore, watcher });
+
+        await expect(feed.prepareForReconcile()).rejects.toThrow(/anchor|symlink|unsafe|not a directory/i);
+        await expect(readdir(outsideStore)).resolves.toEqual([]);
+    });
+
+    test("removes only reserved abandoned journal temps during prepare", async () => {
+        await reconcile(feed);
+        const trackerRoot = join(storeRoot, "tracker");
+        const reserved = ".0123456789abcdef0123456789abcdef.tmp";
+        await writeFile(join(trackerRoot, reserved), "abandoned", { mode: 0o600 });
+        await writeFile(join(trackerRoot, "keep.tmp"), "unrelated", { mode: 0o600 });
+
+        await feed.prepareForReconcile();
+
+        expect(await readdir(trackerRoot)).not.toContain(reserved);
+        expect(await readdir(trackerRoot)).toContain("keep.tmp");
     });
 
     test("anchors commit against a tracker exchange after candidate validation", async () => {

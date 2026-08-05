@@ -5,11 +5,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
     type AnchoredJournalDirectoryIdentity,
     type AnchoredJournalEntry,
+    ensureAnchoredJournalSubdirectory,
     readAnchoredJournalDirectory,
     readAnchoredJournalEntry,
     removeAnchoredJournalEntry,
@@ -17,7 +18,7 @@ import {
 } from "./journal-directory";
 
 const MaximumCursorBytes = 16 * 1024 * 1024;
-const MaximumTrackerEntries = 128;
+const MaximumTrackerCleanupEntries = 1024;
 
 export interface CursorSnapshotWriter {
     writeSnapshot(directory: string, snapshot: string): Promise<string>;
@@ -35,10 +36,20 @@ export interface AnchoredWorkspaceCursor {
     rootIdentity: AnchoredJournalDirectoryIdentity;
 }
 
-export async function ensurePrivateCursorRoot(root: string): Promise<void> {
+export async function ensurePrivateCursorRoot(root: string): Promise<AnchoredJournalDirectoryIdentity> {
     assertPrivateStoragePlatform();
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    const handle = await open(root, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const parent = dirname(root);
+    try {
+        await mkdir(parent, { mode: 0o700 });
+    } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    }
+    await securePrivateDirectory(parent);
+    return ensureAnchoredJournalSubdirectory({ root: parent, name: basename(root) });
+}
+
+async function securePrivateDirectory(path: string): Promise<void> {
+    const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
     try {
         const before = await handle.stat({ bigint: true });
         if (!before.isDirectory()) throw new Error("Unsafe workspace change cursor directory");
@@ -65,15 +76,17 @@ export async function readAnchoredCursor(root: string, name: string): Promise<An
     return cursorFromEntry(result.identity, result.entry);
 }
 
-export async function anchoredCursorRootExists(root: string): Promise<boolean> {
+export async function readAnchoredCursorRootIdentity(
+    root: string
+): Promise<AnchoredJournalDirectoryIdentity | undefined> {
     assertPrivateStoragePlatform();
     return (
-        (await readAnchoredJournalEntry({
+        await readAnchoredJournalEntry({
             root,
             name: `.probe-${randomBytes(8).toString("hex")}`,
             maximumEntryBytes: MaximumCursorBytes,
-        })) != null
-    );
+        })
+    )?.identity;
 }
 
 export async function writeWatcherCursor(input: {
@@ -81,6 +94,7 @@ export async function writeWatcherCursor(input: {
     name: string;
     workspaceRoot: string;
     writer: CursorSnapshotWriter;
+    expectedRootIdentity?: AnchoredJournalDirectoryIdentity;
     hooks?: WorkspaceChangeFeedStorageHooks;
 }): Promise<AnchoredWorkspaceCursor> {
     assertPrivateStoragePlatform();
@@ -94,6 +108,9 @@ export async function writeWatcherCursor(input: {
         if (!generated) throw new Error("Watcher did not write a cursor snapshot");
         const existing = await readAnchoredCursor(input.root, input.name);
         const rootIdentity = existing?.rootIdentity ?? (await anchorEmptyRoot(input.root));
+        if (input.expectedRootIdentity && !sameDirectoryIdentity(rootIdentity, input.expectedRootIdentity)) {
+            throw new Error("Workspace cursor directory changed before publication");
+        }
         await input.hooks?.beforeAnchoredMutation?.("write");
         await writeAnchoredJournalEntry({
             root: input.root,
@@ -103,7 +120,12 @@ export async function writeWatcherCursor(input: {
             expectedDestination: existing ? toEntry(existing) : undefined,
         });
         const published = await readAnchoredCursor(input.root, input.name);
-        if (!published) throw new Error("Watcher cursor was not published");
+        if (
+            !published ||
+            (input.expectedRootIdentity && !sameDirectoryIdentity(published.rootIdentity, input.expectedRootIdentity))
+        ) {
+            throw new Error("Watcher cursor was not published to the anchored directory");
+        }
         return published;
     } finally {
         await cleanupStaging(staging, stagingName);
@@ -164,17 +186,23 @@ export async function removeAnchoredCursor(input: {
 
 export async function removeAbandonedCandidateCursors(
     root: string,
+    expectedRootIdentity?: AnchoredJournalDirectoryIdentity,
     hooks?: WorkspaceChangeFeedStorageHooks
 ): Promise<void> {
     const result = await readAnchoredJournalDirectory({
         root,
-        maximumEntries: MaximumTrackerEntries,
+        maximumEntries: MaximumTrackerCleanupEntries,
         maximumEntryBytes: MaximumCursorBytes,
-        maximumTotalBytes: MaximumCursorBytes * MaximumTrackerEntries,
+        maximumTotalBytes: MaximumCursorBytes * MaximumTrackerCleanupEntries,
     });
     if (!result) return;
+    if (expectedRootIdentity && !sameDirectoryIdentity(result.identity, expectedRootIdentity)) {
+        throw new Error("Workspace cursor directory changed before cleanup");
+    }
     for (const entry of result.entries) {
-        if (!/^candidate-[0-9a-f]{32}\.cursor$/.test(entry.name)) continue;
+        if (!/^candidate-[0-9a-f]{32}\.cursor$/.test(entry.name) && !/^\.[0-9a-f]{32}\.tmp$/.test(entry.name)) {
+            continue;
+        }
         await hooks?.beforeAnchoredMutation?.("remove");
         await removeAnchoredJournalEntry({ root, rootIdentity: result.identity, source: entry });
     }
@@ -204,6 +232,7 @@ export function sameCursor(left: AnchoredWorkspaceCursor, right: AnchoredWorkspa
     return (
         left.name === right.name &&
         left.hash === right.hash &&
+        sameDirectoryIdentity(left.rootIdentity, right.rootIdentity) &&
         Object.keys(left.identity).every(
             (key) =>
                 left.identity[key as keyof AnchoredJournalEntry["identity"]] ===
@@ -224,7 +253,7 @@ async function anchorEmptyRoot(root: string): Promise<AnchoredJournalDirectoryId
 
 async function makePrivateStagingDirectory(): Promise<string> {
     const root = await mkdtemp(join(tmpdir(), "crest-workspace-cursor-"));
-    await ensurePrivateCursorRoot(root);
+    await securePrivateDirectory(root);
     return root;
 }
 
@@ -280,11 +309,15 @@ function toEntry(cursor: AnchoredWorkspaceCursor): AnchoredJournalEntry {
     return { name: cursor.name, bytes: cursor.bytes, identity: cursor.identity };
 }
 
-function sameDirectoryIdentity(
+export function sameDirectoryIdentity(
     left: AnchoredJournalDirectoryIdentity,
     right: AnchoredJournalDirectoryIdentity
 ): boolean {
     return left.dev === right.dev && left.ino === right.ino && left.birthtimeNs === right.birthtimeNs;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+    return error instanceof Error && "code" in error;
 }
 
 function assertPrivateStoragePlatform(): void {

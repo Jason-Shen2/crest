@@ -3,6 +3,7 @@
 
 import { spawn } from "node:child_process";
 import { lstat } from "node:fs/promises";
+import { join } from "node:path";
 
 import { waitForChildProcess } from "../tools/_child-process";
 
@@ -173,6 +174,7 @@ export async function writeAnchoredJournalEntry(input: {
     destinationName: string;
     bytes: Buffer;
     expectedDestination?: AnchoredJournalEntry;
+    testFailAfterTemporarySync?: boolean;
 }): Promise<void> {
     const result = await runWorker(input.root, {
         type: "write",
@@ -180,10 +182,40 @@ export async function writeAnchoredJournalEntry(input: {
         destinationName: input.destinationName,
         bytesBase64: input.bytes.toString("base64"),
         expectedDestinationIdentity: input.expectedDestination?.identity,
+        testFailAfterTemporarySync: input.testFailAfterTemporarySync === true,
     });
     if (!isRecord(result) || result.ok !== true || Object.keys(result).length !== 1) {
         throw new Error("Workspace recovery journal write returned invalid output");
     }
+}
+
+export async function ensureAnchoredJournalSubdirectory(input: {
+    root: string;
+    name: string;
+}): Promise<AnchoredJournalDirectoryIdentity> {
+    const state = await lstat(input.root, { bigint: true });
+    if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
+        throw new Error("Workspace recovery journal parent directory is unsafe");
+    }
+    const rootIdentity = directoryIdentity(state);
+    const result = await runWorker(input.root, {
+        type: "ensure-directory",
+        rootIdentity,
+        name: input.name,
+    });
+    if (!isRecord(result) || !isDirectoryIdentity(result.identity) || Object.keys(result).length !== 1) {
+        throw new Error("Workspace recovery journal directory creation returned invalid output");
+    }
+    const after = await lstat(join(input.root, input.name), { bigint: true });
+    if (
+        !after.isDirectory() ||
+        after.isSymbolicLink() ||
+        (after.mode & 0o077n) !== 0n ||
+        !sameIdentity(after, result.identity)
+    ) {
+        throw new Error("Workspace recovery journal subdirectory changed while securing");
+    }
+    return result.identity;
 }
 
 export async function publishAnchoredJournalEntryNoReplace(input: {
@@ -347,6 +379,15 @@ function isEntryIdentity(value: unknown): value is AnchoredJournalEntry["identit
         return false;
     }
     const keys = ["birthtimeNs", "ctimeNs", "dev", "ino", "mode", "mtimeNs", "nlink", "size"];
+    return (
+        Object.keys(value).sort().join(",") === keys.sort().join(",") &&
+        keys.every((key) => typeof value[key] === "string" && /^\d+$/.test(value[key]))
+    );
+}
+
+function isDirectoryIdentity(value: unknown): value is AnchoredJournalDirectoryIdentity {
+    if (!isRecord(value)) return false;
+    const keys = ["birthtimeNs", "dev", "ino"];
     return (
         Object.keys(value).sort().join(",") === keys.sort().join(",") &&
         keys.every((key) => typeof value[key] === "string" && /^\d+$/.test(value[key]))
@@ -649,6 +690,31 @@ async function main() {
         await assertRoot(input.rootIdentity);
         return { entry };
     }
+    if (input.type === "ensure-directory") {
+        if (!validName(input.name)) throw new Error("invalid journal directory name");
+        try {
+            await fsp.mkdir(input.name, { mode: 448 });
+        } catch (error) {
+            if (error.code !== "EEXIST") throw error;
+        }
+        const flags = fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0) |
+            (fs.constants.O_NOFOLLOW || 0);
+        const handle = await fsp.open(input.name, flags);
+        try {
+            const before = await handle.stat({ bigint: true });
+            if (!before.isDirectory()) throw new Error("unsafe journal subdirectory");
+            await handle.chmod(448);
+            const after = await handle.stat({ bigint: true });
+            if (!after.isDirectory() || !sameInode(before, after) || (after.mode & 63n) !== 0n) {
+                throw new Error("journal subdirectory changed while securing");
+            }
+            await syncRoot();
+            await assertRoot(input.rootIdentity);
+            return { identity: identity(after) };
+        } finally {
+            await handle.close();
+        }
+    }
     if (input.type === "read-publication" || input.type === "recover-publication") {
         publicationTemporaryName(input.destinationName);
         const entry = input.type === "read-publication"
@@ -716,10 +782,10 @@ async function main() {
         try {
             await handle.writeFile(bytes);
             await handle.sync();
-        } finally {
             await handle.close();
-        }
-        try {
+            if (input.testFailAfterTemporarySync) {
+                throw new Error("injected journal failure after temporary sync");
+            }
             if (!noReplace) {
                 await fsp.rename(temporary, input.destinationName);
                 await syncRoot();
@@ -733,6 +799,7 @@ async function main() {
                 await assertRoot(input.rootIdentity);
             }
         } catch (error) {
+            await handle.close().catch(() => {});
             if (!noReplace) {
                 await fsp.unlink(temporary).catch(() => {});
                 throw error;

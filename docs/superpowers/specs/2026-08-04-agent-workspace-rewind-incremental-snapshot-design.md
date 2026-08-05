@@ -206,6 +206,7 @@ cursor publication 还必须使用 monotonic continuity generation fence：initi
 捕获 generation，并在每个 awaited anchored mutation 后、发布 in-memory success 前复核 generation、gap 与
 disposed。若 callback error/overflow 或 dispose 在磁盘 publication 期间改变 continuity，调用必须失败并把
 lifecycle 标为 uninitialized；磁盘上的新 cursor 在下一次完整 prepare → reconcile → initialize 前不可信。
+prepare 也必须经过同一 fence；dispose 竞争产生的 late pre-reconcile cursor 必须在返回失败前删除。
 
 v1 不把 cursor trust 持久化。任何新构造或重启的 feed 都把已有 cursor bytes 当作不可信 storage artifact，
 先返回 `cold-start`，再通过 prepare → full reconcile → initialize 在当前 instance 内建立 trust。我们明确否决
@@ -255,7 +256,10 @@ reconcile 失败则由 checkpoint manager 写 unavailable 状态。
 cursor/candidate storage 也是 consistency boundary：目录和 entry mutation 必须 cwd-inode anchored、no-follow，
 candidate commit 必须验证生成时的 exact identity 与内容 hash，并拒绝 inode/content replacement、hardlink、
 非 regular、非 private、stale/foreign candidate 和目录 exchange。callback dirty hints 使用有界去重集合；
-容量溢出转为 gap。Windows 在 owner-only ACL 支持完成前不启用该 private storage。
+容量溢出转为 gap。tracker 必须由 anchored primitive 在 private store root 下建立，live lifecycle 固定 root
+identity，并拒绝 store-root symlink 或 read/publication 间的 root exchange。rename 前失败要删除随机 journal temp；
+prepare 只回收保留格式的 candidate/temp。candidate commit 失败撤销 candidate 后，允许一次完整 reconcile 恢复，
+不增加跨进程恢复协议。Windows 在 owner-only ACL 支持完成前不启用该 private storage。
 
 ### Full reconcile 的角色
 

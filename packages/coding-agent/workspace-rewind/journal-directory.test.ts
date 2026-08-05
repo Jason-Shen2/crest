@@ -169,6 +169,24 @@ test("shared journal writes keep random rename temps readable by the legacy dire
     expect(scanned?.entries.map((entry) => entry.name).sort()).toEqual([temporaryName, "legacy.json"].sort());
 }, 15_000);
 
+test("shared journal writes remove random temps after an injected post-sync failure", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-journal-temp-cleanup-"));
+    CleanupRoots.push(root);
+    const anchored = await readAnchoredJournalEntry({ root, name: "absent.json", maximumEntryBytes: 1024 });
+
+    await expect(
+        writeAnchoredJournalEntry({
+            root,
+            rootIdentity: anchored!.identity,
+            destinationName: "state.json",
+            bytes: Buffer.from("state"),
+            testFailAfterTemporarySync: true,
+        })
+    ).rejects.toThrow(/injected/i);
+
+    expect((await readdir(root)).filter((name) => /^\.[0-9a-f]{32}\.tmp$/.test(name))).toEqual([]);
+});
+
 test.each([
     ["after link", false, false],
     ["after first directory sync", true, false],

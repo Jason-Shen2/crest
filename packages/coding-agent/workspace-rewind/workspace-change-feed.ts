@@ -6,15 +6,17 @@ import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import ParcelWatcher from "@parcel/watcher";
 
+import type { AnchoredJournalDirectoryIdentity } from "./journal-directory";
 import {
     type AnchoredWorkspaceCursor,
     type WorkspaceChangeFeedStorageHooks,
-    anchoredCursorRootExists,
     commitAnchoredCursor,
     ensurePrivateCursorRoot,
     readAnchoredCursor,
+    readAnchoredCursorRootIdentity,
     removeAbandonedCandidateCursors,
     removeAnchoredCursor,
+    sameDirectoryIdentity,
     withMaterializedCursor,
     writeWatcherCursor,
 } from "./workspace-change-feed-storage";
@@ -70,6 +72,7 @@ interface FeedState {
     callbackPaths: Set<string>;
     callbackPathCapacity: number;
     continuityGeneration: number;
+    trackerIdentity?: AnchoredJournalDirectoryIdentity;
     gapReason?: "query-failed" | "unsafe-path";
     subscription?: WorkspaceChangeSubscription;
     subscriptionPromise?: Promise<WorkspaceChangeSubscription>;
@@ -123,6 +126,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             setGap(state, "query-failed");
             throw new Error("Workspace change feed reconcile is already prepared");
         }
+        let publishedPrepared: AnchoredWorkspaceCursor | undefined;
         try {
             if (state.preparedCursor) {
                 await removeAnchoredCursor({
@@ -131,22 +135,43 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                     hooks: state.testHooks,
                 });
                 state.preparedCursor = undefined;
+                if (state.disposed) throw new Error("Workspace change feed was disposed during reconcile preparation");
             }
             state.callbackPaths.clear();
             clearGap(state);
             state.initialized = false;
-            await ensurePrivateCursorRoot(state.trackerRoot);
+            const continuityGeneration = state.continuityGeneration;
+            const trackerIdentity = await ensurePrivateCursorRoot(state.trackerRoot);
+            assertContinuityFence(state, continuityGeneration);
+            if (state.trackerIdentity && !sameDirectoryIdentity(state.trackerIdentity, trackerIdentity)) {
+                throw new Error("Workspace cursor directory changed during feed lifecycle");
+            }
+            state.trackerIdentity = trackerIdentity;
             await ensureSubscription(state);
+            assertContinuityFence(state, continuityGeneration);
             await removeCandidate(state);
-            await removeAbandonedCandidateCursors(state.trackerRoot, state.testHooks);
-            state.preparedCursor = await writeWatcherCursor({
+            assertContinuityFence(state, continuityGeneration);
+            await removeAbandonedCandidateCursors(state.trackerRoot, trackerIdentity, state.testHooks);
+            assertContinuityFence(state, continuityGeneration);
+            publishedPrepared = await writeWatcherCursor({
                 root: state.trackerRoot,
                 name: ReconcileCursorName,
                 workspaceRoot: state.workspaceRoot,
                 writer: state.watcher,
+                expectedRootIdentity: trackerIdentity,
                 hooks: state.testHooks,
             });
+            assertContinuityFence(state, continuityGeneration);
+            state.preparedCursor = publishedPrepared;
+            publishedPrepared = undefined;
         } catch (error) {
+            if (publishedPrepared) {
+                await removeAnchoredCursor({
+                    root: state.trackerRoot,
+                    cursor: publishedPrepared,
+                    hooks: state.testHooks,
+                }).catch(() => undefined);
+            }
             setGap(state, "query-failed");
             throw error;
         }
@@ -168,6 +193,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 name: PostReconcileCursorName,
                 workspaceRoot: state.workspaceRoot,
                 writer: state.watcher,
+                expectedRootIdentity: state.trackerIdentity,
                 hooks: state.testHooks,
             });
             assertContinuityFence(state, continuityGeneration);
@@ -207,12 +233,25 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
 
     async readChanges(): Promise<WorkspaceChangeRead> {
         const state = getState(this);
-        if (!state.initialized) return { status: "gap", reason: "cold-start" };
+        if (!state.initialized) return state.gapReason ? gap(state) : { status: "gap", reason: "cold-start" };
         let committed: AnchoredWorkspaceCursor | undefined;
         let trackerExists = false;
         try {
-            trackerExists = await anchoredCursorRootExists(state.trackerRoot);
+            const trackerIdentity = await readAnchoredCursorRootIdentity(state.trackerRoot);
+            trackerExists = trackerIdentity != null;
+            if (
+                trackerIdentity &&
+                (!state.trackerIdentity || !sameDirectoryIdentity(trackerIdentity, state.trackerIdentity))
+            ) {
+                throw new Error("Workspace cursor directory changed during feed lifecycle");
+            }
             committed = trackerExists ? await readAnchoredCursor(state.trackerRoot, CommittedCursorName) : undefined;
+            if (
+                committed &&
+                (!state.trackerIdentity || !sameDirectoryIdentity(committed.rootIdentity, state.trackerIdentity))
+            ) {
+                throw new Error("Workspace cursor directory changed while reading committed cursor");
+            }
         } catch {
             setGap(state, "query-failed");
             return gap(state);
@@ -238,6 +277,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 name: `candidate-${token}.cursor`,
                 workspaceRoot: state.workspaceRoot,
                 writer: state.watcher,
+                expectedRootIdentity: state.trackerIdentity,
                 hooks: state.testHooks,
             });
             assertContinuityFence(state, continuityGeneration);
@@ -285,18 +325,22 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             throw new Error("Invalid or stale candidate cursor");
         }
         const continuityGeneration = state.continuityGeneration;
-        let published = false;
         try {
+            if (
+                !state.trackerIdentity ||
+                !sameDirectoryIdentity(candidate.cursor.rootIdentity, state.trackerIdentity)
+            ) {
+                throw new Error("Workspace cursor directory changed during feed lifecycle");
+            }
             await commitAnchoredCursor({
                 root: state.trackerRoot,
                 candidate: candidate.cursor,
                 committedName: CommittedCursorName,
                 hooks: state.testHooks,
             });
-            published = true;
             assertContinuityFence(state, continuityGeneration);
         } catch {
-            if (published) state.candidate = undefined;
+            state.candidate = undefined;
             state.initialized = false;
             setGap(state, "query-failed");
             throw new Error("Invalid or stale candidate cursor");

@@ -58,9 +58,12 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
         const reopened = makeFeed();
         await expect(reopened.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
         if (!(await reconcileOrUnsupported(reopened))) return;
+        const baselineHints = await reopened.readChanges();
+        if (baselineHints.status !== "complete") throw new Error("expected complete recovery baseline");
+        await reopened.commitCursor(baselineHints.candidateCursor);
         const recovered = await reopened.readChanges();
 
-        assertComplete(recovered, ["offline.txt"]);
+        assertComplete(recovered, []);
     });
 
     test("reports cursor deletion as a gap", async () => {

@@ -220,6 +220,11 @@ post-reconcile cursor，并查询两者之间的历史事件。旧的“先 full
 `ParcelWorkspaceChangeFeed` 把 cursor 写入 private staging，再通过 cwd-inode anchored、no-follow 的原子操作发布到
 `<storeRoot>/tracker`。candidate 必须绑定生成时的 entry identity 和内容 hash；commit 拒绝 inode/content
 替换、hardlink、非 regular、非 private、stale/foreign candidate 以及 tracker directory exchange。
+tracker 目录由同一 anchored journal primitive 在 private `storeRoot` 下建立，live feed instance 固定其目录
+identity，并在 committed read、candidate publication 和 commit 间拒绝 root exchange；不得经由 storeRoot symlink
+建立 tracker。原子写在 rename 前失败必须删除随机 temporary entry，下一次 prepare 只清理保留格式的 candidate
+和 journal temporary entry。candidate 校验/提交失败会撤销内存 candidate，使一次新的
+prepare → full reconcile → initialize 可以恢复，而不引入额外 recovery protocol。
 subscription callback 使用有上限的去重 set；溢出必须进入 gap。`readChanges()` 把历史 query 与 callback hints
 取并集，只有 tracker 完成 path capture 和二次验证后才允许 `commitCursor()`。Windows 在 owner-only ACL
 实现前硬禁用 private cursor storage，不允许把 mode bit 当作 ACL 等价物。
@@ -227,7 +232,8 @@ subscription callback 使用有上限的去重 set；溢出必须进入 gap。`r
 initialize 和 candidate commit 必须绑定开始时的 monotonic continuity generation，并在每个 awaited storage
 mutation 后、发布任何内存成功状态前复核 generation、gap 和 disposed。publication 期间出现 callback error、
 overflow 或 dispose 时，即使磁盘原子写已经完成也必须返回失败并把 lifecycle 标为 uninitialized；只有新的
-prepare → full reconcile → initialize 可以重新信任磁盘 cursor。
+prepare → full reconcile → initialize 可以重新信任磁盘 cursor。prepare 自身也使用同一 generation fence；若
+dispose 与 pre-reconcile publication 竞争，late publication 必须由 prepare 清理且不得成为 prepared state。
 
 v1 的 cursor trust 只存在于当前 feed instance。新建或重启 feed 不读取磁盘 `committed.cursor` 作为可信
 continuity，必须返回 `cold-start` 并执行一次 prepare → full reconcile → initialize。明确否决为 watcher cursor
