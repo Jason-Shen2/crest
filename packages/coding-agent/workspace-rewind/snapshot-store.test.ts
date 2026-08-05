@@ -28,6 +28,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { initializePrivateStore, WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-store";
+import type { CapturedPathStateV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
 const cleanupRoots: string[] = [];
@@ -948,6 +949,39 @@ describe("workspace snapshots", () => {
         expect(ref.workspaceIncarnation).toBe(fixture.identity.workspaceIncarnation);
     });
 
+    test("reads and verifies a snapshot backed by a v2 path-state tree", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, ".gitignore"), "ignored.log\n");
+        await writeFile(join(fixture.workspace, "README.md"), "readme");
+        await writeFile(join(fixture.workspace, "ignored.log"), "ignored");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+
+        await expect(fixture.store.verify(v2)).resolves.toBeUndefined();
+        await expect(fixture.store.readPathState(v2, "README.md")).resolves.toMatchObject({ state: "file" });
+        await expect(fixture.store.readPathState(v2, "ignored.log")).resolves.toEqual({
+            state: "excluded",
+            reason: "ignored",
+        });
+        await expect(fixture.store.readPathState(v2, "missing.txt")).resolves.toEqual({ state: "absent" });
+    });
+
+    test("diffs v2 path-state trees without changing v1 results", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "keep.txt"), "same");
+        await writeFile(join(fixture.workspace, "change.txt"), "before");
+        const before = await fixture.store.capture({ profile: "terminal" });
+        await writeFile(join(fixture.workspace, "change.txt"), "after");
+        await writeFile(join(fixture.workspace, "new.txt"), "new");
+        const after = await fixture.store.capture({ profile: "terminal" });
+        const [beforeV2, afterV2] = await Promise.all([
+            convertSnapshotToV2(fixture, before.ref, before.coverage),
+            convertSnapshotToV2(fixture, after.ref, after.coverage),
+        ]);
+
+        expect(await fixture.store.diff(beforeV2, afterV2)).toEqual(await fixture.store.diff(before.ref, after.ref));
+    });
+
     test("captures raw bytes in a Git workspace without consulting a shadow index", async () => {
         const fixture = await makeStoreFixture();
         await fixture.git.run(["init", fixture.workspace], {
@@ -1613,6 +1647,98 @@ async function writeTestBlob(fixture: Awaited<ReturnType<typeof makeStoreFixture
         timeoutMs: 5_000,
     });
     return stripTestOid(result.stdout);
+}
+
+async function convertSnapshotToV2(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    source: WorkspaceSnapshotRefV1,
+    coverage: WorkspaceSnapshotCoverage
+): Promise<WorkspaceSnapshotRefV1> {
+    const v1 = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
+        scope: unknown;
+        entries: Array<{ path: string; state: CapturedPathStateV1 }>;
+    };
+    const stateTree = await writeTestStateTree(fixture, new Map(v1.entries.map((entry) => [entry.path, entry.state])));
+    const manifestOid = await writeTestBlob(
+        fixture,
+        canonicalTestJson({
+            schemaversion: 2,
+            workspaceidentity: source.workspaceIdentity,
+            workspaceincarnation: source.workspaceIncarnation,
+            scope: v1.scope,
+            coverage: {
+                complete: coverage.complete,
+                eligibleentrycount: coverage.eligibleEntryCount,
+                exclusions: coverage.exclusions,
+            },
+            statetree: stateTree,
+        })
+    );
+    return {
+        ...source,
+        id: await writeTestDescriptor(fixture, source.tree, manifestOid),
+        scopeManifest: manifestOid,
+    };
+}
+
+async function writeTestStateTree(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    states: ReadonlyMap<string, CapturedPathStateV1>
+): Promise<string> {
+    const root = makeStateTreeNode();
+    for (const [path, state] of states) {
+        const segments = path.split("/");
+        let node = root;
+        for (const segment of segments.slice(0, -1)) {
+            node.children.set(segment, node.children.get(segment) ?? makeStateTreeNode());
+            node = node.children.get(segment)!;
+        }
+        node.leaves.set(segments.at(-1)!, await writeTestBlob(fixture, canonicalTestJson({ schemaversion: 1, state })));
+    }
+    return await writeTestStateTreeNode(fixture, root);
+}
+
+interface TestStateTreeNode {
+    children: Map<string, TestStateTreeNode>;
+    leaves: Map<string, string>;
+}
+
+function makeStateTreeNode(): TestStateTreeNode {
+    return { children: new Map(), leaves: new Map() };
+}
+
+async function writeTestStateTreeNode(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    node: TestStateTreeNode
+): Promise<string> {
+    const entries: Array<{ name: string; mode: string; type: string; oid: string }> = [];
+    for (const [name, child] of node.children) {
+        entries.push({ name, mode: "040000", type: "tree", oid: await writeTestStateTreeNode(fixture, child) });
+    }
+    for (const [name, oid] of node.leaves) entries.push({ name, mode: "100644", type: "blob", oid });
+    entries.sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+    const result = await fixture.git.run(["mktree", "-z"], {
+        gitDir: fixture.storeRoot,
+        stdin: Buffer.concat(
+            entries.map((entry) => Buffer.from(`${entry.mode} ${entry.type} ${entry.oid}\t${entry.name}\0`))
+        ),
+        timeoutMs: 5_000,
+    });
+    return stripTestOid(result.stdout);
+}
+
+function canonicalTestJson(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(sortTestJsonValue(value)));
+}
+
+function sortTestJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sortTestJsonValue);
+    if (typeof value !== "object" || value == null) return value;
+    return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+            .map(([key, item]) => [key.toLowerCase(), sortTestJsonValue(item)])
+    );
 }
 
 async function writeTestDescriptor(

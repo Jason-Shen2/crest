@@ -30,6 +30,13 @@ import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
+import {
+    encodeCanonicalStoredJson as canonicalJson,
+    StoredManifestReader,
+    validateWorkspaceRelativePath as validateRelativePath,
+    type StoredManifestObjectReader,
+    type StoredScopeManifestV1,
+} from "./stored-manifest";
 import type {
     CapturedPathStateV1,
     WorkspacePathChangeV1,
@@ -45,7 +52,6 @@ import {
     type WorkspaceScopeDirectoryIdentity,
     type WorkspaceScopeEntry,
     type WorkspaceScopeEntryIdentity,
-    type WorkspaceScopeManifest,
 } from "./workspace-scope";
 
 export const WorkspaceCheckpointLimits = Object.freeze({
@@ -99,19 +105,6 @@ export class WorkspaceSnapshotStoreError extends Error {
     }
 }
 
-interface StoredManifestEntry {
-    path: string;
-    state: CapturedPathStateV1;
-}
-
-interface StoredScopeManifest {
-    schemaversion: 1;
-    workspaceidentity: string;
-    workspaceincarnation: string;
-    scope: WorkspaceScopeManifest;
-    entries: StoredManifestEntry[];
-}
-
 interface FileFingerprint {
     dev: bigint;
     ino: bigint;
@@ -162,16 +155,6 @@ const BootstrapWaitTimeoutMs = 10_000;
 const InitializationPromises = new Map<string, Promise<void>>();
 const SnapshotFingerprints = new WeakMap<WorkspaceSnapshotStore, Map<string, FileFingerprint>>();
 const TrustedSnapshotDescriptors = new WeakMap<WorkspaceSnapshotStore, Set<string>>();
-const CoverageReasons = new Set([
-    "ignored",
-    "nested-repository",
-    "oversized-untracked",
-    "non-utf8-path",
-    "hard-linked",
-    "special-entry",
-    "capture-budget",
-]);
-
 export async function initializePrivateStore(input: {
     storeRoot: string;
     git: WorkspaceGitRunner;
@@ -338,7 +321,7 @@ export class WorkspaceSnapshotStore {
                 );
             }
             const workspaceTree = await this.writeWorkspaceTree(captured.entries, runtime);
-            const storedManifest: StoredScopeManifest = {
+            const storedManifest: StoredScopeManifestV1 = {
                 schemaversion: 1,
                 workspaceidentity: this.identity.workspaceIdentity,
                 workspaceincarnation: this.identity.workspaceIncarnation,
@@ -400,21 +383,9 @@ export class WorkspaceSnapshotStore {
         before: WorkspaceSnapshotRefV1,
         after: WorkspaceSnapshotRefV1
     ): Promise<WorkspacePathChangeV1[]> {
-        const beforeManifest = await this.readStoredManifest(before);
-        const afterManifest = await this.readStoredManifest(after);
-        const beforeStates = manifestStateMap(beforeManifest);
-        const afterStates = manifestStateMap(afterManifest);
-        const paths = [...new Set([...beforeStates.keys(), ...afterStates.keys()])].sort(comparePathBytes);
-        const changes: WorkspacePathChangeV1[] = [];
-        for (const path of paths) {
-            const beforeState = resolveManifestPathState(beforeManifest, beforeStates, path);
-            const afterState = resolveManifestPathState(afterManifest, afterStates, path);
-            if (canonicalJson(beforeState).equals(canonicalJson(afterState))) {
-                continue;
-            }
-            changes.push({ path, before: beforeState, after: afterState });
-        }
-        return changes;
+        const beforeManifest = await this.#readStoredManifest(before);
+        const afterManifest = await this.#readStoredManifest(after);
+        return await beforeManifest.diff(afterManifest);
     }
 
     readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
@@ -423,8 +394,8 @@ export class WorkspaceSnapshotStore {
 
     async #readPathStateUnlocked(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
         validateRelativePath(path);
-        const manifest = await this.readStoredManifest(snapshot);
-        return resolveManifestPathState(manifest, manifestStateMap(manifest), path);
+        const manifest = await this.#readStoredManifest(snapshot);
+        return await manifest.readPathState(path);
     }
 
     readBlob(oid: string): Promise<Buffer> {
@@ -479,7 +450,7 @@ export class WorkspaceSnapshotStore {
         try {
             this.assertSnapshotIdentity(snapshot);
             await this.verifyDescriptor(snapshot);
-            const manifest = await this.readStoredManifestBlob(snapshot);
+            const manifest = await this.#readStoredManifestBlob(snapshot);
             await this.verifyWorkspaceTree(snapshot, manifest);
             markSnapshotTrusted(this, snapshot);
         } catch (cause) {
@@ -1094,45 +1065,28 @@ export class WorkspaceSnapshotStore {
         return oid;
     }
 
-    async readStoredManifest(snapshot: WorkspaceSnapshotRefV1): Promise<StoredScopeManifest> {
+    async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
         try {
             this.assertSnapshotIdentity(snapshot);
             await this.verifyDescriptor(snapshot);
-            return await this.readStoredManifestBlob(snapshot);
+            return await this.#readStoredManifestBlob(snapshot);
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
     }
 
-    async readStoredManifestBlob(snapshot: WorkspaceSnapshotRefV1): Promise<StoredScopeManifest> {
-        const bytes = await this.readBlob(snapshot.scopeManifest);
-        const value: unknown = JSON.parse(bytes.toString("utf8"));
-        if (!isStoredManifest(value)) {
-            throw new Error("Invalid snapshot scope manifest");
-        }
-        if (!canonicalJson(value).equals(bytes)) {
-            throw new Error("Snapshot scope manifest is not canonical");
-        }
-        if (
-            value.workspaceidentity !== snapshot.workspaceIdentity ||
-            value.workspaceincarnation !== snapshot.workspaceIncarnation
-        ) {
-            throw new Error("Snapshot scope manifest identity mismatch");
-        }
-        return value;
+    async #readStoredManifestBlob(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
+        return await StoredManifestReader.open({ snapshot, objects: this.#storedManifestObjects() });
     }
 
-    async verifyWorkspaceTree(snapshot: WorkspaceSnapshotRefV1, manifest: StoredScopeManifest): Promise<void> {
+    async verifyWorkspaceTree(snapshot: WorkspaceSnapshotRefV1, manifest: StoredManifestReader): Promise<void> {
         const runtime = makeMaintenanceRuntime();
         const actual = new Map<string, CapturedPathStateV1>();
         const leafOids = new Set<string>();
         const treeOids = new Set<string>();
         await this.collectWorkspaceTreeStates(snapshot.tree, "", actual, leafOids, treeOids, runtime);
-        const expected = new Map(
-            manifest.entries
-                .filter((entry) => entry.state.state === "file" || entry.state.state === "symlink")
-                .map((entry) => [entry.path, entry.state])
-        );
+        const manifestVerification = await manifest.verify();
+        const expected = manifestVerification.workspaceStates;
         if (actual.size !== expected.size) {
             throw new Error("Workspace tree and scope manifest diverge");
         }
@@ -1153,8 +1107,28 @@ export class WorkspaceSnapshotStore {
             });
             assertBatchBlobObjects(objectInfo.stdout, expectedObjectIds);
         }
-        const objectIds = [snapshot.id, snapshot.scopeManifest, ...treeOids, ...leafOids];
+        const objectIds = [
+            snapshot.id,
+            snapshot.scopeManifest,
+            ...treeOids,
+            ...leafOids,
+            ...manifestVerification.objectIds,
+        ];
         await ensureDurableGitObjects(this.storeRoot, objectIds, new Set(objectIds));
+    }
+
+    #storedManifestObjects(): StoredManifestObjectReader {
+        return {
+            readBlob: (oid) => this.#readBlobUnlocked(oid),
+            readTree: async (oid) => {
+                validateOid(oid);
+                const result = await this.git.run(["cat-file", "tree", oid], {
+                    gitDir: this.storeRoot,
+                    timeoutMs: StoreGitTimeoutMs,
+                });
+                return result.stdout;
+            },
+        };
     }
 
     async collectWorkspaceTreeStates(
@@ -1695,223 +1669,6 @@ function makeTreeInput(records: Array<{ name: string; mode: string; type: string
     return Buffer.concat(chunks);
 }
 
-function isStoredManifest(value: unknown): value is StoredScopeManifest {
-    if (typeof value !== "object" || value == null || Array.isArray(value)) {
-        return false;
-    }
-    const record = value as Record<string, unknown>;
-    if (
-        Object.keys(record).sort().join(",") !== "entries,schemaversion,scope,workspaceidentity,workspaceincarnation" ||
-        record.schemaversion !== 1 ||
-        typeof record.workspaceidentity !== "string" ||
-        typeof record.workspaceincarnation !== "string" ||
-        !/^[0-9a-f]{64}$/.test(record.workspaceidentity) ||
-        !/^[0-9a-f]{64}$/.test(record.workspaceincarnation) ||
-        !isStoredScope(record.scope) ||
-        !Array.isArray(record.entries)
-    ) {
-        return false;
-    }
-    const seen = new Set<string>();
-    let previousPath: string | undefined;
-    for (const item of record.entries) {
-        if (
-            typeof item !== "object" ||
-            item == null ||
-            Array.isArray(item) ||
-            Object.keys(item).sort().join(",") !== "path,state"
-        ) {
-            return false;
-        }
-        const entry = item as Record<string, unknown>;
-        if (typeof entry.path !== "string" || seen.has(entry.path) || !isCapturedPathState(entry.state)) {
-            return false;
-        }
-        try {
-            validateRelativePath(entry.path);
-        } catch {
-            return false;
-        }
-        if (previousPath != null && comparePathBytes(previousPath, entry.path) >= 0) {
-            return false;
-        }
-        seen.add(entry.path);
-        previousPath = entry.path;
-    }
-    return true;
-}
-
-function isStoredScope(value: unknown): boolean {
-    if (
-        !isJsonRecord(value) ||
-        !hasExactKeys(
-            value,
-            ["schemaversion", "policy", "ignoreinputs", "nestedrepositoryboundaries"],
-            ["budgetexhaustion"]
-        )
-    ) {
-        return false;
-    }
-    if (
-        value.schemaversion !== 1 ||
-        !isJsonRecord(value.policy) ||
-        !hasExactKeys(value.policy, ["maxentries", "maxuntrackedbytes", "gitglobalexcludes"]) ||
-        !Number.isSafeInteger(value.policy.maxentries) ||
-        (value.policy.maxentries as number) < 0 ||
-        !Number.isSafeInteger(value.policy.maxuntrackedbytes) ||
-        (value.policy.maxuntrackedbytes as number) < 0 ||
-        value.policy.gitglobalexcludes !== "disabled-by-isolated-runner" ||
-        !Array.isArray(value.ignoreinputs) ||
-        !Array.isArray(value.nestedrepositoryboundaries)
-    ) {
-        return false;
-    }
-    if (
-        value.budgetexhaustion != null &&
-        (!isJsonRecord(value.budgetexhaustion) ||
-            !hasExactKeys(value.budgetexhaustion, ["scope"]) ||
-            value.budgetexhaustion.scope !== "workspace-root")
-    ) {
-        return false;
-    }
-    if (
-        !value.ignoreinputs.every(
-            (item) =>
-                isJsonRecord(item) &&
-                hasExactKeys(item, ["source", "contenthash"], ["path", "pathbytesbase64"]) &&
-                ["gitignore", "git-info-exclude", "git-core-excludes-file"].includes(item.source as string) &&
-                typeof item.contenthash === "string" &&
-                /^[0-9a-f]{64}$/.test(item.contenthash) &&
-                hasOneValidManifestPath(item, item.source !== "gitignore")
-        )
-    ) {
-        return false;
-    }
-    return value.nestedrepositoryboundaries.every(
-        (item) =>
-            isJsonRecord(item) &&
-            hasExactKeys(item, [], ["path", "pathbytesbase64"]) &&
-            hasOneValidManifestPath(item, false)
-    );
-}
-
-function scopeHasBudgetExhaustion(scope: WorkspaceScopeManifest): boolean {
-    const stored = scope as unknown as Record<string, unknown>;
-    return Object.hasOwn(stored, "budgetexhaustion");
-}
-
-function manifestStateMap(manifest: StoredScopeManifest): Map<string, CapturedPathStateV1> {
-    return new Map(manifest.entries.map((entry) => [entry.path, entry.state]));
-}
-
-function resolveManifestPathState(
-    manifest: StoredScopeManifest,
-    states: ReadonlyMap<string, CapturedPathStateV1>,
-    path: string
-): CapturedPathStateV1 {
-    const direct = states.get(path);
-    if (direct) {
-        return direct;
-    }
-    let parent = path;
-    while (parent.includes("/")) {
-        parent = parent.slice(0, parent.lastIndexOf("/"));
-        const state = states.get(parent);
-        if (state?.state === "excluded") {
-            return state;
-        }
-    }
-    if (scopeHasBudgetExhaustion(manifest.scope)) {
-        return { state: "excluded", reason: "capture-budget" };
-    }
-    return { state: "absent" };
-}
-
-function hasOneValidManifestPath(value: Record<string, unknown>, allowAbsolute: boolean): boolean {
-    const hasPath = Object.hasOwn(value, "path");
-    const hasPathBytes = Object.hasOwn(value, "pathbytesbase64");
-    if (hasPath === hasPathBytes) {
-        return false;
-    }
-    if (hasPath) {
-        if (typeof value.path !== "string") {
-            return false;
-        }
-        if (allowAbsolute && isAbsolute(value.path) && !value.path.includes("\0")) {
-            return true;
-        }
-        try {
-            validateRelativePath(value.path);
-            return true;
-        } catch {
-            return false;
-        }
-    }
-    if (typeof value.pathbytesbase64 !== "string" || !value.pathbytesbase64) {
-        return false;
-    }
-    const bytes = Buffer.from(value.pathbytesbase64, "base64");
-    return bytes.length > 0 && bytes.toString("base64") === value.pathbytesbase64;
-}
-
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value != null && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
-    const allowed = new Set([...required, ...optional]);
-    return required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => allowed.has(key));
-}
-
-function isCapturedPathState(value: unknown): value is CapturedPathStateV1 {
-    if (typeof value !== "object" || value == null || Array.isArray(value)) {
-        return false;
-    }
-    const state = value as Record<string, unknown>;
-    if (state.state === "absent") {
-        return Object.keys(state).length === 1;
-    }
-    if (state.state === "file") {
-        return (
-            Object.keys(state).sort().join(",") === "executable,oid,state" &&
-            typeof state.executable === "boolean" &&
-            typeof state.oid === "string" &&
-            /^[0-9a-f]{40,64}$/.test(state.oid)
-        );
-    }
-    if (state.state === "symlink") {
-        return (
-            Object.keys(state).sort().join(",") === "oid,state" &&
-            typeof state.oid === "string" &&
-            /^[0-9a-f]{40,64}$/.test(state.oid)
-        );
-    }
-    return (
-        state.state === "excluded" &&
-        Object.keys(state).sort().join(",") === "reason,state" &&
-        typeof state.reason === "string" &&
-        CoverageReasons.has(state.reason)
-    );
-}
-
-function canonicalJson(value: unknown): Buffer {
-    return Buffer.from(JSON.stringify(sortJsonValue(value)));
-}
-
-function sortJsonValue(value: unknown): unknown {
-    if (Array.isArray(value)) {
-        return value.map(sortJsonValue);
-    }
-    if (typeof value !== "object" || value == null) {
-        return value;
-    }
-    return Object.fromEntries(
-        Object.entries(value as Record<string, unknown>)
-            .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-            .map(([key, item]) => [key.toLowerCase(), sortJsonValue(item)])
-    );
-}
-
 async function repairStorePermissions(storeRoot: string): Promise<void> {
     for (const directory of ["objects", "refs", "journal", "lock", "private-hooks"]) {
         await makePrivateDirectory(join(storeRoot, directory));
@@ -2123,19 +1880,6 @@ function validateProcessOwner(owner: ProcessOwnerIdentity): void {
         !/^[0-9a-f]{64}$/.test(owner.nonce)
     ) {
         throw new Error("Invalid process owner identity");
-    }
-}
-
-function validateRelativePath(path: string): void {
-    if (
-        typeof path !== "string" ||
-        !path ||
-        path.includes("\0") ||
-        path.includes("\\") ||
-        isAbsolute(path) ||
-        path.split("/").some((segment) => !segment || segment === "." || segment === "..")
-    ) {
-        throw new Error(`Invalid workspace-relative path: ${path}`);
     }
 }
 
@@ -2424,10 +2168,6 @@ function assertCaptureActive(deadline: number, signal: AbortSignal): void {
     if (signal.aborted || Date.now() >= deadline) {
         throw new WorkspaceSnapshotStoreError("capture_timeout", "Workspace snapshot capture timed out");
     }
-}
-
-function comparePathBytes(left: string, right: string): number {
-    return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
 async function pathExists(path: string): Promise<boolean> {
