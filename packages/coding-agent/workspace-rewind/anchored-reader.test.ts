@@ -243,6 +243,69 @@ describe("anchored reader", () => {
         expect(active).toBe(0);
     });
 
+    test("does not grant a fresh timeout to a later queued parent worker", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-anchored-shared-deadline-"));
+        cleanupRoots.push(root);
+        const entries = [];
+        for (let index = 0; index < IncrementalReaderConcurrency + 1; index++) {
+            const parentPath = join(root, `parent-${index}`);
+            const path = join(parentPath, "file.txt");
+            await mkdir(parentPath);
+            await writeFile(path, "x");
+            const [parent, entry] = await Promise.all([
+                lstat(parentPath, { bigint: true }),
+                lstat(path, { bigint: true }),
+            ]);
+            entries.push({
+                path: `parent-${index}/file.txt`,
+                name: "file.txt",
+                kind: "file" as const,
+                stagingPath: join(root, `staging-${index}`),
+                parentIdentity: identity(parent),
+                identity: entryIdentity(entry),
+            });
+        }
+        let spawned = 0;
+        vi.doMock("node:child_process", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:child_process")>();
+            return {
+                ...actual,
+                spawn: (...args: Parameters<typeof actual.spawn>) => {
+                    args[1] = [
+                        "-e",
+                        `const chunks=[];
+process.stdin.on("data", chunk => chunks.push(chunk));
+process.stdin.on("end", () => {
+    const input=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    setTimeout(() => process.stdout.write(JSON.stringify(input.entries.map(entry => ({
+        path: entry.path,
+        stagingPath: entry.stagingPath,
+        identity: entry.identity,
+        hashedBytes: Number(entry.identity.size)
+    })))), 300);
+});`,
+                    ];
+                    spawned += 1;
+                    return actual.spawn(...args);
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./anchored-reader");
+
+        await expect(
+            isolated.runAnchoredReaderBatch({
+                rootPath: root,
+                entries,
+                maxSingleFileBytes: 1024,
+                maxTotalBytes: 1024,
+                timeoutMs: 500,
+                signal: new AbortController().signal,
+            })
+        ).rejects.toMatchObject({ code: "timeout" });
+        expect(spawned).toBe(IncrementalReaderConcurrency + 1);
+    });
+
     test("rehashes a same-size rewrite when an otherwise identical fingerprint is inside the racy window", async () => {
         const fixture = await makeReaderFixture("racy.txt", "other");
         const result = await runAnchoredReader({

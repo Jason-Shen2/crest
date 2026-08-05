@@ -7,6 +7,7 @@ import { constants, lstatSync, type BigIntStats, type Dirent } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
+import { hasReusableAnchoredIdentity } from "./anchored-reader";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -353,8 +354,7 @@ async function verifyIncrementalScopeAuthority(
             ["rev-parse", "--path-format=absolute", "--git-path", "index"],
             input.signal
         );
-        const current = await captureGitIndexEvidence(indexPath, input.signal);
-        if (!sameGitIndexEvidence(input.scope.gitIndex, current)) return false;
+        if (!(await verifyIncrementalGitIndexEvidence(indexPath, input.scope.gitIndex, input.signal))) return false;
     } else if (input.scope.gitIndex) {
         return false;
     }
@@ -1157,6 +1157,39 @@ async function captureGitIndexEvidence(
         entryIdentity: serializeEntryIdentity(before),
         contentHash: hash.digest("hex"),
     };
+}
+
+async function verifyIncrementalGitIndexEvidence(
+    pathBytes: Buffer,
+    expected: WorkspaceScopeGitIndexEvidence,
+    signal?: AbortSignal
+): Promise<boolean> {
+    assertScopeActive(signal);
+    const requestedPath = decodePath(pathBytes);
+    if (!requestedPath || !isAbsolute(requestedPath)) throw new Error("unsafe Git index path evidence");
+    const parentPath = await realpath(dirname(requestedPath));
+    const path = join(parentPath, basename(requestedPath));
+    if (path !== expected.path || parentPath !== expected.parentPath) return false;
+    const parentBefore = await readDirectoryIdentity(Buffer.from(parentPath));
+    if (JSON.stringify(serializeDirectoryIdentity(parentBefore)) !== JSON.stringify(expected.parentIdentity)) {
+        return false;
+    }
+    let current: BigIntStats;
+    try {
+        current = await lstat(path, { bigint: true });
+    } catch (error) {
+        if (!isMissing(error)) throw error;
+        if (expected.state !== "absent") return false;
+        await assertGitIndexStillAbsent(path, parentBefore, parentPath);
+        return true;
+    }
+    if (expected.state !== "file" || !expected.entryIdentity || !expected.contentHash) return false;
+    if (!isSafeGitIndexStat(current)) throw new Error("unsafe Git index file evidence");
+    const currentIdentity = serializeEntryIdentity(current);
+    if (JSON.stringify(currentIdentity) !== JSON.stringify(expected.entryIdentity)) return false;
+    assertSameDirectory(parentBefore, await readDirectoryIdentity(Buffer.from(parentPath)));
+    if (hasReusableAnchoredIdentity(expected.entryIdentity, currentIdentity, Date.now())) return true;
+    return sameGitIndexEvidence(expected, await captureGitIndexEvidence(pathBytes, signal));
 }
 
 async function assertGitIndexStillAbsent(

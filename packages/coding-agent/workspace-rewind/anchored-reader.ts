@@ -55,6 +55,34 @@ export class AnchoredReaderError extends Error {
 const ReaderInputMaxBytes = 64 * 1024 ** 2;
 const ReaderOutputMaxBytes = 64 * 1024 ** 2;
 export const IncrementalReaderConcurrency = 8;
+export const AnchoredReaderRacyWindowNs = 1_000_000_000n;
+
+export function hasReusableAnchoredIdentity(
+    previous: AnchoredReaderEntryIdentity | undefined,
+    current: AnchoredReaderEntryIdentity,
+    nowMs: number
+): boolean {
+    if (
+        !previous ||
+        !["dev", "ino", "birthtimeNs", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(
+            (key) =>
+                current[key as keyof AnchoredReaderEntryIdentity] === previous[key as keyof AnchoredReaderEntryIdentity]
+        )
+    ) {
+        return false;
+    }
+    if (
+        BigInt(current.dev) <= 0n ||
+        BigInt(current.ino) <= 0n ||
+        BigInt(current.mtimeNs) <= 0n ||
+        BigInt(current.ctimeNs) <= 0n
+    ) {
+        return false;
+    }
+    const newest =
+        BigInt(current.mtimeNs) > BigInt(current.ctimeNs) ? BigInt(current.mtimeNs) : BigInt(current.ctimeNs);
+    return BigInt(nowMs) * 1_000_000n - newest > AnchoredReaderRacyWindowNs;
+}
 
 export async function runAnchoredReaderBatch(input: {
     rootPath: string;
@@ -85,6 +113,9 @@ export async function runAnchoredReaderBatch(input: {
     const queue = [...groups.entries()];
     const results: AnchoredReaderResult[] = [];
     const controller = new AbortController();
+    const deadline = Date.now() + input.timeoutMs;
+    const deadlineError = new AnchoredReaderError("timeout", "Anchored reader batch timed out");
+    const timer = setTimeout(() => controller.abort(deadlineError), input.timeoutMs);
     const onExternalAbort = () => controller.abort(input.signal.reason);
     input.signal.addEventListener("abort", onExternalAbort, { once: true });
     if (input.signal.aborted) onExternalAbort();
@@ -95,6 +126,8 @@ export async function runAnchoredReaderBatch(input: {
             while (cursor < queue.length) {
                 const group = queue[cursor++]!;
                 const [parent, groupEntries] = group;
+                const remainingMs = deadline - Date.now();
+                if (remainingMs <= 0) throw deadlineError;
                 const parentIdentity = groupEntries[0]!.parentIdentity;
                 if (
                     groupEntries.some(
@@ -113,7 +146,7 @@ export async function runAnchoredReaderBatch(input: {
                         entries: groupEntries,
                         maxSingleFileBytes: input.maxSingleFileBytes,
                         maxTotalBytes: input.maxTotalBytes,
-                        timeoutMs: input.timeoutMs,
+                        timeoutMs: remainingMs,
                         signal: controller.signal,
                     }))
                 );
@@ -128,8 +161,10 @@ export async function runAnchoredReaderBatch(input: {
             Array.from({ length: Math.min(IncrementalReaderConcurrency, queue.length) }, () => runWorker())
         );
     } finally {
+        clearTimeout(timer);
         input.signal.removeEventListener("abort", onExternalAbort);
     }
+    if (controller.signal.reason === deadlineError) throw deadlineError;
     if (firstFailure) throw firstFailure;
     return results.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
 }
@@ -347,7 +382,7 @@ function reusable(previous, current, nowMs) {
     const newest = BigInt(current.mtimeNs) > BigInt(current.ctimeNs)
         ? BigInt(current.mtimeNs)
         : BigInt(current.ctimeNs);
-    return BigInt(nowMs) * 1000000n - newest > 1000000000n;
+    return BigInt(nowMs) * 1000000n - newest > ${AnchoredReaderRacyWindowNs}n;
 }
 async function writeBytes(path, bytes) {
     const output = await fsp.open(path, "wx", 0o600);

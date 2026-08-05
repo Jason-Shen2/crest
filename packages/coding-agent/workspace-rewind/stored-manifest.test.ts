@@ -102,6 +102,31 @@ describe("stored snapshot manifests", () => {
         await expect(openReader(objects, manifestOid)).rejects.toThrow("Invalid snapshot scope manifest");
     });
 
+    test("rejects Git index evidence whose parent path is not the index dirname", async () => {
+        const objects = new MemoryObjects();
+        const manifest = makeV1Manifest(new Map());
+        manifest.scope.gitIndex = {
+            path: "/workspace/.git/index",
+            parentPath: "/different/.git",
+            parentIdentity: { dev: "1", ino: "2", birthtimeNs: "3", mtimeNs: "4", ctimeNs: "5" },
+            state: "file",
+            entryIdentity: {
+                dev: "1",
+                ino: "6",
+                birthtimeNs: "7",
+                mtimeNs: "8",
+                ctimeNs: "9",
+                mode: "33188",
+                nlink: "1",
+                size: "12",
+            },
+            contentHash: "f".repeat(64),
+        };
+        const manifestOid = objects.putBlob(canonicalJson(manifest));
+
+        await expect(openReader(objects, manifestOid)).rejects.toThrow("Invalid snapshot scope manifest");
+    });
+
     test("fails closed when a v2 state leaf has an invalid schema", async () => {
         const objects = new MemoryObjects();
         const invalidState = objects.putBlob(canonicalJson({ schemaversion: 2, state: { state: "absent" } }));

@@ -1013,3 +1013,14 @@ git commit -m "docs(agent): finalize incremental rewind snapshots"
 - `npm run build:dev` 能打包 native watcher；
 - 10k/50k/200k benchmark 结果已写入设计文档；
 - 未达到非线性 warm cost 的平台被明确标记为未完成，而不是通过增加 timeout 掩盖。
+
+## 安全审查补充实施项
+
+- [x] Windows staging 在没有 owner-only ACL 证明前 fail closed；
+- [x] capture/dispose 使用进程内可重试状态机，保留 cleanup ownership，不增加 journal/recovery；
+- [x] consumer 与 cleanup 同时失败时保留两个错误；
+- [x] scope/index、base reader、anchored reader 和 hash 共用单次 capture deadline；
+- [x] direct reader batch 使用总 deadline，不按 worker 重置 timeout；
+- [x] stable Git index warm path 只验证 metadata，racy/unreliable evidence 才读取和 hash；
+- [x] split-index 与 sparse-index 使用 capability-gated integration tests；
+- [x] stored manifest 校验 Git index path 与 parentPath 的 dirname 关系。

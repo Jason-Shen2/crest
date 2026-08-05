@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 
 import type {
     CapturedPathStateV1,
@@ -589,6 +589,7 @@ function isStoredGitIndexEvidence(value: unknown): boolean {
         typeof value.parentpath !== "string" ||
         !isAbsolute(value.parentpath) ||
         value.parentpath.includes("\0") ||
+        dirname(value.path) !== value.parentpath ||
         !isStoredSerializedIdentity(value.parentidentity, false)
     ) {
         return false;

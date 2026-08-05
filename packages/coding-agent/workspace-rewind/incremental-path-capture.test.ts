@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { chmod, link, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,7 @@ describe("IncrementalPathCapture", () => {
         vi.doUnmock("node:child_process");
         vi.doUnmock("node:fs/promises");
         vi.doUnmock("./anchored-reader");
+        vi.doUnmock("./workspace-scope");
         vi.resetModules();
         if (previousDataHome == null) delete process.env.WAVETERM_DATA_HOME;
         else process.env.WAVETERM_DATA_HOME = previousDataHome;
@@ -105,6 +106,200 @@ describe("IncrementalPathCapture", () => {
         await expect(fixture.capture.discardCaptured(first)).rejects.toThrow(/consumed|discarded|pending/i);
         await expect(fixture.capture.discardCaptured(second)).rejects.toThrow(/consumed|discarded|pending/i);
         await expect(fixture.capture.dispose()).resolves.toBeUndefined();
+    });
+
+    test("dispose blocks new captures, aborts and awaits in-flight capture, and prevents late registration", async () => {
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        let releaseScope!: () => void;
+        let scopeStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+            scopeStarted = resolve;
+        });
+        vi.doMock("./workspace-scope", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./workspace-scope")>();
+            return {
+                ...actual,
+                classifyIncrementalWorkspacePaths: async (input: { signal?: AbortSignal }) => {
+                    scopeStarted();
+                    await new Promise<void>((resolve, reject) => {
+                        releaseScope = resolve;
+                        input.signal?.addEventListener("abort", () => reject(new Error("capture aborted by dispose")), {
+                            once: true,
+                        });
+                    });
+                    return { status: "captured" as const, entries: [], pathKinds: [] };
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        let captureSettled = false;
+        let captureOutcome: "resolved" | "rejected" | undefined;
+        const pending = capture
+            .capture(["README.md"])
+            .then(
+                () => {
+                    captureOutcome = "resolved";
+                },
+                () => {
+                    captureOutcome = "rejected";
+                }
+            )
+            .finally(() => {
+                captureSettled = true;
+            });
+        await started;
+
+        await capture.dispose();
+        const disposeReturnedBeforeCapture = !captureSettled;
+        releaseScope();
+        await pending;
+
+        expect(disposeReturnedBeforeCapture).toBe(false);
+        expect(captureOutcome).toBe("rejected");
+        expect(capture.pendingBatches.size).toBe(0);
+        await expect(capture.capture([])).rejects.toThrow(/disposed/i);
+    });
+
+    test("preserves consumer and cleanup failures and allows cleanup retry without re-consuming", async () => {
+        await writeFile(join(workspace, "README.md"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(workspace, "README.md"), "after");
+        const cleanupError = new Error("staging cleanup failed");
+        const consumerError = new Error("consumer failed");
+        let stagingRoot: string | undefined;
+        let cleanupFailures = 1;
+        vi.doMock("node:fs/promises", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:fs/promises")>();
+            return {
+                ...actual,
+                mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+                    const result = await actual.mkdtemp(...args);
+                    if (String(args[0]).includes("crest-incremental-path-capture-")) stagingRoot = result;
+                    return result;
+                },
+                rm: async (...args: Parameters<typeof actual.rm>) => {
+                    if (String(args[0]) === stagingRoot && cleanupFailures > 0) {
+                        cleanupFailures -= 1;
+                        throw cleanupError;
+                    }
+                    return actual.rm(...args);
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        const result = await capture.capture(["README.md"]);
+        let failure: unknown;
+        try {
+            await capture.consumeCaptured(result, async () => {
+                throw consumerError;
+            });
+        } catch (error) {
+            failure = error;
+        }
+
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual([consumerError, cleanupError]);
+        await expect(stat(stagingRoot!)).resolves.toBeDefined();
+        await expect(capture.consumeCaptured(result, async () => undefined)).rejects.toThrow(/consumed/i);
+        await expect(capture.discardCaptured(result)).resolves.toBeUndefined();
+        await expect(stat(stagingRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("retains cleanup ownership when dispose fails and retries it on the next dispose", async () => {
+        await writeFile(join(workspace, "README.md"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(workspace, "README.md"), "after");
+        const cleanupError = new Error("dispose cleanup failed");
+        let stagingRoot: string | undefined;
+        let cleanupFailures = 1;
+        vi.doMock("node:fs/promises", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:fs/promises")>();
+            return {
+                ...actual,
+                mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+                    const result = await actual.mkdtemp(...args);
+                    if (String(args[0]).includes("crest-incremental-path-capture-")) stagingRoot = result;
+                    return result;
+                },
+                rm: async (...args: Parameters<typeof actual.rm>) => {
+                    if (String(args[0]) === stagingRoot && cleanupFailures > 0) {
+                        cleanupFailures -= 1;
+                        throw cleanupError;
+                    }
+                    return actual.rm(...args);
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        await capture.capture(["README.md"]);
+
+        await expect(capture.dispose()).rejects.toBeInstanceOf(AggregateError);
+        expect(capture.pendingBatches.size).toBe(1);
+        await expect(stat(stagingRoot!)).resolves.toBeDefined();
+        await expect(capture.dispose()).resolves.toBeUndefined();
+        expect(capture.pendingBatches.size).toBe(0);
+        await expect(stat(stagingRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("retains in-flight staging cleanup ownership across a failed dispose", async () => {
+        await writeFile(join(workspace, "README.md"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(workspace, "README.md"), "after");
+        let stagingRoot: string | undefined;
+        let cleanupFailures = 2;
+        vi.doMock("./anchored-reader", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./anchored-reader")>();
+            return {
+                ...actual,
+                runAnchoredReaderBatch: async (input: Parameters<typeof actual.runAnchoredReaderBatch>[0]) =>
+                    await new Promise((_, reject) => {
+                        input.signal.addEventListener(
+                            "abort",
+                            () => reject(new actual.AnchoredReaderError("aborted", "reader aborted")),
+                            { once: true }
+                        );
+                    }),
+            };
+        });
+        vi.doMock("node:fs/promises", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:fs/promises")>();
+            return {
+                ...actual,
+                mkdtemp: async (...args: Parameters<typeof actual.mkdtemp>) => {
+                    const result = await actual.mkdtemp(...args);
+                    if (String(args[0]).includes("crest-incremental-path-capture-")) stagingRoot = result;
+                    return result;
+                },
+                rm: async (...args: Parameters<typeof actual.rm>) => {
+                    if (String(args[0]) === stagingRoot && cleanupFailures > 0) {
+                        cleanupFailures -= 1;
+                        throw new Error("in-flight staging cleanup failed");
+                    }
+                    return actual.rm(...args);
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        const pending = capture.capture(["README.md"]).catch(() => undefined);
+        await vi.waitFor(() => expect(stagingRoot).toBeDefined());
+
+        await expect(capture.dispose()).rejects.toBeInstanceOf(AggregateError);
+        await pending;
+        await expect(stat(stagingRoot!)).resolves.toBeDefined();
+        await expect(capture.dispose()).resolves.toBeUndefined();
+        await expect(stat(stagingRoot!)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     test("returns scope-invalidated for ignore, Git metadata, nested repository, and root identity changes", async () => {
@@ -182,6 +377,76 @@ describe("IncrementalPathCapture", () => {
             newlyHashedBytes: 18,
         });
         await fixture.capture.discardCaptured(result);
+    });
+
+    test.runIf(process.platform !== "win32")("fails closed before creating private staging on Windows", async () => {
+        await writeFile(join(workspace, "README.md"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(workspace, "README.md"), "after");
+        const [parentIdentity, entryIdentity] = await Promise.all([
+            lstat(workspace, { bigint: true }),
+            lstat(join(workspace, "README.md"), { bigint: true }),
+        ]);
+        let readerCalls = 0;
+        vi.doMock("./anchored-reader", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./anchored-reader")>();
+            return {
+                ...actual,
+                runAnchoredReaderBatch: async () => {
+                    readerCalls += 1;
+                    throw new Error("reader should not start on Windows");
+                },
+            };
+        });
+        vi.doMock("./workspace-scope", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./workspace-scope")>();
+            return {
+                ...actual,
+                classifyIncrementalWorkspacePaths: async () => ({
+                    status: "captured" as const,
+                    entries: [
+                        {
+                            pathBytes: Buffer.from("README.md"),
+                            path: "README.md",
+                            kind: "file" as const,
+                            tracked: false,
+                            executable: false,
+                            size: Number(entryIdentity.size),
+                            parentIdentity: {
+                                dev: parentIdentity.dev,
+                                ino: parentIdentity.ino,
+                                birthtimeNs: parentIdentity.birthtimeNs,
+                            },
+                            entryIdentity: {
+                                dev: entryIdentity.dev,
+                                ino: entryIdentity.ino,
+                                birthtimeNs: entryIdentity.birthtimeNs,
+                                mode: entryIdentity.mode,
+                                nlink: entryIdentity.nlink,
+                                size: entryIdentity.size,
+                                mtimeNs: entryIdentity.mtimeNs,
+                                ctimeNs: entryIdentity.ctimeNs,
+                            },
+                        },
+                    ],
+                    pathKinds: [{ path: "README.md", kind: "leaf" as const }],
+                }),
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({ ...fixture.options, git: isolatedGit });
+        const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+        try {
+            await expect(capture.capture(["README.md"])).resolves.toEqual({
+                status: "reconcile",
+                reason: "unsafe-evidence",
+            });
+            expect(readerCalls).toBe(0);
+        } finally {
+            platform.mockRestore();
+        }
     });
 
     test("fails closed for hard links and aggregate hash budget exhaustion", async () => {
@@ -375,6 +640,94 @@ describe("IncrementalPathCapture", () => {
 
         await expect(pending).rejects.toMatchObject({ code: "aborted" });
         await expect(stat(stagingRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    test("starts one capture deadline before scope and index work", async () => {
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        let observedAbort = false;
+        vi.doMock("./workspace-scope", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./workspace-scope")>();
+            return {
+                ...actual,
+                classifyIncrementalWorkspacePaths: async (input: { signal?: AbortSignal }) =>
+                    await new Promise((resolve, reject) => {
+                        const timer = setTimeout(
+                            () => resolve({ status: "captured" as const, entries: [], pathKinds: [] }),
+                            150
+                        );
+                        input.signal?.addEventListener(
+                            "abort",
+                            () => {
+                                observedAbort = true;
+                                clearTimeout(timer);
+                                reject(input.signal!.reason);
+                            },
+                            { once: true }
+                        );
+                    }),
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({
+            ...fixture.options,
+            git: isolatedGit,
+            timeoutMs: 30,
+        });
+        const outcome = await capture.capture(["README.md"]).then(
+            (result) => ({ status: "resolved" as const, result }),
+            (error) => ({ status: "rejected" as const, error })
+        );
+        if (outcome.status === "resolved") await capture.discardCaptured(outcome.result);
+
+        expect(outcome.status).toBe("rejected");
+        expect(observedAbort).toBe(true);
+        if (outcome.status === "rejected") expect(outcome.error).toMatchObject({ code: "timeout" });
+    });
+
+    test("applies the same capture deadline to base-kind work", async () => {
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        vi.doMock("./workspace-scope", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("./workspace-scope")>();
+            return {
+                ...actual,
+                classifyIncrementalWorkspacePaths: async () => ({
+                    status: "captured" as const,
+                    entries: [
+                        {
+                            pathBytes: Buffer.from("README.md"),
+                            path: "README.md",
+                            kind: "absent" as const,
+                            tracked: false,
+                        },
+                    ],
+                    pathKinds: [{ path: "README.md", kind: "absent" as const }],
+                }),
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./incremental-path-capture");
+        const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        const capture = new isolated.IncrementalPathCapture({
+            ...fixture.options,
+            git: isolatedGit,
+            timeoutMs: 30,
+            base: {
+                readNodeKind: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 150));
+                    return "absent" as const;
+                },
+            },
+        });
+        const outcome = await capture.capture(["README.md"]).then(
+            (result) => ({ status: "resolved" as const, result }),
+            (error) => ({ status: "rejected" as const, error })
+        );
+        if (outcome.status === "resolved") await capture.discardCaptured(outcome.result);
+
+        expect(outcome.status).toBe("rejected");
+        if (outcome.status === "rejected") expect(outcome.error).toMatchObject({ code: "timeout" });
     });
 
     test("maps Git runner failures to unsafe evidence instead of a path race", async () => {

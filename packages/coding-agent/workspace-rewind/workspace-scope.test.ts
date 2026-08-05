@@ -4,7 +4,20 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
-import { chmod, link, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+    chmod,
+    link,
+    mkdir,
+    mkdtemp,
+    readFile,
+    readdir,
+    rename,
+    rm,
+    stat,
+    symlink,
+    utimes,
+    writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -13,7 +26,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
-import { discoverWorkspaceScope, type WorkspaceScopeEntry } from "./workspace-scope";
+import { classifyIncrementalWorkspacePaths, discoverWorkspaceScope, type WorkspaceScopeEntry } from "./workspace-scope";
 
 const execFileAsync = promisify(execFile);
 const TwoMiB = 2 * 1024 * 1024;
@@ -133,6 +146,182 @@ describe("discoverWorkspaceScope", () => {
                 }),
             ])
         );
+    });
+
+    test("does not open stable warm Git index content during incremental scope checks", async () => {
+        const workspace = join(root, "repository");
+        await mkdir(workspace);
+        await git(workspace, "init");
+        await writeFile(join(workspace, "tracked.txt"), "tracked");
+        await git(workspace, "add", "tracked.txt");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        const indexPath = scope.manifest.gitIndex?.path;
+        expect(indexPath).toBeTruthy();
+        let indexOpenCount = 0;
+        const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2_000);
+        vi.resetModules();
+        vi.doMock("node:fs/promises", async () => {
+            const actual = await vi.importActual<typeof fsPromises>("node:fs/promises");
+            return {
+                ...actual,
+                open: async (...args: Parameters<typeof actual.open>) => {
+                    const path = Buffer.isBuffer(args[0]) ? args[0].toString() : String(args[0]);
+                    if (path === indexPath) {
+                        indexOpenCount += 1;
+                        throw new Error("stable index content must not be opened");
+                    }
+                    return actual.open(...args);
+                },
+            };
+        });
+        try {
+            const [isolatedScope, isolatedGit] = await Promise.all([
+                import("./workspace-scope"),
+                import("./git-runner"),
+            ]);
+
+            await expect(
+                isolatedScope.classifyIncrementalWorkspacePaths({
+                    identity,
+                    git: new isolatedGit.WorkspaceGitRunner(),
+                    scope: scope.manifest,
+                    paths: ["tracked.txt"],
+                    maxEntries: 10_000,
+                    maxUntrackedBytes: TwoMiB,
+                })
+            ).resolves.toMatchObject({ status: "captured" });
+            expect(indexOpenCount).toBe(0);
+        } finally {
+            clock.mockRestore();
+            vi.doUnmock("node:fs/promises");
+            vi.resetModules();
+        }
+    });
+
+    test("rehashes matching but racy Git index metadata before trusting stored content", async () => {
+        const workspace = join(root, "repository");
+        await mkdir(workspace);
+        await git(workspace, "init");
+        await writeFile(join(workspace, "tracked.txt"), "tracked");
+        await git(workspace, "add", "tracked.txt");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        const index = scope.manifest.gitIndex!;
+        const before = await stat(index.path);
+        const bytes = await readFile(index.path);
+        bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 1;
+        await writeFile(index.path, bytes);
+        await utimes(index.path, before.atime, before.mtime);
+        const current = await stat(index.path, { bigint: true });
+        index.entryIdentity = {
+            dev: current.dev.toString(),
+            ino: current.ino.toString(),
+            birthtimeNs: current.birthtimeNs.toString(),
+            mode: current.mode.toString(),
+            nlink: current.nlink.toString(),
+            size: current.size.toString(),
+            mtimeNs: current.mtimeNs.toString(),
+            ctimeNs: current.ctimeNs.toString(),
+        };
+
+        await expect(
+            classifyIncrementalWorkspacePaths({
+                identity,
+                git: gitRunner,
+                scope: scope.manifest,
+                paths: ["tracked.txt"],
+                maxEntries: 10_000,
+                maxUntrackedBytes: TwoMiB,
+            })
+        ).resolves.toEqual({ status: "reconcile", reason: "scope-invalidated" });
+    });
+
+    test("uses primary index evidence with split-index repositories when Git supports it", async () => {
+        const workspace = join(root, "split-index");
+        await mkdir(workspace);
+        await git(workspace, "init");
+        await writeFile(join(workspace, "tracked.txt"), "before");
+        await git(workspace, "add", "tracked.txt");
+        try {
+            await git(workspace, "update-index", "--split-index");
+        } catch {
+            return;
+        }
+        if (!(await readdir(join(workspace, ".git"))).some((name) => name.startsWith("sharedindex."))) return;
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        await writeFile(join(workspace, "tracked.txt"), "after");
+
+        await expect(
+            classifyIncrementalWorkspacePaths({
+                identity,
+                git: gitRunner,
+                scope: scope.manifest,
+                paths: ["tracked.txt"],
+                maxEntries: 10_000,
+                maxUntrackedBytes: TwoMiB,
+            })
+        ).resolves.toMatchObject({
+            status: "captured",
+            entries: [expect.objectContaining({ path: "tracked.txt", tracked: true })],
+        });
+    });
+
+    test("uses primary index evidence with sparse-index repositories when Git supports it", async () => {
+        const workspace = join(root, "sparse-index");
+        await mkdir(join(workspace, "src"), { recursive: true });
+        await mkdir(join(workspace, "docs"));
+        await git(workspace, "init");
+        await git(workspace, "config", "user.email", "crest@example.com");
+        await git(workspace, "config", "user.name", "Crest Test");
+        await writeFile(join(workspace, "src", "index.ts"), "before");
+        await writeFile(join(workspace, "docs", "guide.md"), "guide");
+        await git(workspace, "add", ".");
+        await git(workspace, "commit", "-m", "initial");
+        try {
+            await git(workspace, "sparse-checkout", "init", "--cone", "--sparse-index");
+            await git(workspace, "sparse-checkout", "set", "src");
+        } catch {
+            return;
+        }
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 10_000,
+            maxUntrackedBytes: TwoMiB,
+        });
+        await writeFile(join(workspace, "src", "index.ts"), "after");
+
+        await expect(
+            classifyIncrementalWorkspacePaths({
+                identity,
+                git: gitRunner,
+                scope: scope.manifest,
+                paths: ["src/index.ts"],
+                maxEntries: 10_000,
+                maxUntrackedBytes: TwoMiB,
+            })
+        ).resolves.toMatchObject({
+            status: "captured",
+            entries: [expect.objectContaining({ path: "src/index.ts", tracked: true })],
+        });
     });
 
     test("records linked-worktree ignore inputs while preserving its user index", async () => {

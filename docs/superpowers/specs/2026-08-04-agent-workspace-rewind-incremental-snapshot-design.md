@@ -394,6 +394,30 @@ watcher-gap、monorepo benchmark 和多 Session 测试前，不删除旧路径�
   benchmark matrix；
 - warm no-change capture 不发生全量枚举或与目录数成比例的进程启动。
 
+## 增量捕获安全审查收口
+
+实现阶段的安全审查补充以下约束。这些约束收敛在进程内的 capture 生命周期中，不引入
+journal、持久化 recovery 或新的用户可见状态：
+
+- Windows 暂不依赖 `chmod(0700)` 证明 staging 目录仅当前用户可访问。需要 staging 的
+  增量捕获直接 fail closed 到 full reconcile，直到实现并验证 owner-only ACL；
+- capture 实例使用 `active -> disposing -> disposed` 状态机。`dispose()` 先拒绝新捕获，
+  abort 并等待在途捕获，再清理仍归实例所有的 batch/staging root；清理失败保留 ownership，
+  后续 `dispose()` 或 `discardCaptured()` 可以重试；
+- consumer 失败与 staging cleanup 失败必须同时保留在 `AggregateError` 中，不能用清理错误
+  覆盖原始业务错误；
+- 一次 capture 只有一个总 deadline。scope/index 验证、base-kind 读取、anchored reader、
+  hash-object 和最终注册都消费同一预算；reader batch 也使用总 deadline，而不是给每个 worker
+  重新分配完整 timeout；
+- Git index 在 warm stable 路径先验证 canonical path、parent identity 和完整 entry metadata。
+  只有 identity 不可靠或仍处于 anchored-reader 的 racy window 时才重新读取并 hash 内容；
+  split-index 和 sparse-index 必须通过 capability-gated 集成测试；
+- persisted manifest 的 Git index `parentPath` 必须严格等于 `dirname(path)`，避免把路径和父目录
+  identity 拼接成互不相关的证据。
+
+这些规则只强化现有 fail-closed 模型，不改变 logical checkpoint、snapshot ref、Rewind/Redo
+或 turn Undo 的 API 与语义。
+
 ## 决策结论
 
 保留每个 durable turn 的逻辑 checkpoint 和现有 fail-closed Rewind 语义。把物理层从
