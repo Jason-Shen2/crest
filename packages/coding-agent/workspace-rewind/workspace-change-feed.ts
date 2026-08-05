@@ -16,6 +16,7 @@ import {
     readAnchoredCursorRootIdentity,
     removeAbandonedCursorArtifacts,
     removeAnchoredCursor,
+    sameCursor,
     sameDirectoryIdentity,
     withMaterializedCursor,
     writeWatcherCursor,
@@ -29,6 +30,7 @@ export interface WorkspaceChangeFeed {
     prepareForReconcile(): Promise<void>;
     initializeAfterReconcile(): Promise<void>;
     readChanges(): Promise<WorkspaceChangeRead>;
+    advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead>;
     commitCursor(candidateCursor: string): Promise<void>;
     markGap(): void;
     dispose(): Promise<void>;
@@ -349,6 +351,64 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         state.callbackPaths.clear();
     }
 
+    async advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
+        const state = getState(this);
+        const current = state.candidate;
+        if (
+            state.gapReason ||
+            state.disposed ||
+            state.preparedCursor ||
+            !state.initialized ||
+            !current ||
+            !CandidateTokenPattern.test(candidateCursor) ||
+            current.token !== candidateCursor
+        ) {
+            await rejectCandidate(state, current);
+        }
+        const continuityGeneration = state.continuityGeneration;
+        const nextToken = randomBytes(16).toString("hex");
+        let next: AnchoredWorkspaceCursor | undefined;
+        try {
+            const observed = await readAnchoredCursor(state.trackerRoot, current.cursor.name);
+            if (
+                !observed ||
+                !sameCursor(observed, current.cursor) ||
+                !state.trackerIdentity ||
+                !sameDirectoryIdentity(observed.rootIdentity, state.trackerIdentity)
+            ) {
+                throw new Error("Invalid or stale candidate cursor");
+            }
+            state.callbackPaths.clear();
+            next = await writeWatcherCursor({
+                root: state.trackerRoot,
+                name: `candidate-${nextToken}.cursor`,
+                workspaceRoot: state.workspaceRoot,
+                writer: state.watcher,
+                expectedRootIdentity: state.trackerIdentity,
+                hooks: state.testHooks,
+            });
+            assertContinuityFence(state, continuityGeneration);
+            const interval = await withMaterializedCursor(current.cursor, (path) =>
+                state.watcher.getEventsSince(state.workspaceRoot, path)
+            );
+            addEvents(state, interval);
+            assertContinuityFence(state, continuityGeneration);
+            await removeAnchoredCursor({ root: state.trackerRoot, cursor: current.cursor, hooks: state.testHooks });
+            assertContinuityFence(state, continuityGeneration);
+        } catch {
+            await abandonCandidateTransition(state, current, next);
+            return gap(state);
+        }
+        state.candidate = { token: nextToken, cursor: next };
+        const changedPaths = [...state.callbackPaths].sort(comparePathBytes);
+        return {
+            status: "complete",
+            changedPaths,
+            scopeInvalidated: changedPaths.some(invalidatesScope),
+            candidateCursor: nextToken,
+        };
+    }
+
     markGap(): void {
         setGap(getState(this), "query-failed");
     }
@@ -417,6 +477,34 @@ async function removeCandidate(state: FeedState): Promise<void> {
     state.candidate = undefined;
     if (!candidate) return;
     await removeAnchoredCursor({ root: state.trackerRoot, cursor: candidate.cursor, hooks: state.testHooks });
+}
+
+async function rejectCandidate(state: FeedState, candidate?: CandidateCursor): Promise<never> {
+    state.candidate = undefined;
+    if (candidate) {
+        await removeAnchoredCursor({ root: state.trackerRoot, cursor: candidate.cursor, hooks: state.testHooks }).catch(
+            () => undefined
+        );
+    }
+    setGap(state, "query-failed");
+    throw new Error("Invalid or stale candidate cursor");
+}
+
+async function abandonCandidateTransition(
+    state: FeedState,
+    current: CandidateCursor,
+    next?: AnchoredWorkspaceCursor
+): Promise<void> {
+    state.candidate = undefined;
+    if (next) {
+        await removeAnchoredCursor({ root: state.trackerRoot, cursor: next, hooks: state.testHooks }).catch(
+            () => undefined
+        );
+    }
+    await removeAnchoredCursor({ root: state.trackerRoot, cursor: current.cursor, hooks: state.testHooks }).catch(
+        () => undefined
+    );
+    setGap(state, "query-failed");
 }
 
 function addEvents(state: FeedState, events: readonly WorkspaceChangeEvent[]): void {

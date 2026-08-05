@@ -10,7 +10,7 @@ import type { IncrementalPathMutation } from "./incremental-tree";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
-import type { WorkspaceChangeFeed } from "./workspace-change-feed";
+import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceScopeManifest } from "./workspace-scope";
 import {
@@ -186,7 +186,7 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
         if (changes.changedPaths.length === 0) {
             return await this.publishEmptyCapture(changes.candidateCursor);
         }
-        return await this.captureDirty(options, changes.changedPaths);
+        return await this.captureDirty(options, changes.changedPaths, changes.candidateCursor);
     }
 
     async loadDurableState(): Promise<void> {
@@ -250,22 +250,32 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
 
     async captureDirty(
         options: CaptureWorkspaceOptions,
-        initialPaths: readonly string[]
+        initialPaths: readonly string[],
+        initialCandidateCursor: string
     ): Promise<WorkspaceSnapshotCapture> {
         let paths = canonicalPaths(initialPaths);
+        let candidateCursor = initialCandidateCursor;
         for (let attempt = 0; attempt < 2; attempt++) {
             const result = await this.pathCapture!.capture(paths, options.signal);
             if (result.status === "reconcile") return await this.fullReconcile(options);
-            const validation = await this.feed.readChanges();
+            let validation: WorkspaceChangeRead;
+            try {
+                validation = await this.feed.advanceCandidate(candidateCursor);
+            } catch (error) {
+                await this.pathCapture!.discardCaptured(result).catch(() => undefined);
+                this.needsReconcile = true;
+                this.feed.markGap();
+                throw error;
+            }
             if (validation.status === "gap" || validation.scopeInvalidated) {
                 await this.pathCapture!.discardCaptured(result);
                 return await this.fullReconcile(options);
             }
-            const merged = canonicalPaths([...paths, ...validation.changedPaths]);
-            if (merged.length !== paths.length) {
+            if (validation.changedPaths.length > 0) {
                 await this.pathCapture!.discardCaptured(result);
                 if (attempt === 1) return await this.fullReconcile(options);
-                paths = merged;
+                paths = canonicalPaths([...paths, ...validation.changedPaths]);
+                candidateCursor = validation.candidateCursor;
                 continue;
             }
             return await this.commitIncremental(options, result, validation.candidateCursor);

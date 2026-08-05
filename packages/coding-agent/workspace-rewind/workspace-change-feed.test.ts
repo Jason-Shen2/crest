@@ -32,6 +32,7 @@ class FakeWatcher implements WorkspaceChangeWatcher {
     callback?: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown;
     events: WorkspaceChangeEvent[] = [];
     queryError?: Error;
+    querySnapshots: string[] = [];
     onQuery?: () => void;
     onSnapshot?: () => void;
     snapshot = 0;
@@ -43,9 +44,10 @@ class FakeWatcher implements WorkspaceChangeWatcher {
     unsubscribeGate?: Promise<void>;
     unsubscribeCalls = 0;
 
-    async getEventsSince(): Promise<WorkspaceChangeEvent[]> {
+    async getEventsSince(_directory: string, snapshot: string): Promise<WorkspaceChangeEvent[]> {
         if (this.queryError) throw this.queryError;
         this.onQuery?.();
+        this.querySnapshots.push(await readFile(snapshot, "utf8"));
         return [...this.events];
     }
 
@@ -256,6 +258,70 @@ describe("ParcelWorkspaceChangeFeed", () => {
         watcher.events = [];
         const afterCommit = await feed.readChanges();
         expect(afterCommit.status === "complete" && afterCommit.changedPaths).toEqual([]);
+    });
+
+    test("advances from the supplied candidate and replaces it with interval-only same-path evidence", async () => {
+        await reconcile(feed);
+        watcher.events = [{ type: "update", path: join(workspaceRoot, "a.txt") }];
+        const first = await feed.readChanges();
+        if (first.status !== "complete") throw new Error("expected complete read");
+        const firstCandidateName = `candidate-${first.candidateCursor}.cursor`;
+
+        watcher.events = [{ type: "update", path: join(workspaceRoot, "a.txt") }];
+        const advanced = await feed.advanceCandidate(first.candidateCursor);
+
+        expect(advanced).toMatchObject({
+            status: "complete",
+            changedPaths: ["a.txt"],
+            scopeInvalidated: false,
+        });
+        if (advanced.status !== "complete") return;
+        expect(advanced.candidateCursor).not.toBe(first.candidateCursor);
+        expect(watcher.querySnapshots.at(-1)).toBe("3");
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([
+            `candidate-${advanced.candidateCursor}.cursor`,
+        ]);
+        expect(await stat(join(storeRoot, "tracker", firstCandidateName)).catch(() => undefined)).toBeUndefined();
+    });
+
+    test("fails closed and cleans candidates when candidate advancement receives a stale token", async () => {
+        await reconcile(feed);
+        const first = await feed.readChanges();
+        if (first.status !== "complete") throw new Error("expected complete read");
+
+        await expect(feed.advanceCandidate("0".repeat(32))).rejects.toThrow(/candidate cursor/i);
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "query-failed" });
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([]);
+    });
+
+    test("fails closed and cleans both candidates when interval query fails", async () => {
+        await reconcile(feed);
+        const first = await feed.readChanges();
+        if (first.status !== "complete") throw new Error("expected complete read");
+        watcher.queryError = new Error("query failed");
+
+        await expect(feed.advanceCandidate(first.candidateCursor)).resolves.toEqual({
+            status: "gap",
+            reason: "query-failed",
+        });
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([]);
+    });
+
+    test("preserves callback continuity and scope invalidation across candidate advancement", async () => {
+        await reconcile(feed);
+        const first = await feed.readChanges();
+        if (first.status !== "complete") throw new Error("expected complete read");
+        watcher.events = [{ type: "update", path: join(workspaceRoot, ".gitignore") }];
+        watcher.onSnapshot = () => {
+            watcher.onSnapshot = undefined;
+            watcher.callback?.(null, [{ type: "update", path: join(workspaceRoot, "callback.txt") }]);
+        };
+
+        await expect(feed.advanceCandidate(first.candidateCursor)).resolves.toMatchObject({
+            status: "complete",
+            changedPaths: [".gitignore", "callback.txt"],
+            scopeInvalidated: true,
+        });
     });
 
     test("rejects forged, stale, and foreign candidate cursor tokens", async () => {

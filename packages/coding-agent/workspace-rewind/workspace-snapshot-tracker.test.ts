@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import type { IncrementalPathCaptureResult } from "./incremental-path-capture";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
 import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
-import type { WorkspaceChangeRead } from "./workspace-change-feed";
+import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
 import {
     WorkspaceSnapshotTracker,
     type WorkspaceSnapshotTrackerPathCapture,
@@ -85,20 +85,26 @@ describe("WorkspaceSnapshotTracker", () => {
         expect(fixture.store.captureFullReconcile).toHaveBeenCalledTimes(1);
     });
 
-    test("recaptures merged evidence once and publishes snapshot, cursor, state, then in-memory current", async () => {
+    test("recaptures a same-path interval mutation and commits only bytes covered by the stable candidate", async () => {
         const fixture = makeFixture();
         await fixture.tracker.capture({ profile: "pre-turn" });
         fixture.order.length = 0;
-        fixture.feed.readChanges
-            .mockResolvedValueOnce(complete(["a.txt"], "candidate-1"))
-            .mockResolvedValueOnce(complete(["a.txt", "b.txt"], "candidate-2"))
-            .mockResolvedValueOnce(complete(["a.txt", "b.txt"], "candidate-3"));
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        fixture.feed.advanceCandidate
+            .mockResolvedValueOnce(complete(["a.txt"], "candidate-2"))
+            .mockResolvedValueOnce(complete([], "candidate-3"));
         fixture.pathCapture.capture
-            .mockResolvedValueOnce(captured("a.txt"))
-            .mockResolvedValueOnce(captured("a.txt", "b.txt"));
+            .mockResolvedValueOnce(capturedFile("a.txt", "1"))
+            .mockResolvedValueOnce(capturedFile("a.txt", "2"));
         fixture.store.computeIncrementalSnapshotCoverage.mockResolvedValue(Metadata.coverage);
-        fixture.store.commitCapturedIncrementalSnapshot.mockImplementation(async () => {
+        fixture.store.commitCapturedIncrementalSnapshot.mockImplementation(async (input) => {
             fixture.order.push("store:incremental");
+            expect(input.mutations).toEqual([
+                {
+                    path: "a.txt",
+                    state: { state: "file", oid: "2".repeat(40), executable: false },
+                },
+            ]);
             return { ref: Ref2, coverage: { ...Coverage, newlyHashedBytes: 2 } };
         });
 
@@ -108,7 +114,9 @@ describe("WorkspaceSnapshotTracker", () => {
         });
 
         expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(1, ["a.txt"], undefined);
-        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(2, ["a.txt", "b.txt"], undefined);
+        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(2, ["a.txt"], undefined);
+        expect(fixture.feed.advanceCandidate).toHaveBeenNthCalledWith(1, "candidate-1");
+        expect(fixture.feed.advanceCandidate).toHaveBeenNthCalledWith(2, "candidate-2");
         expect(fixture.pathCapture.discardCaptured).toHaveBeenCalledTimes(1);
         expect(fixture.pathCapture.consumeCaptured).toHaveBeenCalledTimes(1);
         expect(fixture.order).toEqual([
@@ -121,17 +129,15 @@ describe("WorkspaceSnapshotTracker", () => {
         expect(fixture.store.captureFullReconcile).toHaveBeenCalledTimes(1);
     });
 
-    test("falls back to the same reconcile lifecycle when evidence remains unstable after one retry", async () => {
+    test("falls back to full reconcile when the same path changes again after the single retry", async () => {
         const fixture = makeFixture();
         await fixture.tracker.capture({ profile: "pre-turn" });
         fixture.order.length = 0;
-        fixture.feed.readChanges
-            .mockResolvedValueOnce(complete(["a.txt"], "candidate-1"))
-            .mockResolvedValueOnce(complete(["a.txt", "b.txt"], "candidate-2"))
-            .mockResolvedValueOnce(complete(["a.txt", "b.txt", "c.txt"], "candidate-3"));
-        fixture.pathCapture.capture
-            .mockResolvedValueOnce(captured("a.txt"))
-            .mockResolvedValueOnce(captured("a.txt", "b.txt"));
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        fixture.feed.advanceCandidate
+            .mockResolvedValueOnce(complete(["a.txt"], "candidate-2"))
+            .mockResolvedValueOnce(complete(["a.txt"], "candidate-3"));
+        fixture.pathCapture.capture.mockResolvedValueOnce(captured("a.txt")).mockResolvedValueOnce(captured("a.txt"));
         fixture.store.captureFullReconcile.mockResolvedValueOnce({ ref: Ref3, coverage: Coverage });
 
         await expect(fixture.tracker.capture({ profile: "terminal" })).resolves.toEqual({
@@ -177,6 +183,26 @@ describe("WorkspaceSnapshotTracker", () => {
             "feed:initialize",
             "state:publish:2",
         ]);
+        expectReconcileOrder(fixture);
+    });
+
+    test.each([
+        ["validation gap", { status: "gap", reason: "query-failed" } as WorkspaceChangeRead],
+        ["validation scope invalidation", complete([".gitignore"], "candidate-2", true)],
+    ])("discards captured bytes and fully reconciles after %s", async (_name, validation) => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        fixture.feed.advanceCandidate.mockResolvedValueOnce(validation);
+        fixture.store.captureFullReconcile.mockResolvedValueOnce({ ref: Ref2, coverage: Coverage });
+
+        await expect(fixture.tracker.capture({ profile: "terminal" })).resolves.toEqual({
+            ref: Ref2,
+            coverage: Coverage,
+        });
+
+        expect(fixture.pathCapture.discardCaptured).toHaveBeenCalledTimes(1);
+        expect(fixture.store.commitCapturedIncrementalSnapshot).not.toHaveBeenCalled();
         expectReconcileOrder(fixture);
     });
 
@@ -241,9 +267,8 @@ describe("WorkspaceSnapshotTracker", () => {
             };
             const fixture = makeFixture({ hooks });
             await fixture.tracker.capture({ profile: "pre-turn" });
-            fixture.feed.readChanges
-                .mockResolvedValueOnce(complete(["a.txt"], "candidate-1"))
-                .mockResolvedValueOnce(complete(["a.txt"], "candidate-2"));
+            fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+            fixture.feed.advanceCandidate.mockResolvedValueOnce(complete([], "candidate-2"));
             fixture.pathCapture.capture.mockResolvedValueOnce(captured("a.txt"));
             fixture.store.computeIncrementalSnapshotCoverage.mockResolvedValue(Metadata.coverage);
             fixture.store.commitCapturedIncrementalSnapshot.mockResolvedValue({
@@ -323,7 +348,12 @@ function makeFixture(
             return Metadata;
         }),
         computeIncrementalSnapshotCoverage: vi.fn(async () => Metadata.coverage),
-        commitCapturedIncrementalSnapshot: vi.fn(async () => ({ ref: Ref2, coverage: Coverage })),
+        commitCapturedIncrementalSnapshot: vi.fn(
+            async (_input: Parameters<WorkspaceSnapshotTrackerStore["commitCapturedIncrementalSnapshot"]>[0]) => ({
+                ref: Ref2,
+                coverage: Coverage,
+            })
+        ),
         readNodeKind: vi.fn(async () => "leaf" as const),
         verifyOwnedSnapshot: vi.fn(async () => undefined),
         diff: vi.fn(async () => []),
@@ -339,12 +369,16 @@ function makeFixture(
             order.push("feed:read");
             return complete([], "empty");
         }),
+        advanceCandidate: vi.fn(async (cursor: string) => {
+            order.push(`feed:advance:${cursor}`);
+            return complete([], `${cursor}-next`);
+        }),
         commitCursor: vi.fn(async (cursor: string) => {
             order.push(`feed:commit:${cursor}`);
         }),
         markGap: vi.fn(),
         dispose: vi.fn(async () => undefined),
-    };
+    } satisfies WorkspaceChangeFeed;
     const pathCapture = {
         capture: vi.fn(async (paths) => {
             order.push(`path:capture:${paths.join(",")}`);
@@ -405,6 +439,19 @@ function captured(...paths: string[]): IncrementalPathCaptureResult {
         status: "captured",
         mutations: paths.map((path) => ({ path, state: { state: "excluded", reason: "ignored" } })),
         newlyHashedBytes: paths.length,
+    };
+}
+
+function capturedFile(path: string, oidDigit: string): IncrementalPathCaptureResult {
+    return {
+        status: "captured",
+        mutations: [
+            {
+                path,
+                state: { state: "file", oid: oidDigit.repeat(40), executable: false },
+            },
+        ],
+        newlyHashedBytes: 2,
     };
 }
 
