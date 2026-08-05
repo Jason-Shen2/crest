@@ -133,6 +133,34 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
     });
 
+    test.each(["callback error", "hint overflow"] as const)(
+        "fails closed when %s races post-reconcile cursor publication",
+        async (gapKind) => {
+            await feed.dispose();
+            let armed = false;
+            feed = new ParcelWorkspaceChangeFeed({
+                workspaceRoot,
+                storeRoot,
+                watcher,
+                callbackPathCapacity: 1,
+                testHooks: {
+                    beforeAnchoredMutation: (operation) => {
+                        if (!armed || operation !== "commit-publish") return;
+                        armed = false;
+                        emitCallbackGap(watcher, workspaceRoot, gapKind);
+                    },
+                },
+            });
+            await feed.prepareForReconcile();
+            armed = true;
+
+            await expect(feed.initializeAfterReconcile()).rejects.toThrow(/continuity|gap/i);
+            await expect(feed.readChanges()).resolves.toMatchObject({ status: "gap" });
+            await expect(reconcile(feed)).resolves.toBeUndefined();
+            await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+        }
+    );
+
     test("unions historical and callback paths with canonical byte sorting and de-duplication", async () => {
         await reconcile(feed);
         watcher.events = [
@@ -493,6 +521,36 @@ describe("ParcelWorkspaceChangeFeed", () => {
         expect(await readFile(join(trackerRoot, "committed.cursor"))).toEqual(replacementBytes);
     });
 
+    test.each(["callback error", "hint overflow"] as const)(
+        "fails closed when %s races candidate cursor publication",
+        async (gapKind) => {
+            await feed.dispose();
+            let armed = false;
+            feed = new ParcelWorkspaceChangeFeed({
+                workspaceRoot,
+                storeRoot,
+                watcher,
+                callbackPathCapacity: 1,
+                testHooks: {
+                    beforeAnchoredMutation: (operation) => {
+                        if (!armed || operation !== "commit-publish") return;
+                        armed = false;
+                        emitCallbackGap(watcher, workspaceRoot, gapKind);
+                    },
+                },
+            });
+            await reconcile(feed);
+            const result = await feed.readChanges();
+            if (result.status !== "complete") throw new Error("expected complete read");
+            armed = true;
+
+            await expect(feed.commitCursor(result.candidateCursor)).rejects.toThrow(/continuity|candidate/i);
+            await expect(feed.readChanges()).resolves.toMatchObject({ status: "gap" });
+            await expect(reconcile(feed)).resolves.toBeUndefined();
+            await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+        }
+    );
+
     test("unsubscribes a subscription that resolves after disposal", async () => {
         let resolveSubscribe!: () => void;
         let signalSubscribeStarted!: () => void;
@@ -550,4 +608,15 @@ describe("ParcelWorkspaceChangeFeed", () => {
 async function reconcile(feed: ParcelWorkspaceChangeFeed): Promise<void> {
     await feed.prepareForReconcile();
     await feed.initializeAfterReconcile();
+}
+
+function emitCallbackGap(watcher: FakeWatcher, workspaceRoot: string, kind: "callback error" | "hint overflow"): void {
+    if (kind === "callback error") {
+        watcher.callback?.(new Error("callback failed during publication"), []);
+        return;
+    }
+    watcher.callback?.(null, [
+        { type: "update", path: join(workspaceRoot, "overflow-a.txt") },
+        { type: "update", path: join(workspaceRoot, "overflow-b.txt") },
+    ]);
 }

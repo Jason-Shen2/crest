@@ -202,6 +202,11 @@ uncovered interval；这段时间的修改可能既不在 full baseline 中，�
 取并集。重复/乱序调用、subscription/query failure、callback overflow、unsafe path、dispose race 都保持 gap，
 不得发布 baseline。Task 6 的所有 full reconcile fallback 都必须通过同一 lifecycle。
 
+cursor publication 还必须使用 monotonic continuity generation fence：initialize 和 candidate commit 在开始时
+捕获 generation，并在每个 awaited anchored mutation 后、发布 in-memory success 前复核 generation、gap 与
+disposed。若 callback error/overflow 或 dispose 在磁盘 publication 期间改变 continuity，调用必须失败并把
+lifecycle 标为 uninitialized；磁盘上的新 cursor 在下一次完整 prepare → reconcile → initialize 前不可信。
+
 ### Immutable version 与结构共享
 
 每个版本在逻辑上仍代表完整 workspace，物理上只创建变化路径及其祖先的新对象：

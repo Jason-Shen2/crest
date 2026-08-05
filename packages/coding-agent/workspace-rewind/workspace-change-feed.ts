@@ -69,6 +69,7 @@ interface FeedState {
     watcher: WorkspaceChangeWatcher;
     callbackPaths: Set<string>;
     callbackPathCapacity: number;
+    continuityGeneration: number;
     gapReason?: "query-failed" | "unsafe-path";
     subscription?: WorkspaceChangeSubscription;
     subscriptionPromise?: Promise<WorkspaceChangeSubscription>;
@@ -105,6 +106,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             watcher: options.watcher ?? ParcelWatcher,
             callbackPaths: new Set(),
             callbackPathCapacity,
+            continuityGeneration: 0,
             disposed: false,
             initialized: false,
             testHooks: options.testHooks,
@@ -131,7 +133,8 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 state.preparedCursor = undefined;
             }
             state.callbackPaths.clear();
-            state.gapReason = undefined;
+            clearGap(state);
+            state.initialized = false;
             await ensurePrivateCursorRoot(state.trackerRoot);
             await ensureSubscription(state);
             await removeCandidate(state);
@@ -157,6 +160,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             throw new Error("Workspace change feed reconcile was not prepared");
         }
         if (state.gapReason) throw new Error("Workspace change feed reconcile has a continuity gap");
+        const continuityGeneration = state.continuityGeneration;
         let post: AnchoredWorkspaceCursor | undefined;
         try {
             post = await writeWatcherCursor({
@@ -166,17 +170,19 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 writer: state.watcher,
                 hooks: state.testHooks,
             });
+            assertContinuityFence(state, continuityGeneration);
             const events = await withMaterializedCursor(prepared, (path) =>
                 state.watcher.getEventsSince(state.workspaceRoot, path)
             );
             addEvents(state, events);
-            if (state.gapReason) throw new Error("Workspace change feed reconcile has a continuity gap");
+            assertContinuityFence(state, continuityGeneration);
         } catch (error) {
             if (post) {
                 await removeAnchoredCursor({ root: state.trackerRoot, cursor: post, hooks: state.testHooks }).catch(
                     () => undefined
                 );
             }
+            state.initialized = false;
             setGap(state, "query-failed");
             throw error;
         }
@@ -187,10 +193,13 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 committedName: CommittedCursorName,
                 hooks: state.testHooks,
             });
+            assertContinuityFence(state, continuityGeneration);
             await removeAnchoredCursor({ root: state.trackerRoot, cursor: prepared, hooks: state.testHooks });
             state.preparedCursor = undefined;
+            assertContinuityFence(state, continuityGeneration);
             state.initialized = true;
         } catch (error) {
+            state.initialized = false;
             setGap(state, "query-failed");
             throw error;
         }
@@ -219,6 +228,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             return gap(state);
         }
 
+        const continuityGeneration = state.continuityGeneration;
         const token = randomBytes(16).toString("hex");
         let candidate: AnchoredWorkspaceCursor | undefined;
         try {
@@ -229,10 +239,12 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 writer: state.watcher,
                 hooks: state.testHooks,
             });
+            assertContinuityFence(state, continuityGeneration);
             const historical = await withMaterializedCursor(committed, (path) =>
                 state.watcher.getEventsSince(state.workspaceRoot, path)
             );
             addEvents(state, historical);
+            assertContinuityFence(state, continuityGeneration);
         } catch {
             if (candidate) {
                 await removeAnchoredCursor({
@@ -271,6 +283,8 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         ) {
             throw new Error("Invalid or stale candidate cursor");
         }
+        const continuityGeneration = state.continuityGeneration;
+        let published = false;
         try {
             await commitAnchoredCursor({
                 root: state.trackerRoot,
@@ -278,7 +292,11 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
                 committedName: CommittedCursorName,
                 hooks: state.testHooks,
             });
+            published = true;
+            assertContinuityFence(state, continuityGeneration);
         } catch {
+            if (published) state.candidate = undefined;
+            state.initialized = false;
             setGap(state, "query-failed");
             throw new Error("Invalid or stale candidate cursor");
         }
@@ -294,6 +312,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         const state = getState(this);
         if (state.disposePromise) return state.disposePromise;
         state.disposed = true;
+        state.continuityGeneration++;
         state.disposePromise = disposeState(state);
         return state.disposePromise;
     }
@@ -398,7 +417,20 @@ function comparePathBytes(left: string, right: string): number {
 }
 
 function setGap(state: FeedState, reason: "query-failed" | "unsafe-path"): void {
+    state.continuityGeneration++;
     if (state.gapReason !== "unsafe-path") state.gapReason = reason;
+}
+
+function clearGap(state: FeedState): void {
+    state.continuityGeneration++;
+    state.gapReason = undefined;
+}
+
+function assertContinuityFence(state: FeedState, continuityGeneration: number): void {
+    if (state.disposed || state.gapReason || state.continuityGeneration !== continuityGeneration) {
+        state.initialized = false;
+        throw new Error("Workspace change feed continuity changed during cursor publication");
+    }
 }
 
 function gap(state: FeedState): WorkspaceChangeRead {

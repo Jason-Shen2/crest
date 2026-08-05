@@ -224,6 +224,11 @@ subscription callback 使用有上限的去重 set；溢出必须进入 gap。`r
 取并集，只有 tracker 完成 path capture 和二次验证后才允许 `commitCursor()`。Windows 在 owner-only ACL
 实现前硬禁用 private cursor storage，不允许把 mode bit 当作 ACL 等价物。
 
+initialize 和 candidate commit 必须绑定开始时的 monotonic continuity generation，并在每个 awaited storage
+mutation 后、发布任何内存成功状态前复核 generation、gap 和 disposed。publication 期间出现 callback error、
+overflow 或 dispose 时，即使磁盘原子写已经完成也必须返回失败并把 lifecycle 标为 uninitialized；只有新的
+prepare → full reconcile → initialize 可以重新信任磁盘 cursor。
+
 - [ ] **Step 5: 添加真实 filesystem integration tests**
 
 用临时目录覆盖：create/update/delete/rename、App 停止监听期间修改后重建 feed、cursor 文件删除、回调报错、连续 1,000 次写入的去重。关键断言：

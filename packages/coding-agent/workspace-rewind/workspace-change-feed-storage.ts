@@ -152,7 +152,8 @@ export async function removeAnchoredCursor(input: {
     hooks?: WorkspaceChangeFeedStorageHooks;
 }): Promise<void> {
     const observed = await readAnchoredCursor(input.root, input.cursor.name);
-    if (!observed || !sameCursor(observed, input.cursor)) throw new Error("Workspace cursor changed before removal");
+    if (!observed) return;
+    if (!sameCursor(observed, input.cursor)) throw new Error("Workspace cursor changed before removal");
     await input.hooks?.beforeAnchoredMutation?.("remove");
     await removeAnchoredJournalEntry({
         root: input.root,
