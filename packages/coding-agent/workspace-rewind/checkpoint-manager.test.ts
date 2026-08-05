@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarness, AgentHarnessEvent, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import { SessionMutationBarrier } from "../session-mutation-barrier";
+import { AnchoredReaderError } from "./anchored-reader";
 import {
     registerWorkspaceCheckpointManager,
     type WorkspaceCheckpointManager,
@@ -14,6 +15,7 @@ import type { ProcessOwnerIdentity } from "./process-owner";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspacePathChangeV1, type WorkspaceSnapshotRefV1 } from "./types";
+import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
@@ -296,6 +298,51 @@ describe("WorkspaceCheckpointManager", () => {
         expect(fixture.pending.complete).not.toHaveBeenCalled();
     });
 
+    it("persists an actual tracker incremental deadline as capture-timeout unavailable", async () => {
+        const fixture = makeFixture();
+        await fixture.manager.dispose();
+        const tracker = makeIncrementalTimeoutTracker();
+        const manager = registerWorkspaceCheckpointManager({
+            harness: fixture.harness,
+            session: fixture.session as never,
+            sessionId: "session-1",
+            workspaceRoot: "/workspace",
+            store: fixture.store as never,
+            snapshotSource: tracker,
+            mutationBarrier: new SessionMutationBarrier(),
+            hasRunningHostedCommands: () => false,
+            processOwner: Owner,
+            onCheckpointCommitted: async () => undefined,
+            dependencies: { pendingStore: fixture.pending as never },
+        });
+
+        await fixture.emit({
+            type: "session_before_user_turn",
+            boundaryToken: "boundary-tracker-timeout",
+            userMessage: { role: "user", content: [] },
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_committed",
+            boundaryToken: "boundary-tracker-timeout",
+            userEntryId: "user-tracker-timeout",
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_terminal",
+            boundaryToken: "boundary-tracker-timeout",
+            reason: "agent_end",
+        } as AgentHarnessEvent);
+
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: {
+                status: "unavailable",
+                turnId: "user-tracker-timeout",
+                reasonCode: "capture_timeout",
+            },
+        });
+        await manager.dispose();
+        await tracker.dispose();
+    });
+
     it("maps a final tracker reconcile failure to an unstable-file unavailable checkpoint", async () => {
         const fixture = makeFixture();
         fixture.store.capture
@@ -449,3 +496,61 @@ describe("WorkspaceCheckpointManager", () => {
         expect(disposed).toBe(true);
     });
 });
+
+function makeIncrementalTimeoutTracker(): WorkspaceSnapshotTracker {
+    const coverage = { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] };
+    const ref = snapshot(OidA);
+    return new WorkspaceSnapshotTracker({
+        store: {
+            storeRoot: "/private/store.git",
+            identity: {
+                canonicalRoot: "/workspace",
+                workspaceIdentity: "workspace-1",
+                workspaceIncarnation: "incarnation-1",
+                storeKey: "test-store",
+                ancestorIdentityChain: [],
+            },
+            git: {},
+            captureFullReconcile: async () => ({ ref, coverage }),
+            readIncrementalSnapshotMetadata: async () => ({
+                scope: {
+                    schemaVersion: 1,
+                    policy: {
+                        maxEntries: 200_000,
+                        maxUntrackedBytes: 2 * 1024 ** 2,
+                        gitGlobalExcludes: "disabled-by-isolated-runner",
+                    },
+                    ignoreInputs: [],
+                    nestedRepositoryBoundaries: [],
+                },
+                coverage: { complete: true, eligibleEntryCount: 1, exclusions: [] },
+            }),
+        } as never,
+        feed: {
+            prepareForReconcile: async () => undefined,
+            initializeAfterReconcile: async () => undefined,
+            readChanges: async () => ({
+                status: "complete",
+                changedPaths: ["a.txt"],
+                candidateCursor: "candidate-1",
+                scopeInvalidated: false,
+            }),
+            markGap: () => undefined,
+            dispose: async () => undefined,
+        } as never,
+        state: {
+            load: async () => ({ status: "untrusted" }),
+            publish: async () => undefined,
+        },
+        makePathCapture: () => ({
+            capture: async () => {
+                throw new AnchoredReaderError("timeout", "Incremental path capture timed out");
+            },
+            consumeCaptured: async () => {
+                throw new Error("unreachable");
+            },
+            discardCaptured: async () => undefined,
+            dispose: async () => undefined,
+        }),
+    });
+}

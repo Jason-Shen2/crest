@@ -3,6 +3,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 
+import { AnchoredReaderError } from "./anchored-reader";
 import type { IncrementalPathCaptureResult } from "./incremental-path-capture";
 import { WorkspaceCheckpointLimits, WorkspaceSnapshotStoreError } from "./snapshot-store";
 import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
@@ -127,6 +128,43 @@ describe("WorkspaceSnapshotTracker", () => {
         await fixture.tracker.capture({ profile });
 
         expect(fixture.pathCapture.capture).toHaveBeenCalledWith(["a.txt"], undefined, timeoutMs);
+    });
+
+    test("maps an internal incremental deadline to a typed capture-timeout failure", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        const cause = new AnchoredReaderError("timeout", "Incremental path capture timed out");
+        fixture.pathCapture.capture.mockRejectedValueOnce(cause);
+
+        const failure = await fixture.tracker.capture({ profile: "terminal" }).catch((error: unknown) => error);
+
+        expect(failure).toBeInstanceOf(WorkspaceSnapshotStoreError);
+        expect(failure).toMatchObject({ code: "capture_timeout", cause });
+    });
+
+    test("preserves a caller-driven abort reason from incremental capture", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        const controller = new AbortController();
+        const reason = new AnchoredReaderError("timeout", "caller-owned deadline");
+        fixture.pathCapture.capture.mockImplementationOnce(async () => {
+            controller.abort(reason);
+            throw reason;
+        });
+
+        await expect(fixture.tracker.capture({ profile: "terminal", signal: controller.signal })).rejects.toBe(reason);
+    });
+
+    test("preserves an anchored-reader aborted failure from incremental capture", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        const error = new AnchoredReaderError("aborted", "Incremental path capture aborted");
+        fixture.pathCapture.capture.mockRejectedValueOnce(error);
+
+        await expect(fixture.tracker.capture({ profile: "terminal" })).rejects.toBe(error);
     });
 
     test("rejects a pre-aborted warm empty capture without publishing cursor or state", async () => {

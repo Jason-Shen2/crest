@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { AnchoredReaderError } from "./anchored-reader";
 import {
     IncrementalPathCapture,
     type IncrementalCapturedBatch,
@@ -8,7 +9,12 @@ import {
 } from "./incremental-path-capture";
 import type { IncrementalPathMutation } from "./incremental-tree";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
-import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
+import {
+    WorkspaceCheckpointLimits,
+    WorkspaceSnapshotStoreError,
+    type CaptureWorkspaceOptions,
+    type WorkspaceSnapshotStore,
+} from "./snapshot-store";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -300,7 +306,17 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                 options.profile === "pre-turn"
                     ? WorkspaceCheckpointLimits.preTurnTimeoutMs
                     : WorkspaceCheckpointLimits.terminalTimeoutMs;
-            const result = await this.pathCapture!.capture(paths, options.signal, timeoutMs);
+            let result: IncrementalPathCaptureResult;
+            try {
+                result = await this.pathCapture!.capture(paths, options.signal, timeoutMs);
+            } catch (error) {
+                if (!options.signal?.aborted && error instanceof AnchoredReaderError && error.code === "timeout") {
+                    throw new WorkspaceSnapshotStoreError("capture_timeout", "Workspace snapshot capture timed out", {
+                        cause: error,
+                    });
+                }
+                throw error;
+            }
             if (result.status === "reconcile") return await this.fullReconcile(options);
             let validation: WorkspaceChangeRead;
             try {
