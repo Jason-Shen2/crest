@@ -110,6 +110,72 @@ describe("anchored reader", () => {
         expect(peak).toBeGreaterThan(1);
     });
 
+    test("aborts and drains sibling workers before a failed batch returns", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-anchored-batch-drain-"));
+        cleanupRoots.push(root);
+        const failingParent = join(root, "failing");
+        const slowParent = join(root, "slow");
+        await mkdir(failingParent);
+        await mkdir(slowParent);
+        await writeFile(join(failingParent, "file.txt"), "failure");
+        await writeFile(join(slowParent, "file.txt"), "slow");
+        const failingEntry = await lstat(join(failingParent, "file.txt"), { bigint: true });
+        const slowEntry = await lstat(join(slowParent, "file.txt"), { bigint: true });
+        const failingParentStat = await lstat(failingParent, { bigint: true });
+        const slowParentStat = await lstat(slowParent, { bigint: true });
+        let active = 0;
+        vi.doMock("node:child_process", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:child_process")>();
+            return {
+                ...actual,
+                spawn: (...args: Parameters<typeof actual.spawn>) => {
+                    if ((args[2] as { cwd?: string }).cwd === slowParent) {
+                        args[1] = ["-e", "process.stdin.resume(); setTimeout(() => {}, 5000)"];
+                    }
+                    const child = actual.spawn(...args);
+                    active += 1;
+                    child.once("exit", () => {
+                        active -= 1;
+                    });
+                    return child;
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./anchored-reader");
+        const failingIdentity = entryIdentity(failingEntry);
+        failingIdentity.ino = (BigInt(failingIdentity.ino) + 1n).toString();
+
+        await expect(
+            isolated.runAnchoredReaderBatch({
+                rootPath: root,
+                entries: [
+                    {
+                        path: "failing/file.txt",
+                        name: "file.txt",
+                        kind: "file",
+                        stagingPath: join(root, "failing-stage"),
+                        parentIdentity: identity(failingParentStat),
+                        identity: failingIdentity,
+                    },
+                    {
+                        path: "slow/file.txt",
+                        name: "file.txt",
+                        kind: "file",
+                        stagingPath: join(root, "slow-stage"),
+                        parentIdentity: identity(slowParentStat),
+                        identity: entryIdentity(slowEntry),
+                    },
+                ],
+                maxSingleFileBytes: 1024,
+                maxTotalBytes: 1024,
+                timeoutMs: 10_000,
+                signal: new AbortController().signal,
+            })
+        ).rejects.toMatchObject({ code: "unstable_file" });
+        expect(active).toBe(0);
+    });
+
     test("rehashes a same-size rewrite when an otherwise identical fingerprint is inside the racy window", async () => {
         const fixture = await makeReaderFixture("racy.txt", "other");
         const result = await runAnchoredReader({

@@ -1,6 +1,6 @@
 # Agent Workspace Rewind Incremental Snapshot Design
 
-**状态：** 设计方向已确认，尚未实现
+**状态：** 设计方向已确认，增量基础设施实现中
 
 **日期：** 2026-08-04
 
@@ -268,6 +268,36 @@ candidate commit 必须验证生成时的 exact identity 与内容 hash，并拒
 identity，并拒绝 store-root symlink 或 read/publication 间的 root exchange。rename 前失败要删除随机 journal temp；
 prepare 只按名称回收保留格式的 candidate/temp，不打开或信任其内容。candidate commit 失败撤销 candidate 后，允许一次完整 reconcile 恢复，
 不增加跨进程恢复协议。Windows 在 owner-only ACL 支持完成前不启用该 private storage。
+
+### 增量捕获实现审查后的安全收敛
+
+首轮实现证明 dirty-path 捕获可以把热路径从 workspace 全量扫描缩小到变化范围，但
+代码审查同时发现了几个不能留到后续处理的正确性窗口。最终采用以下收敛方案，且不
+增加 journal 或 recovery 状态机：
+
+1. Git scope manifest 显式记录实际 index 的 canonical path、父目录 identity，以及
+   index 的 present/absent 状态。present 状态通过 `O_NOFOLLOW` 文件句柄前后 identity
+   和流式内容 hash 证明；absent 状态通过 anchored parent 和二次缺失确认来证明。
+   linked worktree 的 index 即使位于 workspace 外部，也使用同一证据；旧 Git manifest
+   没有该证据时直接 full reconcile。
+2. dirty bytes 先写入 OS private `0700` 临时目录，capture 阶段只计算 Git OID，不向
+   snapshot object database 写入未被 ref 引用的 blob。公开 capture result 保持不变，
+   私有 opaque batch 通过对象 identity 与 result 单次绑定，可显式 consume 或 discard。
+3. snapshot store 在既有 workspace lock 内重新验证临时目录、文件 identity、原始 bytes
+   和 SHA-1 OID，然后完成 blob materialize、copy-on-write tree/manifest 和 owner ref
+   publication。临时数据失败后直接删除，不需要崩溃恢复协议。
+4. incremental capture 必须从 v2 base state tree 读取 dirty root 的节点类型。base leaf
+   变成 current tree、或 base tree 变成 current leaf 时 fail closed；合法删除和新目录
+   继续按增量 mutation 表达。v1 或不可读 base 直接 full reconcile。
+5. batch reader 使用共享 abort signal。任一 worker 失败后立即中止 sibling，并等待所有
+   child 完全退出后再返回原始错误，避免调用方清理 staging 后仍有后台写入。
+6. 错误分类保持窄语义：只有已观测到的 path identity/content race 才是
+   `unstable-path`；Git runner、权限、I/O 或未知证据失败都是 `unsafe-evidence`。只有
+   `rev-parse` exit 128 且 stderr 精确表示 `not a git repository` 时才能判定为 non-Git；
+   dubious ownership、损坏 gitfile、权限问题和 malformed output 都必须 fail closed。
+
+这些修改保留了原方案的简单性：没有新增 ref、pending marker、journal 或 recovery UI，
+只把“准备 bytes”和“在锁内发布 immutable snapshot”之间的所有权与校验边界定义清楚。
 
 ### Full reconcile 的角色
 

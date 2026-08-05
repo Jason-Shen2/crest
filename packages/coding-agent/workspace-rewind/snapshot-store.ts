@@ -27,6 +27,7 @@ import {
 } from "./anchored-reader";
 import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
+import { materializeIncrementalCapturedBatch, type IncrementalCapturedBatch } from "./incremental-path-capture";
 import {
     applyIncrementalTrees,
     normalizeIncrementalMutations,
@@ -269,6 +270,27 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#commitIncrementalSnapshot(ownedInput));
     }
 
+    async commitCapturedIncrementalSnapshot(input: {
+        base: WorkspaceSnapshotRefV1;
+        mutations: IncrementalPathMutation[];
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+        newlyHashedBytes: number;
+        profile: CaptureWorkspaceOptions["profile"];
+        batch: IncrementalCapturedBatch;
+    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
+        const batch = input.batch;
+        const ownedInput = cloneIncrementalCommitInput(input);
+        return this.withWorkspaceLock(() =>
+            this.#commitIncrementalSnapshot(ownedInput, (runtime) =>
+                materializeIncrementalCapturedBatch(batch, {
+                    storeRoot: this.storeRoot,
+                    writeBlob: (bytes) => this.writeBlob(bytes, runtime),
+                })
+            )
+        );
+    }
+
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
         return this.mutationLock.runExclusive(operation);
     }
@@ -399,14 +421,20 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async #commitIncrementalSnapshot(input: {
-        base: WorkspaceSnapshotRefV1;
-        mutations: IncrementalPathMutation[];
-        scope: WorkspaceScopeManifest;
-        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-        newlyHashedBytes: number;
-        profile: CaptureWorkspaceOptions["profile"];
-    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
+    async #commitIncrementalSnapshot(
+        input: {
+            base: WorkspaceSnapshotRefV1;
+            mutations: IncrementalPathMutation[];
+            scope: WorkspaceScopeManifest;
+            coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+            newlyHashedBytes: number;
+            profile: CaptureWorkspaceOptions["profile"];
+        },
+        materialize?: (runtime: CaptureRuntime) => Promise<void>
+    ): Promise<{
+        ref: WorkspaceSnapshotRefV1;
+        coverage: WorkspaceSnapshotCoverage;
+    }> {
         const timeoutMs =
             input.profile === "pre-turn"
                 ? WorkspaceCheckpointLimits.preTurnTimeoutMs
@@ -443,6 +471,7 @@ export class WorkspaceSnapshotStore {
                 });
             }
             await assertFreeSpace(this.storeRoot, runtime);
+            await materialize?.(runtime);
             const trees = await applyIncrementalTrees({
                 baseWorkspaceTree: input.base.tree,
                 baseStateTree: baseManifest.manifest.statetree,
@@ -547,6 +576,17 @@ export class WorkspaceSnapshotStore {
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
+    }
+
+    readNodeKind(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<"absent" | "leaf" | "tree"> {
+        return this.withWorkspaceLock(async () => {
+            validateRelativePath(path);
+            try {
+                return await (await this.#readStoredManifest(snapshot)).readNodeKind(path);
+            } catch (cause) {
+                throw asCorruptSnapshot(cause);
+            }
+        });
     }
 
     readBlob(oid: string): Promise<Buffer> {

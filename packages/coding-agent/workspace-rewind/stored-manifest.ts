@@ -127,6 +127,26 @@ export class StoredManifestReader {
         return await this.readV2PathState(path);
     }
 
+    async readNodeKind(path: string): Promise<"absent" | "leaf" | "tree"> {
+        validateWorkspaceRelativePath(path);
+        if (this.manifest.schemaversion !== 2) {
+            throw new Error("Incremental path capture requires a v2 base snapshot");
+        }
+        const segments = path.split("/");
+        let treeOid = this.manifest.statetree;
+        for (let index = 0; index < segments.length; index++) {
+            const entry = (await this.readTreeEntries(treeOid)).get(segments[index]!);
+            if (!entry) return "absent";
+            if (entry.mode !== "40000") {
+                if (index === segments.length - 1) return "leaf";
+                throw new Error("Incremental base path traverses a leaf");
+            }
+            if (index === segments.length - 1) return "tree";
+            treeOid = entry.oid;
+        }
+        return "absent";
+    }
+
     async diff(after: StoredManifestReader): Promise<WorkspacePathChangeV1[]> {
         if (
             this.manifest.workspaceidentity !== after.manifest.workspaceidentity ||
@@ -508,7 +528,7 @@ function isStoredScope(value: unknown): boolean {
         !hasExactKeys(
             value,
             ["schemaversion", "policy", "ignoreinputs", "nestedrepositoryboundaries"],
-            ["budgetexhaustion"]
+            ["budgetexhaustion", "gitindex"]
         )
     ) {
         return false;
@@ -535,6 +555,9 @@ function isStoredScope(value: unknown): boolean {
     ) {
         return false;
     }
+    if (value.gitindex != null && !isStoredGitIndexEvidence(value.gitindex)) {
+        return false;
+    }
     if (
         !value.ignoreinputs.every(
             (item) =>
@@ -554,6 +577,38 @@ function isStoredScope(value: unknown): boolean {
             hasExactKeys(item, [], ["path", "pathbytesbase64"]) &&
             hasOneValidManifestPath(item, false)
     );
+}
+
+function isStoredGitIndexEvidence(value: unknown): boolean {
+    if (
+        !isJsonRecord(value) ||
+        !hasExactKeys(value, ["path", "parentpath", "parentidentity", "state"], ["entryidentity", "contenthash"]) ||
+        typeof value.path !== "string" ||
+        !isAbsolute(value.path) ||
+        value.path.includes("\0") ||
+        typeof value.parentpath !== "string" ||
+        !isAbsolute(value.parentpath) ||
+        value.parentpath.includes("\0") ||
+        !isStoredSerializedIdentity(value.parentidentity, false)
+    ) {
+        return false;
+    }
+    if (value.state === "absent") {
+        return !Object.hasOwn(value, "entryidentity") && !Object.hasOwn(value, "contenthash");
+    }
+    return (
+        value.state === "file" &&
+        isStoredSerializedIdentity(value.entryidentity, true) &&
+        typeof value.contenthash === "string" &&
+        /^[0-9a-f]{64}$/.test(value.contenthash)
+    );
+}
+
+function isStoredSerializedIdentity(value: unknown, entry: boolean): boolean {
+    if (!isJsonRecord(value)) return false;
+    const directoryKeys = ["dev", "ino", "birthtimens", "mtimens", "ctimens"];
+    const keys = entry ? [...directoryKeys, "mode", "nlink", "size"] : directoryKeys;
+    return hasExactKeys(value, keys) && keys.every((key) => typeof value[key] === "string" && /^\d+$/.test(value[key]));
 }
 
 function hasOneValidManifestPath(value: Record<string, unknown>, allowAbsolute: boolean): boolean {

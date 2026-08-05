@@ -778,7 +778,13 @@ async function waitForFile(path: string): Promise<string> {
 }
 
 class ClassificationFailureGitRunner extends WorkspaceGitRunner {
-    override async run(args: readonly string[]) {
+    override async run(args: readonly string[], options: Parameters<WorkspaceGitRunner["run"]>[1]) {
+        if (args[0] === "rev-parse" && args.includes("--git-path")) {
+            return {
+                stdout: Buffer.from(`${join(options.cwd!, args.at(-1)!)}\n`),
+                stderr: Buffer.alloc(0),
+            };
+        }
         if (args[0] === "rev-parse") {
             return {
                 stdout: Buffer.from("true\n"),

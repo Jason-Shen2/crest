@@ -34,6 +34,21 @@ describe("stored snapshot manifests", () => {
         }
     });
 
+    test("reads leaf, tree, and absent node kinds only from a v2 state tree", async () => {
+        const states = new Map<string, CapturedPathStateV1>([
+            ["README.md", { state: "file", oid: "1".repeat(40), executable: false }],
+            ["docs/guide.md", { state: "file", oid: "2".repeat(40), executable: false }],
+        ]);
+        const v1 = await makeV1Reader(states);
+        const v2 = await makeV2Reader(states);
+
+        await expect(v2.readNodeKind("README.md")).resolves.toBe("leaf");
+        await expect(v2.readNodeKind("docs")).resolves.toBe("tree");
+        await expect(v2.readNodeKind("missing")).resolves.toBe("absent");
+        await expect(v2.readNodeKind("README.md/child")).rejects.toThrow(/traverses a leaf/i);
+        await expect(v1.readNodeKind("README.md")).rejects.toThrow(/v2 base snapshot/i);
+    });
+
     test("diffs v2 trees like v1 manifests while skipping equal Merkle subtrees", async () => {
         const before = new Map<string, CapturedPathStateV1>([
             ["README.md", { state: "file", oid: "1".repeat(40), executable: false }],

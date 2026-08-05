@@ -84,36 +84,53 @@ export async function runAnchoredReaderBatch(input: {
     }
     const queue = [...groups.entries()];
     const results: AnchoredReaderResult[] = [];
+    const controller = new AbortController();
+    const onExternalAbort = () => controller.abort(input.signal.reason);
+    input.signal.addEventListener("abort", onExternalAbort, { once: true });
+    if (input.signal.aborted) onExternalAbort();
     let cursor = 0;
+    let firstFailure: unknown;
     const runWorker = async () => {
-        while (cursor < queue.length) {
-            const group = queue[cursor++]!;
-            const [parent, groupEntries] = group;
-            const parentIdentity = groupEntries[0]!.parentIdentity;
-            if (
-                groupEntries.some(
-                    (entry) =>
-                        entry.parentIdentity.dev !== parentIdentity.dev ||
-                        entry.parentIdentity.ino !== parentIdentity.ino ||
-                        entry.parentIdentity.birthtimeNs !== parentIdentity.birthtimeNs
-                )
-            ) {
-                throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
+        try {
+            while (cursor < queue.length) {
+                const group = queue[cursor++]!;
+                const [parent, groupEntries] = group;
+                const parentIdentity = groupEntries[0]!.parentIdentity;
+                if (
+                    groupEntries.some(
+                        (entry) =>
+                            entry.parentIdentity.dev !== parentIdentity.dev ||
+                            entry.parentIdentity.ino !== parentIdentity.ino ||
+                            entry.parentIdentity.birthtimeNs !== parentIdentity.birthtimeNs
+                    )
+                ) {
+                    throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
+                }
+                results.push(
+                    ...(await runAnchoredReader({
+                        parentPath: parent ? join(input.rootPath, ...parent.split("/")) : input.rootPath,
+                        parentIdentity,
+                        entries: groupEntries,
+                        maxSingleFileBytes: input.maxSingleFileBytes,
+                        maxTotalBytes: input.maxTotalBytes,
+                        timeoutMs: input.timeoutMs,
+                        signal: controller.signal,
+                    }))
+                );
             }
-            results.push(
-                ...(await runAnchoredReader({
-                    parentPath: parent ? join(input.rootPath, ...parent.split("/")) : input.rootPath,
-                    parentIdentity,
-                    entries: groupEntries,
-                    maxSingleFileBytes: input.maxSingleFileBytes,
-                    maxTotalBytes: input.maxTotalBytes,
-                    timeoutMs: input.timeoutMs,
-                    signal: input.signal,
-                }))
-            );
+        } catch (error) {
+            firstFailure ??= error;
+            controller.abort(error);
         }
     };
-    await Promise.all(Array.from({ length: Math.min(IncrementalReaderConcurrency, queue.length) }, () => runWorker()));
+    try {
+        await Promise.allSettled(
+            Array.from({ length: Math.min(IncrementalReaderConcurrency, queue.length) }, () => runWorker())
+        );
+    } finally {
+        input.signal.removeEventListener("abort", onExternalAbort);
+    }
+    if (firstFailure) throw firstFailure;
     return results.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
 }
 

@@ -4,8 +4,8 @@
 import ignore, { type Ignore } from "ignore";
 import { createHash } from "node:crypto";
 import { constants, lstatSync, type BigIntStats, type Dirent } from "node:fs";
-import { lstat, open, opendir } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { lstat, open, opendir, realpath } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
@@ -72,7 +72,31 @@ export interface WorkspaceScopeManifest {
     };
     ignoreInputs: WorkspaceScopeIgnoreInput[];
     nestedRepositoryBoundaries: WorkspaceScopeManifestPath[];
+    gitIndex?: WorkspaceScopeGitIndexEvidence;
     budgetExhaustion?: WorkspaceScopeBudgetExhaustion;
+}
+
+export interface WorkspaceScopeGitIndexEvidence {
+    path: string;
+    parentPath: string;
+    parentIdentity: WorkspaceScopeSerializedDirectoryIdentity;
+    state: "absent" | "file";
+    entryIdentity?: WorkspaceScopeSerializedEntryIdentity;
+    contentHash?: string;
+}
+
+export interface WorkspaceScopeSerializedDirectoryIdentity {
+    dev: string;
+    ino: string;
+    birthtimeNs: string;
+    mtimeNs: string;
+    ctimeNs: string;
+}
+
+export interface WorkspaceScopeSerializedEntryIdentity extends WorkspaceScopeSerializedDirectoryIdentity {
+    mode: string;
+    nlink: string;
+    size: string;
 }
 
 export type WorkspaceScopeBudgetExhaustion = { scope: "workspace-root" };
@@ -82,7 +106,11 @@ export type IncrementalWorkspaceScopeEntry =
     | { pathBytes: Buffer; path: string; kind: "absent"; tracked: boolean };
 
 export type IncrementalWorkspaceScopeResult =
-    | { status: "captured"; entries: IncrementalWorkspaceScopeEntry[] }
+    | {
+          status: "captured";
+          entries: IncrementalWorkspaceScopeEntry[];
+          pathKinds: Array<{ path: string; kind: "absent" | "leaf" | "tree" }>;
+      }
     | { status: "reconcile"; reason: "scope-invalidated" | "unstable-path" | "unsafe-evidence" };
 
 interface IgnoreMatcher {
@@ -98,7 +126,7 @@ interface GitClassification {
     trackedHash: string;
     ignoredHash: string;
     indexPath: Buffer;
-    indexVersion: FileVersion;
+    indexEvidence: WorkspaceScopeGitIndexEvidence;
     infoExcludePath: Buffer;
     coreExcludesPath?: Buffer;
 }
@@ -136,15 +164,6 @@ export interface WorkspaceScopeDirectoryEvidence {
     ctimeNs: bigint;
     entryCount: number;
     namesHash: string;
-}
-
-interface FileVersion {
-    exists: boolean;
-    dev?: bigint;
-    ino?: bigint;
-    size?: bigint;
-    mtimeNs?: bigint;
-    ctimeNs?: bigint;
 }
 
 interface WorkspaceScopeAttempt {
@@ -185,7 +204,7 @@ export async function classifyIncrementalWorkspacePaths(input: {
     maxUntrackedBytes: number;
     signal?: AbortSignal;
 }): Promise<IncrementalWorkspaceScopeResult> {
-    if (input.paths.length === 0) return { status: "captured", entries: [] };
+    if (input.paths.length === 0) return { status: "captured", entries: [], pathKinds: [] };
     validateLimits(input.maxEntries, input.maxUntrackedBytes);
     const paths = normalizeIncrementalPaths(input.paths);
     if (paths.some((path) => invalidatesWorkspaceScope(path, input.scope))) {
@@ -194,10 +213,11 @@ export async function classifyIncrementalWorkspacePaths(input: {
     try {
         const rootBytes = Buffer.from(input.identity.canonicalRoot);
         await verifyCanonicalWorkspaceIdentity(input.identity);
-        if (!(await verifyIncrementalScopeAuthority(rootBytes, input.scope, input.signal))) {
+        if (!(await verifyIncrementalScopeAuthority(rootBytes, input))) {
             return { status: "reconcile", reason: "scope-invalidated" };
         }
         const candidates: IncrementalWorkspaceScopeEntry[] = [];
+        const pathKinds: Array<{ path: string; kind: "absent" | "leaf" | "tree" }> = [];
         let visited = 0;
         for (const path of paths) {
             const result = await enumerateIncrementalPath(rootBytes, Buffer.from(path), input, () => {
@@ -207,6 +227,11 @@ export async function classifyIncrementalWorkspacePaths(input: {
             if (result === "scope-invalidated") return { status: "reconcile", reason: result };
             if (result === "unsafe-evidence") return { status: "reconcile", reason: result };
             candidates.push(...result);
+            const rootEntry = result.find((entry) => entry.path === path);
+            pathKinds.push({
+                path,
+                kind: rootEntry ? (rootEntry.kind === "absent" ? "absent" : "leaf") : "tree",
+            });
         }
         const gitWorkspace = await isGitWorkspace(input);
         const { tracked, ignored } = gitWorkspace
@@ -238,17 +263,18 @@ export async function classifyIncrementalWorkspacePaths(input: {
             entries.push({ ...candidate, tracked: isTracked });
         }
         await verifyCanonicalWorkspaceIdentity(input.identity);
-        if (!(await verifyIncrementalScopeAuthority(rootBytes, input.scope, input.signal))) {
+        if (!(await verifyIncrementalScopeAuthority(rootBytes, input))) {
             return { status: "reconcile", reason: "scope-invalidated" };
         }
         entries.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
-        return { status: "captured", entries };
+        return { status: "captured", entries, pathKinds };
     } catch (error) {
         if (error instanceof WorkspaceBudgetExceeded) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isWorkspaceGitRunnerFailure(error, "aborted")) throw error;
+        if (error instanceof WorkspaceGitRunnerError) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isUnsafeIncrementalEvidence(error)) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isScopeInvalidation(error)) return { status: "reconcile", reason: "scope-invalidated" };
-        return { status: "reconcile", reason: "unstable-path" };
+        return { status: "reconcile", reason: "unsafe-evidence" };
     }
 }
 
@@ -301,15 +327,33 @@ function invalidatesWorkspaceScope(path: string, scope: WorkspaceScopeManifest):
 
 async function verifyIncrementalScopeAuthority(
     rootBytes: Buffer,
-    scope: WorkspaceScopeManifest,
-    signal?: AbortSignal
+    input: {
+        identity: CanonicalWorkspaceIdentity;
+        git: WorkspaceGitRunner;
+        scope: WorkspaceScopeManifest;
+        signal?: AbortSignal;
+    }
 ): Promise<boolean> {
-    for (const input of scope.ignoreInputs) {
-        if (input.source === "gitignore") continue;
-        assertScopeActive(signal);
+    const gitWorkspace = await isGitWorkspace(input);
+    if (gitWorkspace) {
+        if (!input.scope.gitIndex) return false;
+        const indexPath = await resolveGitPath(
+            input.git,
+            input.identity.canonicalRoot,
+            ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            input.signal
+        );
+        const current = await captureGitIndexEvidence(indexPath, input.signal);
+        if (!sameGitIndexEvidence(input.scope.gitIndex, current)) return false;
+    } else if (input.scope.gitIndex) {
+        return false;
+    }
+    for (const ignoreInput of input.scope.ignoreInputs) {
+        if (ignoreInput.source === "gitignore") continue;
+        assertScopeActive(input.signal);
         try {
-            const content = await readSafeIgnoreInput(platformPath(manifestLocatorBytes(input)), signal);
-            if (hashContent(content) !== input.contentHash) return false;
+            const content = await readSafeIgnoreInput(platformPath(manifestLocatorBytes(ignoreInput)), input.signal);
+            if (hashContent(content) !== ignoreInput.contentHash) return false;
         } catch (error) {
             if (isMissing(error)) return false;
             throw error;
@@ -420,9 +464,10 @@ async function isGitWorkspace(input: {
             timeoutMs: ScopeGitTimeoutMs,
             signal: input.signal,
         });
-        return stripLineEnding(result.stdout).toString("ascii") === "true";
+        if (stripLineEnding(result.stdout).equals(Buffer.from("true")) && result.stderr.length === 0) return true;
+        throw new Error("unsafe Git workspace probe output");
     } catch (error) {
-        if (isWorkspaceGitRunnerFailure(error, "nonzero_exit")) return false;
+        if (isDefinitiveNotGitRepository(error)) return false;
         throw error;
     }
 }
@@ -564,6 +609,16 @@ function isWorkspaceGitRunnerFailure(
     return error instanceof Error && error.name === "WorkspaceGitRunnerError" && "code" in error && error.code === code;
 }
 
+function isDefinitiveNotGitRepository(error: unknown): error is WorkspaceGitRunnerError {
+    if (!(error instanceof WorkspaceGitRunnerError) || error.code !== "nonzero_exit" || error.exitCode !== 128) {
+        return false;
+    }
+    if (error.stdout.length !== 0) return false;
+    const stderr = error.stderr.toString("utf8");
+    if (!Buffer.from(stderr).equals(error.stderr)) return false;
+    return stderr === "fatal: not a git repository (or any of the parent directories): .git\n";
+}
+
 async function verifyWorkspaceScope(input: WorkspaceScopeInput, attempt: WorkspaceScopeAttempt): Promise<boolean> {
     assertScopeActive(input.signal);
     if (attempt.git && !(await verifyGitWorkspaceScope(input, attempt))) {
@@ -648,6 +703,7 @@ async function discoverWorkspaceScopeAttempt(input: WorkspaceScopeInput): Promis
                 },
                 ignoreInputs: state.ignoreInputs,
                 nestedRepositoryBoundaries: state.nestedRepositoryBoundaries,
+                ...(git ? { gitIndex: git.indexEvidence } : {}),
                 ...(state.scanStopped
                     ? {
                           budgetExhaustion: { scope: "workspace-root" } as const,
@@ -672,13 +728,13 @@ async function classifyGitWorkspace(
             signal,
         });
     } catch (error) {
-        if (error instanceof WorkspaceGitRunnerError && error.code === "nonzero_exit") {
+        if (isDefinitiveNotGitRepository(error)) {
             return undefined;
         }
         throw error;
     }
-    if (stripLineEnding(inside.stdout).toString("ascii") !== "true") {
-        return undefined;
+    if (!stripLineEnding(inside.stdout).equals(Buffer.from("true")) || inside.stderr.length !== 0) {
+        throw new Error("unsafe Git workspace probe output");
     }
 
     const [indexPath, infoExcludePath, coreExcludesPath] = await Promise.all([
@@ -687,7 +743,7 @@ async function classifyGitWorkspace(
         resolveOptionalCoreExcludesPath(git, root, signal),
     ]);
     assertScopeActive(signal);
-    const indexVersion = await readOptionalFileVersion(indexPath);
+    const indexEvidence = await captureGitIndexEvidence(indexPath, signal);
     const ignoreInputs: WorkspaceScopeIgnoreInput[] = [];
     await appendExternalIgnoreInput(ignoreInputs, "git-info-exclude", infoExcludePath, signal);
     await appendExternalIgnoreInput(ignoreInputs, "git-core-excludes-file", coreExcludesPath, signal);
@@ -713,7 +769,7 @@ async function classifyGitWorkspace(
         trackedHash: hashContent(trackedResult.stdout),
         ignoredHash: hashContent(ignoredResult.stdout),
         indexPath,
-        indexVersion,
+        indexEvidence,
         infoExcludePath,
         coreExcludesPath,
     };
@@ -757,7 +813,7 @@ async function verifyGitWorkspaceScope(input: WorkspaceScopeInput, attempt: Work
         return false;
     }
     assertScopeActive(input.signal);
-    if (!sameFileVersion(classification.indexVersion, await readOptionalFileVersion(classification.indexPath))) {
+    if (!sameGitIndexEvidence(classification.indexEvidence, await captureGitIndexEvidence(indexPath, input.signal))) {
         return false;
     }
     return true;
@@ -1026,37 +1082,135 @@ function sameIgnoreFileVersion(left: BigIntStats, right: BigIntStats): boolean {
     );
 }
 
-async function readOptionalFileVersion(path: Buffer): Promise<FileVersion> {
-    try {
-        const value = await lstat(path, { bigint: true });
-        if (!value.isFile()) {
-            throw new Error(`Git index is not a regular file: ${displayPath(path)}`);
-        }
-        return {
-            exists: true,
-            dev: value.dev,
-            ino: value.ino,
-            size: value.size,
-            mtimeNs: value.mtimeNs,
-            ctimeNs: value.ctimeNs,
-        };
-    } catch (error) {
-        if (isMissing(error)) {
-            return { exists: false };
-        }
-        throw error;
+async function captureGitIndexEvidence(
+    pathBytes: Buffer,
+    signal?: AbortSignal
+): Promise<WorkspaceScopeGitIndexEvidence> {
+    assertScopeActive(signal);
+    const requestedPath = decodePath(pathBytes);
+    if (!requestedPath || !isAbsolute(requestedPath)) {
+        throw new Error("unsafe Git index path evidence");
     }
+    const parentPath = await realpath(dirname(requestedPath));
+    const path = join(parentPath, basename(requestedPath));
+    const parentBefore = await readDirectoryIdentity(Buffer.from(parentPath));
+    let before: BigIntStats;
+    try {
+        before = await lstat(path, { bigint: true });
+    } catch (error) {
+        if (!isMissing(error)) throw error;
+        await assertGitIndexStillAbsent(path, parentBefore, parentPath);
+        return {
+            path,
+            parentPath,
+            parentIdentity: serializeDirectoryIdentity(parentBefore),
+            state: "absent",
+        };
+    }
+    if (!isSafeGitIndexStat(before)) {
+        throw new Error("unsafe Git index file evidence");
+    }
+    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const hash = createHash("sha256");
+    try {
+        const opened = await handle.stat({ bigint: true });
+        if (!isSafeGitIndexStat(opened) || !sameGitIndexFileVersion(before, opened)) {
+            throw new Error("unstable Git index file evidence");
+        }
+        const buffer = Buffer.allocUnsafe(64 * 1024);
+        let offset = 0;
+        while (offset < Number(opened.size)) {
+            assertScopeActive(signal);
+            const result = await handle.read(buffer, 0, Math.min(buffer.length, Number(opened.size) - offset), offset);
+            if (result.bytesRead === 0) throw new Error("unstable Git index file evidence");
+            hash.update(buffer.subarray(0, result.bytesRead));
+            offset += result.bytesRead;
+        }
+        const overflow = await handle.read(buffer, 0, 1, offset);
+        const openedAfter = await handle.stat({ bigint: true });
+        if (overflow.bytesRead !== 0 || !sameGitIndexFileVersion(opened, openedAfter)) {
+            throw new Error("unstable Git index file evidence");
+        }
+    } finally {
+        await handle.close();
+    }
+    const after = await lstat(path, { bigint: true });
+    if (!sameGitIndexFileVersion(before, after)) {
+        throw new Error("unstable Git index file evidence");
+    }
+    assertSameDirectory(parentBefore, await readDirectoryIdentity(Buffer.from(parentPath)));
+    return {
+        path,
+        parentPath,
+        parentIdentity: serializeDirectoryIdentity(parentBefore),
+        state: "file",
+        entryIdentity: serializeEntryIdentity(before),
+        contentHash: hash.digest("hex"),
+    };
 }
 
-function sameFileVersion(left: FileVersion, right: FileVersion): boolean {
+async function assertGitIndexStillAbsent(
+    path: string,
+    parentIdentity: DirectoryIdentity,
+    parentPath: string
+): Promise<void> {
+    assertSameDirectory(parentIdentity, await readDirectoryIdentity(Buffer.from(parentPath)));
+    try {
+        await lstat(path, { bigint: true });
+    } catch (error) {
+        if (isMissing(error)) return;
+        throw error;
+    }
+    throw new Error("unstable Git index absence evidence");
+}
+
+function isSafeGitIndexStat(value: BigIntStats): boolean {
     return (
-        left.exists === right.exists &&
+        value.isFile() && !value.isSymbolicLink() && value.nlink === 1n && value.size <= BigInt(Number.MAX_SAFE_INTEGER)
+    );
+}
+
+function sameGitIndexFileVersion(left: BigIntStats, right: BigIntStats): boolean {
+    return (
+        right.isFile() &&
         left.dev === right.dev &&
         left.ino === right.ino &&
+        left.birthtimeNs === right.birthtimeNs &&
+        left.mode === right.mode &&
+        left.nlink === right.nlink &&
         left.size === right.size &&
         left.mtimeNs === right.mtimeNs &&
         left.ctimeNs === right.ctimeNs
     );
+}
+
+function serializeDirectoryIdentity(value: DirectoryIdentity): WorkspaceScopeSerializedDirectoryIdentity {
+    return {
+        dev: value.dev.toString(),
+        ino: value.ino.toString(),
+        birthtimeNs: value.birthtimeNs.toString(),
+        mtimeNs: value.mtimeNs.toString(),
+        ctimeNs: value.ctimeNs.toString(),
+    };
+}
+
+function serializeEntryIdentity(value: BigIntStats): WorkspaceScopeSerializedEntryIdentity {
+    return {
+        ...serializeDirectoryIdentity({
+            dev: value.dev,
+            ino: value.ino,
+            birthtimeNs: value.birthtimeNs,
+            mtimeNs: value.mtimeNs,
+            ctimeNs: value.ctimeNs,
+        }),
+        mode: value.mode.toString(),
+        nlink: value.nlink.toString(),
+        size: value.size.toString(),
+    };
+}
+
+function sameGitIndexEvidence(left: WorkspaceScopeGitIndexEvidence, right: WorkspaceScopeGitIndexEvidence): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function verifyIgnoreInputs(

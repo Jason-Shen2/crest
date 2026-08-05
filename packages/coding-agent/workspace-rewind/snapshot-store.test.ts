@@ -27,6 +27,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError, type GitRunOptions, type GitRunResult } from "./git-runner";
+import { IncrementalPathCapture } from "./incremental-path-capture";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import {
     initializePrivateStore,
@@ -36,6 +37,7 @@ import {
 } from "./snapshot-store";
 import type { CapturedPathStateV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { discoverWorkspaceScope } from "./workspace-scope";
 
 const cleanupRoots: string[] = [];
 
@@ -1050,6 +1052,55 @@ describe("workspace snapshots", () => {
         await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.storeRoot, timeoutMs: 30_000 });
         await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
         await expect(fixture.store.diff(base, committed.ref)).resolves.toHaveLength(1);
+    });
+
+    test("materializes captured bytes and roots them in one locked incremental commit", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "before");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const scope = await discoverWorkspaceScope({
+            identity: fixture.identity,
+            git: fixture.git,
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+        });
+        const pathCapture = new IncrementalPathCapture({
+            identity: fixture.identity,
+            git: fixture.git,
+            storeRoot: fixture.storeRoot,
+            scope: scope.manifest,
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+            maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+            timeoutMs: 10_000,
+            base: { readNodeKind: (path) => fixture.store.readNodeKind(base, path) },
+        });
+        await writeFile(join(fixture.workspace, "README.md"), "after");
+        const result = await pathCapture.capture(["README.md"]);
+        if (result.status !== "captured" || result.mutations[0]!.state.state !== "file") {
+            throw new Error("expected captured file mutation");
+        }
+        const oid = result.mutations[0]!.state.oid;
+        await expect(
+            fixture.git.run(["cat-file", "blob", oid], { gitDir: fixture.storeRoot, timeoutMs: 5_000 })
+        ).rejects.toMatchObject({ code: "nonzero_exit" });
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+
+        const committed = await pathCapture.consumeCaptured(result, (batch) =>
+            fixture.store.commitCapturedIncrementalSnapshot({
+                ...input,
+                scope: scope.manifest,
+                mutations: result.mutations,
+                newlyHashedBytes: result.newlyHashedBytes,
+                batch,
+            })
+        );
+
+        await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.storeRoot, timeoutMs: 30_000 });
+        await expect(fixture.store.readBlob(oid)).resolves.toEqual(Buffer.from("after"));
+        await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
     });
 
     test("commits deterministic incremental snapshot ids independent of mutation order", async () => {
