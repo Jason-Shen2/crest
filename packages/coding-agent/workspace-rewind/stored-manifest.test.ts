@@ -118,6 +118,52 @@ describe("stored snapshot manifests", () => {
 
         await expect(reader.verify()).rejects.toThrow("Invalid stored path state object id");
     });
+
+    test("verifies 10k state leaves with bounded blob batches instead of one read per leaf", async () => {
+        const objects = new MemoryObjects();
+        const states = new Map<string, CapturedPathStateV1>();
+        for (let index = 0; index < 10_000; index++) {
+            states.set(`files/${index.toString().padStart(5, "0")}.txt`, {
+                state: "file",
+                oid: createHash("sha1").update(`content-${index}`).digest("hex"),
+                executable: false,
+            });
+        }
+        const reader = await makeV2Reader(states, objects);
+        objects.blobReads.length = 0;
+        objects.blobBatchReads.length = 0;
+
+        await expect(reader.verify()).resolves.toMatchObject({ workspaceStates: { size: 10_000 } });
+        expect(objects.blobReads).toHaveLength(0);
+        expect(objects.blobBatchReads.length).toBeGreaterThan(1);
+        expect(objects.blobBatchReads.length).toBeLessThanOrEqual(20);
+        expect(objects.blobBatchReads.flat()).toHaveLength(10_000);
+    });
+
+    test("keeps canonical stored coverage wire fields lowercase and exposes normalized domain coverage", async () => {
+        const objects = new MemoryObjects();
+        const stateTree = objects.putStateTree(new Map());
+        const manifest = makeV2Manifest(stateTree);
+        manifest.coverage = {
+            complete: false,
+            eligibleentrycount: 7,
+            exclusions: [{ pathbytesbase64: Buffer.from([0xff]).toString("base64"), reason: "non-utf8-path" }],
+        };
+        const manifestOid = objects.putBlob(canonicalJson(manifest));
+        const reader = await openReader(objects, manifestOid);
+
+        expect(reader.manifest).toMatchObject({
+            coverage: {
+                eligibleentrycount: 7,
+                exclusions: [{ pathbytesbase64: "/w==", reason: "non-utf8-path" }],
+            },
+        });
+        expect(reader.getCoverage()).toEqual({
+            complete: false,
+            eligibleEntryCount: 7,
+            exclusions: [{ pathBytesBase64: "/w==", reason: "non-utf8-path" }],
+        });
+    });
 });
 
 async function makeV1Reader(states: ReadonlyMap<string, CapturedPathStateV1>): Promise<StoredManifestReader> {
@@ -168,7 +214,7 @@ function makeV2Manifest(stateTree: string): StoredScopeManifestV2 {
         workspaceidentity: WorkspaceIdentity,
         workspaceincarnation: WorkspaceIncarnation,
         scope: makeScope(),
-        coverage: { complete: false, eligibleEntryCount: 3, exclusions: [] },
+        coverage: { complete: false, eligibleentrycount: 3, exclusions: [] },
         statetree: stateTree,
     };
 }
@@ -190,6 +236,8 @@ class MemoryObjects implements StoredManifestObjectReader {
     readonly blobs = new Map<string, Buffer>();
     readonly trees = new Map<string, Buffer>();
     readonly treeReads: string[] = [];
+    readonly blobReads: string[] = [];
+    readonly blobBatchReads: string[][] = [];
     readonly pathTreeOids = new Map<string, string>();
 
     putBlob(bytes: Buffer): string {
@@ -224,9 +272,21 @@ class MemoryObjects implements StoredManifestObjectReader {
     }
 
     async readBlob(oid: string): Promise<Buffer> {
+        this.blobReads.push(oid);
         const bytes = this.blobs.get(oid);
         if (!bytes) throw new Error(`Missing blob: ${oid}`);
         return bytes;
+    }
+
+    async readBlobs(oids: readonly string[]): Promise<ReadonlyMap<string, Buffer>> {
+        this.blobBatchReads.push([...oids]);
+        return new Map(
+            oids.map((oid) => {
+                const bytes = this.blobs.get(oid);
+                if (!bytes) throw new Error(`Missing blob: ${oid}`);
+                return [oid, bytes];
+            })
+        );
     }
 
     async readTree(oid: string): Promise<Buffer> {

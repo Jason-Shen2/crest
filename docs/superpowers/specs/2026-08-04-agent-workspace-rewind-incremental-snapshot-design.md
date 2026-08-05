@@ -233,10 +233,18 @@ planner、preview、Redo 和 snapshot retention 可以继续消费相同的 snap
 当前 `scopeManifest` 内部使用单个 v1 JSON blob 保存全部 path state。即使 workspace
 tree 改为 copy-on-write，如果每个边界仍然重写这份 flat manifest，正常路径仍然是
 O(workspace entries)，因此该格式也必须一起增量化。目标实现增加内部 manifest v2：
-`WorkspaceSnapshotRefV1.scopeManifest` 仍然是一个 immutable object id，但它指向的
-descriptor 保存 scope policy、coverage 和一棵 content-addressed path-state tree。只有
+`WorkspaceSnapshotRefV1.scopeManifest` 仍然是一个 immutable manifest blob id；manifest
+保存 scope policy、coverage 和 content-addressed path-state tree 的 OID。snapshot descriptor
+用名为 `state` 的 tree entry 直接引用同一个 state-tree OID，确保 owner ref 可以让整棵 state
+graph 在 Git GC 后继续存活。v1 descriptor 必须严格只有 `scope-manifest` 与 `workspace` 两项；
+v2 descriptor 必须严格增加第三项 `state`，并与 manifest 的 `statetree` 完全一致。只有
 变化 path 及其祖先会生成新 state-tree object；v1 reader 继续用于读取已有快照，新的
 tracker 只写 v2。这个变化不修改 checkpoint、IPC 或 restore planner 的公开类型。
+
+manifest v2 的 coverage 使用明确的 lowercase wire schema（例如 `eligibleentrycount`、
+`pathbytesbase64`），reader 在 canonical 校验后才转换成现有 camelCase domain coverage。
+完整 verification 按固定 512 个 state blob 一批使用 `git cat-file --batch`，避免为大型 workspace
+的每个 leaf 启动一个 Git 进程；单个 state blob 和每批输出都有固定上限。
 
 ### Watcher 是 hint，不是 authority
 

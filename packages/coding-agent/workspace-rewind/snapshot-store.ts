@@ -32,6 +32,7 @@ import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } fro
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
 import {
     encodeCanonicalStoredJson as canonicalJson,
+    StoredManifestBlobBatchSize,
     StoredManifestReader,
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
@@ -69,6 +70,8 @@ const QuotaMaxRefCount = 200_000;
 const QuotaMaxObjectCount = 1_000_000;
 const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
+const StoredPathStateMaxBytes = 4 * 1024;
+const StoredPathStateBatchOutputBytes = StoredManifestBlobBatchSize * (StoredPathStateMaxBytes + 128);
 
 export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
@@ -383,9 +386,13 @@ export class WorkspaceSnapshotStore {
         before: WorkspaceSnapshotRefV1,
         after: WorkspaceSnapshotRefV1
     ): Promise<WorkspacePathChangeV1[]> {
-        const beforeManifest = await this.#readStoredManifest(before);
-        const afterManifest = await this.#readStoredManifest(after);
-        return await beforeManifest.diff(afterManifest);
+        try {
+            const beforeManifest = await this.#readStoredManifest(before);
+            const afterManifest = await this.#readStoredManifest(after);
+            return await beforeManifest.diff(afterManifest);
+        } catch (cause) {
+            throw asCorruptSnapshot(cause);
+        }
     }
 
     readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
@@ -394,8 +401,12 @@ export class WorkspaceSnapshotStore {
 
     async #readPathStateUnlocked(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
         validateRelativePath(path);
-        const manifest = await this.#readStoredManifest(snapshot);
-        return await manifest.readPathState(path);
+        try {
+            const manifest = await this.#readStoredManifest(snapshot);
+            return await manifest.readPathState(path);
+        } catch (cause) {
+            throw asCorruptSnapshot(cause);
+        }
     }
 
     readBlob(oid: string): Promise<Buffer> {
@@ -449,8 +460,7 @@ export class WorkspaceSnapshotStore {
     async #verifyUnlocked(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         try {
             this.assertSnapshotIdentity(snapshot);
-            await this.verifyDescriptor(snapshot);
-            const manifest = await this.#readStoredManifestBlob(snapshot);
+            const manifest = await this.#readStoredManifest(snapshot);
             await this.verifyWorkspaceTree(snapshot, manifest);
             markSnapshotTrusted(this, snapshot);
         } catch (cause) {
@@ -458,14 +468,16 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async verifyDescriptor(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+    async #readSnapshotDescriptor(
+        snapshot: WorkspaceSnapshotRefV1
+    ): Promise<Map<string, { mode: string; oid: string }>> {
         const descriptor = await this.git.run(["cat-file", "tree", snapshot.id], {
             gitDir: this.storeRoot,
             timeoutMs: StoreGitTimeoutMs,
         });
         const entries = parseRawTreeEntries(descriptor.stdout, snapshot.id.length / 2);
         if (
-            entries.size !== 2 ||
+            (entries.size !== 2 && entries.size !== 3) ||
             entries.get("workspace")?.oid !== snapshot.tree ||
             entries.get("workspace")?.mode !== "40000"
         ) {
@@ -477,6 +489,10 @@ export class WorkspaceSnapshotStore {
         ) {
             throw new Error("Snapshot descriptor has an invalid scope manifest");
         }
+        if (entries.size === 3 && entries.get("state")?.mode !== "40000") {
+            throw new Error("Snapshot descriptor has an invalid state tree");
+        }
+        return entries;
     }
 
     anchorSnapshot(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
@@ -1068,8 +1084,22 @@ export class WorkspaceSnapshotStore {
     async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
         try {
             this.assertSnapshotIdentity(snapshot);
-            await this.verifyDescriptor(snapshot);
-            return await this.#readStoredManifestBlob(snapshot);
+            const descriptor = await this.#readSnapshotDescriptor(snapshot);
+            const manifest = await this.#readStoredManifestBlob(snapshot);
+            if (manifest.manifest.schemaversion === 1) {
+                if (descriptor.size !== 2 || descriptor.has("state")) {
+                    throw new Error("Snapshot v1 descriptor has unexpected entries");
+                }
+                return manifest;
+            }
+            if (
+                descriptor.size !== 3 ||
+                descriptor.get("state")?.mode !== "40000" ||
+                descriptor.get("state")?.oid !== manifest.manifest.statetree
+            ) {
+                throw new Error("Snapshot v2 descriptor has an invalid state tree");
+            }
+            return manifest;
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -1120,6 +1150,7 @@ export class WorkspaceSnapshotStore {
     #storedManifestObjects(): StoredManifestObjectReader {
         return {
             readBlob: (oid) => this.#readBlobUnlocked(oid),
+            readBlobs: (oids) => this.#readStoredPathStateBlobs(oids),
             readTree: async (oid) => {
                 validateOid(oid);
                 const result = await this.git.run(["cat-file", "tree", oid], {
@@ -1129,6 +1160,20 @@ export class WorkspaceSnapshotStore {
                 return result.stdout;
             },
         };
+    }
+
+    async #readStoredPathStateBlobs(oids: readonly string[]): Promise<ReadonlyMap<string, Buffer>> {
+        if (oids.length === 0 || oids.length > StoredManifestBlobBatchSize || new Set(oids).size !== oids.length) {
+            throw new Error("Invalid stored path state blob batch");
+        }
+        for (const oid of oids) validateOid(oid);
+        const result = await this.git.run(["cat-file", "--batch"], {
+            gitDir: this.storeRoot,
+            stdin: Buffer.from(`${oids.join("\n")}\n`),
+            timeoutMs: StoreGitTimeoutMs,
+            maxStdoutBytes: StoredPathStateBatchOutputBytes,
+        });
+        return parseBatchBlobs(result.stdout, oids, StoredPathStateMaxBytes);
     }
 
     async collectWorkspaceTreeStates(
@@ -2115,6 +2160,31 @@ function assertBatchBlobObjects(value: Buffer, expectedObjectIds: string[]): voi
     }
 }
 
+function parseBatchBlobs(
+    value: Buffer,
+    expectedObjectIds: readonly string[],
+    maxBlobBytes: number
+): Map<string, Buffer> {
+    const blobs = new Map<string, Buffer>();
+    let offset = 0;
+    for (const expectedOid of expectedObjectIds) {
+        const lineEnd = value.indexOf(0x0a, offset);
+        if (lineEnd < offset) throw new Error("Git returned an invalid stored path state blob batch");
+        const header = value.subarray(offset, lineEnd).toString("ascii").split(" ");
+        if (header.length !== 3 || header[0] !== expectedOid || header[1] !== "blob") {
+            throw new Error("Git returned an invalid stored path state blob batch");
+        }
+        const size = parseSafeInteger(header[2]!, "stored path state blob size");
+        if (size > maxBlobBytes || lineEnd + 1 + size >= value.length || value[lineEnd + 1 + size] !== 0x0a) {
+            throw new Error("Git returned an invalid stored path state blob batch");
+        }
+        blobs.set(expectedOid, Buffer.from(value.subarray(lineEnd + 1, lineEnd + 1 + size)));
+        offset = lineEnd + 1 + size + 1;
+    }
+    if (offset !== value.length) throw new Error("Git returned an invalid stored path state blob batch");
+    return blobs;
+}
+
 function parseSafeInteger(value: string, label: string): number {
     if (!/^(0|[1-9][0-9]*)$/.test(value)) {
         throw new Error(`Invalid ${label}`);
@@ -2197,9 +2267,7 @@ function delay(milliseconds: number): Promise<void> {
 }
 
 function asCorruptSnapshot(cause: unknown): WorkspaceSnapshotStoreError {
-    if (cause instanceof WorkspaceSnapshotStoreError && cause.code === "corrupt_snapshot") {
-        return cause;
-    }
+    if (cause instanceof WorkspaceSnapshotStoreError) return cause;
     const detail = cause instanceof Error ? `: ${cause.message}` : "";
     return new WorkspaceSnapshotStoreError("corrupt_snapshot", `Workspace snapshot is corrupt${detail}`, { cause });
 }

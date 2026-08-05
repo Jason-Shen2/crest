@@ -323,8 +323,14 @@ export interface StoredScopeManifestV2 {
     workspaceidentity: string;
     workspaceincarnation: string;
     scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    coverage: StoredSnapshotCoverage;
     statetree: string;
+}
+
+export interface StoredSnapshotCoverage {
+    complete: boolean;
+    eligibleentrycount: number;
+    exclusions: StoredSnapshotCoverageExclusion[];
 }
 ```
 
@@ -339,9 +345,15 @@ export interface StoredPathStateV1 {
 
 state tree path 与 workspace relative path 一一对应。absence 不写 leaf；lookup 缺失返回 `{ state: "absent" }`。excluded path 写 state leaf，但不写 workspace tree leaf。
 
+wire manifest 保持全 lowercase；reader 完成 canonical validation 后通过 domain accessor 把
+`eligibleentrycount`、`pathbytesbase64` 等字段转换为现有 camelCase coverage。snapshot descriptor
+的格式按版本严格区分：v1 只有 `scope-manifest` 与 `workspace`；v2 还必须有名为 `state` 的 tree
+entry，且 OID 与 manifest 的 `statetree` 一致。这个直接引用是 state graph 被 owner ref 和 Git GC
+识别为 reachable 的依据，不能只把 state-tree OID 放在 JSON 字符串里。
+
 - [ ] **Step 4: 让 snapshot store 的 readers 同时消费 v1/v2**
 
-把 `readPathState()`、`diff()`、`verifyWorkspaceTree()` 和 snapshot verification 改为调用 `StoredManifestReader`。v2 diff 使用 state-tree Merkle OID 跳过相同 subtree；不得把 v2 展平成全量 Map。v1 继续沿用 flat Map 逻辑。
+把 `readPathState()`、`diff()`、`verifyWorkspaceTree()` 和 snapshot verification 改为调用 `StoredManifestReader`。v2 diff 使用 state-tree Merkle OID 跳过相同 subtree；不得把 v2 展平成全量 Map。v1 继续沿用 flat Map 逻辑。完整 verification 以固定 512 leaf 的 bounded `git cat-file --batch` 读取 state blobs，不允许 per-leaf Git process。
 
 - [ ] **Step 5: 运行 snapshot reader 回归测试**
 
@@ -439,7 +451,7 @@ commitIncrementalSnapshot(input: {
 }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }>;
 ```
 
-方法在 workspace lock 内写 v2 manifest descriptor、snapshot descriptor、durable objects 和 owner ref；identity、free-space、quota reservation 与 canonical workspace 校验保持 fail closed。
+方法在 workspace lock 内写 v2 manifest blob、带 `state` direct tree entry 的三项 snapshot descriptor、durable objects 和 owner ref；`state` OID 必须等于 manifest `statetree`。identity、free-space、quota reservation 与 canonical workspace 校验保持 fail closed。
 
 - [ ] **Step 6: 运行 tree 与 store tests**
 

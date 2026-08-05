@@ -27,7 +27,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { makeProcessOwnerIdentity } from "./process-owner";
-import { initializePrivateStore, WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-store";
+import {
+    initializePrivateStore,
+    WorkspaceCheckpointLimits,
+    WorkspaceSnapshotStore,
+    WorkspaceSnapshotStoreError,
+} from "./snapshot-store";
 import type { CapturedPathStateV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
@@ -982,6 +987,120 @@ describe("workspace snapshots", () => {
         expect(await fixture.store.diff(beforeV2, afterV2)).toEqual(await fixture.store.diff(before.ref, after.ref));
     });
 
+    test("roots a v2 state tree through its owner descriptor across immediate Git pruning", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "survives gc");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(v2);
+
+        await fixture.git.run(["gc", "--prune=now"], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 30_000,
+        });
+
+        await expect(fixture.store.verify(v2)).resolves.toBeUndefined();
+        await expect(fixture.store.readPathState(v2, "README.md")).resolves.toMatchObject({ state: "file" });
+        await expect(fixture.store.diff(v2, v2)).resolves.toEqual([]);
+    });
+
+    test("verifies v2 state leaves with a bounded number of Git batch processes", async () => {
+        const fixture = await makeStoreFixture();
+        await Promise.all(
+            Array.from({ length: 513 }, (_, index) =>
+                writeFile(join(fixture.workspace, `file-${index.toString().padStart(3, "0")}.txt`), `${index}`)
+            )
+        );
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        fixture.git.calls.length = 0;
+
+        await fixture.store.verify(v2);
+
+        expect(fixture.git.calls.filter((args) => args[0] === "cat-file" && args[1] === "--batch")).toHaveLength(2);
+    });
+
+    test("requires exact descriptor entries for each manifest version", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "descriptor");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const v2Manifest = JSON.parse((await fixture.store.readBlob(v2.scopeManifest)).toString("utf8")) as {
+            statetree: string;
+        };
+        const emptyStateTree = await writeTestStateTree(fixture, new Map());
+        const extraBlob = await writeTestBlob(fixture, Buffer.from("extra"));
+        const missing = await writeTestDescriptor(fixture, v2.tree, v2.scopeManifest);
+        const mismatched = await writeTestV2Descriptor(fixture, v2.tree, v2.scopeManifest, emptyStateTree);
+        const extra = await writeTestV2Descriptor(fixture, v2.tree, v2.scopeManifest, v2Manifest.statetree, [
+            { name: "unexpected", mode: "100644", type: "blob", oid: extraBlob },
+        ]);
+        const v1WithState = await writeTestV2Descriptor(
+            fixture,
+            captured.ref.tree,
+            captured.ref.scopeManifest,
+            emptyStateTree
+        );
+
+        for (const snapshot of [
+            { ...v2, id: missing },
+            { ...v2, id: mismatched },
+            { ...v2, id: extra },
+            { ...captured.ref, id: v1WithState },
+        ]) {
+            await expect(fixture.store.verify(snapshot)).rejects.toMatchObject({ code: "corrupt_snapshot" });
+        }
+    });
+
+    test("classifies a corrupt v2 state tree discovered by readPathState as corrupt_snapshot", async () => {
+        const fixture = await makeStoreFixture();
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const notATree = await writeTestBlob(fixture, Buffer.from("not a tree"));
+        const stateTree = await writeRawTree(
+            fixture,
+            Buffer.concat([Buffer.from("40000 dir\0"), Buffer.from(notATree, "hex")])
+        );
+        const invalid = await makeV2SnapshotWithStateTree(fixture, captured.ref, captured.coverage, stateTree);
+
+        await expect(fixture.store.readPathState(invalid, "dir/file.txt")).rejects.toMatchObject({
+            code: "corrupt_snapshot",
+        });
+    });
+
+    test("classifies a corrupt v2 state blob discovered by diff as corrupt_snapshot", async () => {
+        const fixture = await makeStoreFixture();
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const invalidState = await writeTestBlob(
+            fixture,
+            canonicalTestJson({ schemaversion: 2, state: { state: "absent" } })
+        );
+        const invalidTree = await writeTestStateTreeNode(fixture, {
+            children: new Map(),
+            leaves: new Map([["README.md", invalidState]]),
+        });
+        const invalid = await makeV2SnapshotWithStateTree(fixture, captured.ref, captured.coverage, invalidTree);
+        const valid = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+
+        await expect(fixture.store.diff(invalid, valid)).rejects.toMatchObject({ code: "corrupt_snapshot" });
+    });
+
+    test("does not relabel an existing typed snapshot-store failure as corruption", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "typed failure");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const originalRun = fixture.git.run.bind(fixture.git);
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "cat-file" && args[1] === "tree" && args[2] === captured.ref.id) {
+                throw new WorkspaceSnapshotStoreError("capture_timeout", "typed failure");
+            }
+            return await originalRun(args, options);
+        });
+
+        await expect(fixture.store.readPathState(captured.ref, "README.md")).rejects.toMatchObject({
+            code: "capture_timeout",
+        });
+    });
+
     test("captures raw bytes in a Git workspace without consulting a shadow index", async () => {
         const fixture = await makeStoreFixture();
         await fixture.git.run(["init", fixture.workspace], {
@@ -1655,10 +1774,21 @@ async function convertSnapshotToV2(
     coverage: WorkspaceSnapshotCoverage
 ): Promise<WorkspaceSnapshotRefV1> {
     const v1 = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
-        scope: unknown;
         entries: Array<{ path: string; state: CapturedPathStateV1 }>;
     };
     const stateTree = await writeTestStateTree(fixture, new Map(v1.entries.map((entry) => [entry.path, entry.state])));
+    return await makeV2SnapshotWithStateTree(fixture, source, coverage, stateTree);
+}
+
+async function makeV2SnapshotWithStateTree(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    source: WorkspaceSnapshotRefV1,
+    coverage: WorkspaceSnapshotCoverage,
+    stateTree: string
+): Promise<WorkspaceSnapshotRefV1> {
+    const v1 = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
+        scope: unknown;
+    };
     const manifestOid = await writeTestBlob(
         fixture,
         canonicalTestJson({
@@ -1676,7 +1806,7 @@ async function convertSnapshotToV2(
     );
     return {
         ...source,
-        id: await writeTestDescriptor(fixture, source.tree, manifestOid),
+        id: await writeTestV2Descriptor(fixture, source.tree, manifestOid, stateTree),
         scopeManifest: manifestOid,
     };
 }
@@ -1686,14 +1816,36 @@ async function writeTestStateTree(
     states: ReadonlyMap<string, CapturedPathStateV1>
 ): Promise<string> {
     const root = makeStateTreeNode();
-    for (const [path, state] of states) {
+    const items = [...states];
+    const staging = await temporaryDirectory();
+    const stagingNames = items.map((_, index) => `${index}.json`);
+    await Promise.all(
+        items.map(([, state], index) =>
+            writeFile(join(staging, stagingNames[index]!), canonicalTestJson({ schemaversion: 1, state }))
+        )
+    );
+    const stateOids =
+        items.length === 0
+            ? []
+            : stripTestLines(
+                  (
+                      await fixture.git.run(["hash-object", "-w", "--stdin-paths", "--no-filters"], {
+                          cwd: staging,
+                          gitDir: fixture.storeRoot,
+                          stdin: Buffer.from(`${stagingNames.join("\n")}\n`),
+                          timeoutMs: 30_000,
+                      })
+                  ).stdout
+              );
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+        const [path] = items[itemIndex]!;
         const segments = path.split("/");
         let node = root;
         for (const segment of segments.slice(0, -1)) {
             node.children.set(segment, node.children.get(segment) ?? makeStateTreeNode());
             node = node.children.get(segment)!;
         }
-        node.leaves.set(segments.at(-1)!, await writeTestBlob(fixture, canonicalTestJson({ schemaversion: 1, state })));
+        node.leaves.set(segments.at(-1)!, stateOids[itemIndex]!);
     }
     return await writeTestStateTreeNode(fixture, root);
 }
@@ -1757,6 +1909,29 @@ async function writeTestDescriptor(
     return stripTestOid(result.stdout);
 }
 
+async function writeTestV2Descriptor(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    treeOid: string,
+    manifestOid: string,
+    stateTreeOid: string,
+    extraEntries: Array<{ name: string; mode: string; type: string; oid: string }> = []
+): Promise<string> {
+    const entries = [
+        { name: "scope-manifest", mode: "100644", type: "blob", oid: manifestOid },
+        { name: "state", mode: "040000", type: "tree", oid: stateTreeOid },
+        { name: "workspace", mode: "040000", type: "tree", oid: treeOid },
+        ...extraEntries,
+    ].sort((left, right) => Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)));
+    const result = await fixture.git.run(["mktree", "-z"], {
+        gitDir: fixture.storeRoot,
+        stdin: Buffer.concat(
+            entries.map((entry) => Buffer.from(`${entry.mode} ${entry.type} ${entry.oid}\t${entry.name}\0`))
+        ),
+        timeoutMs: 5_000,
+    });
+    return stripTestOid(result.stdout);
+}
+
 async function writeRawTree(fixture: Awaited<ReturnType<typeof makeStoreFixture>>, bytes: Buffer): Promise<string> {
     const result = await fixture.git.run(["hash-object", "-t", "tree", "-w", "--stdin"], {
         gitDir: fixture.storeRoot,
@@ -1768,6 +1943,10 @@ async function writeRawTree(fixture: Awaited<ReturnType<typeof makeStoreFixture>
 
 function stripTestOid(value: Buffer): string {
     return value.subarray(0, value.length - 1).toString("ascii");
+}
+
+function stripTestLines(value: Buffer): string[] {
+    return value.toString("ascii").trimEnd().split("\n");
 }
 
 async function makeTestAncestorIdentityChain(

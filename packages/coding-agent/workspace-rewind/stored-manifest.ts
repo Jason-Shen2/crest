@@ -29,9 +29,20 @@ export interface StoredScopeManifestV2 {
     workspaceidentity: string;
     workspaceincarnation: string;
     scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    coverage: StoredSnapshotCoverage;
     statetree: string;
 }
+
+export interface StoredSnapshotCoverage {
+    complete: boolean;
+    eligibleentrycount: number;
+    exclusions: StoredSnapshotCoverageExclusion[];
+}
+
+export type StoredSnapshotCoverageExclusion =
+    | { path: string; reason: WorkspaceSnapshotCoverage["exclusions"][number]["reason"] }
+    | { pathbytesbase64: string; reason: WorkspaceSnapshotCoverage["exclusions"][number]["reason"] }
+    | { scope: "workspace-root"; reason: "capture-budget" };
 
 export interface StoredPathStateV1 {
     schemaversion: 1;
@@ -42,6 +53,7 @@ export type StoredScopeManifest = StoredScopeManifestV1 | StoredScopeManifestV2;
 
 export interface StoredManifestObjectReader {
     readBlob(oid: string): Promise<Buffer>;
+    readBlobs(oids: readonly string[]): Promise<ReadonlyMap<string, Buffer>>;
     readTree(oid: string): Promise<Buffer>;
 }
 
@@ -59,6 +71,7 @@ const CoverageReasons = new Set([
     "special-entry",
     "capture-budget",
 ]);
+export const StoredManifestBlobBatchSize = 512;
 
 export class StoredManifestReader {
     readonly manifest: StoredScopeManifest;
@@ -151,20 +164,44 @@ export class StoredManifestReader {
             }
             return { workspaceStates, objectIds };
         }
-        await this.walkV2Tree(
+        const pathsByOid = new Map<string, string[]>();
+        await this.walkV2LeafOids(
             this.manifest.statetree,
             "",
-            async (path, state) => {
-                if (state.state === "absent") {
-                    throw new Error(`Invalid stored path state: ${path}`);
-                }
-                if (state.state === "file" || state.state === "symlink") {
-                    workspaceStates.set(path, state);
-                }
+            async (path, oid) => {
+                const paths = pathsByOid.get(oid) ?? [];
+                paths.push(path);
+                pathsByOid.set(oid, paths);
             },
             objectIds
         );
+        const oids = [...pathsByOid.keys()];
+        for (let start = 0; start < oids.length; start += StoredManifestBlobBatchSize) {
+            const batch = oids.slice(start, start + StoredManifestBlobBatchSize);
+            const blobs = await this.objects.readBlobs(batch);
+            if (blobs.size !== batch.length || batch.some((oid) => !blobs.has(oid))) {
+                throw new Error("Invalid stored path state blob batch");
+            }
+            for (const oid of batch) {
+                const state = this.decodeStoredPathState(oid, blobs.get(oid)!);
+                this.pathStates.set(oid, Promise.resolve(state));
+                for (const path of pathsByOid.get(oid)!) {
+                    if (state.state === "file" || state.state === "symlink") {
+                        workspaceStates.set(path, state);
+                    }
+                }
+            }
+        }
         return { workspaceStates, objectIds };
+    }
+
+    getCoverage(): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> | undefined {
+        if (this.manifest.schemaversion === 1) return undefined;
+        return {
+            complete: this.manifest.coverage.complete,
+            eligibleEntryCount: this.manifest.coverage.eligibleentrycount,
+            exclusions: this.manifest.coverage.exclusions.map(normalizeCoverageExclusion),
+        };
     }
 
     async collectExplicitPaths(paths: Set<string>): Promise<void> {
@@ -172,7 +209,7 @@ export class StoredManifestReader {
             for (const path of this.v1States!.keys()) paths.add(path);
             return;
         }
-        await this.walkV2Tree(this.manifest.statetree, "", async (path) => {
+        await this.walkV2LeafOids(this.manifest.statetree, "", async (path) => {
             paths.add(path);
         });
     }
@@ -196,10 +233,10 @@ export class StoredManifestReader {
         return this.defaultPathState();
     }
 
-    async walkV2Tree(
+    async walkV2LeafOids(
         treeOid: string,
         parentPath: string,
-        visitor: (path: string, state: CapturedPathStateV1) => Promise<void>,
+        visitor: (path: string, oid: string) => Promise<void>,
         objectIds?: Set<string>
     ): Promise<void> {
         objectIds?.add(treeOid);
@@ -207,11 +244,11 @@ export class StoredManifestReader {
         for (const [name, entry] of entries) {
             const path = parentPath ? `${parentPath}/${name}` : name;
             if (entry.mode === "40000") {
-                await this.walkV2Tree(entry.oid, path, visitor, objectIds);
+                await this.walkV2LeafOids(entry.oid, path, visitor, objectIds);
                 continue;
             }
             objectIds?.add(entry.oid);
-            await visitor(path, await this.readStoredPathState(entry.oid));
+            await visitor(path, entry.oid);
         }
     }
 
@@ -237,6 +274,10 @@ export class StoredManifestReader {
 
     async readStoredPathStateUncached(oid: string): Promise<CapturedPathStateV1> {
         const bytes = await this.objects.readBlob(oid);
+        return this.decodeStoredPathState(oid, bytes);
+    }
+
+    decodeStoredPathState(oid: string, bytes: Buffer): CapturedPathStateV1 {
         let value: unknown;
         try {
             value = JSON.parse(bytes.toString("utf8"));
@@ -279,13 +320,13 @@ async function collectDifferingV2Paths(
 ): Promise<void> {
     if (beforeTreeOid === afterTreeOid) return;
     if (!beforeTreeOid) {
-        await after.walkV2Tree(afterTreeOid!, parentPath, async (path) => {
+        await after.walkV2LeafOids(afterTreeOid!, parentPath, async (path) => {
             paths.add(path);
         });
         return;
     }
     if (!afterTreeOid) {
-        await before.walkV2Tree(beforeTreeOid, parentPath, async (path) => {
+        await before.walkV2LeafOids(beforeTreeOid, parentPath, async (path) => {
             paths.add(path);
         });
         return;
@@ -305,14 +346,14 @@ async function collectDifferingV2Paths(
         }
         if (beforeEntry?.mode === afterEntry?.mode && beforeEntry?.oid === afterEntry?.oid) continue;
         if (beforeEntry?.mode === "40000") {
-            await before.walkV2Tree(beforeEntry.oid, path, async (nestedPath) => {
+            await before.walkV2LeafOids(beforeEntry.oid, path, async (nestedPath) => {
                 paths.add(nestedPath);
             });
         } else if (beforeEntry) {
             paths.add(path);
         }
         if (afterEntry?.mode === "40000") {
-            await after.walkV2Tree(afterEntry.oid, path, async (nestedPath) => {
+            await after.walkV2LeafOids(afterEntry.oid, path, async (nestedPath) => {
                 paths.add(nestedPath);
             });
         } else if (afterEntry) {
@@ -436,6 +477,14 @@ function isStoredCoverageExclusion(value: unknown): boolean {
     }
     const bytes = Buffer.from(value.pathbytesbase64, "base64");
     return bytes.length > 0 && bytes.toString("base64") === value.pathbytesbase64;
+}
+
+function normalizeCoverageExclusion(
+    value: StoredSnapshotCoverageExclusion
+): WorkspaceSnapshotCoverage["exclusions"][number] {
+    if ("scope" in value) return { scope: value.scope, reason: value.reason };
+    if ("path" in value) return { path: value.path, reason: value.reason };
+    return { pathBytesBase64: value.pathbytesbase64, reason: value.reason };
 }
 
 function isStoredScope(value: unknown): boolean {
