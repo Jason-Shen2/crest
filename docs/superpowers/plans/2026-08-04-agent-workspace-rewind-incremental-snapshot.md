@@ -229,18 +229,24 @@ mutation 后、发布任何内存成功状态前复核 generation、gap 和 disp
 overflow 或 dispose 时，即使磁盘原子写已经完成也必须返回失败并把 lifecycle 标为 uninitialized；只有新的
 prepare → full reconcile → initialize 可以重新信任磁盘 cursor。
 
+v1 的 cursor trust 只存在于当前 feed instance。新建或重启 feed 不读取磁盘 `committed.cursor` 作为可信
+continuity，必须返回 `cold-start` 并执行一次 prepare → full reconcile → initialize。明确否决为 watcher cursor
+再建立一套 persistent trust marker/recovery protocol；跨进程 startup 的低频 full reconcile 换取更小且可证明的
+崩溃状态面，warm instance 内的 turn capture 仍然走增量路径。
+
 - [ ] **Step 5: 添加真实 filesystem integration tests**
 
-用临时目录覆盖：create/update/delete/rename、App 停止监听期间修改后重建 feed、cursor 文件删除、回调报错、连续 1,000 次写入的去重。关键断言：
+用临时目录覆盖：create/update/delete/rename、App 停止监听期间修改后重建 feed、cursor 文件删除、回调报错、连续 1,000 次写入的去重。重建 feed 必须 fail closed：
 
 ```ts
 await first.dispose();
 await writeFile(join(workspace, "offline.txt"), "offline");
 const restarted = await ParcelWorkspaceChangeFeed.open(input);
-expect(await restarted.readChanges()).toMatchObject({
-    status: "complete",
-    changedPaths: ["offline.txt"],
-});
+expect(await restarted.readChanges()).toEqual({ status: "gap", reason: "cold-start" });
+await restarted.prepareForReconcile();
+await fullReconcile();
+await restarted.initializeAfterReconcile();
+expect(await restarted.readChanges()).toMatchObject({ status: "complete" });
 ```
 
 - [ ] **Step 6: 运行 change-feed tests**
@@ -611,7 +617,9 @@ still unstable -> full reconcile
 失败时保持 gap，不能发布可信 current。reconcile 本身失败时也不得调用 initialize；tracker 只向 checkpoint
 manager 传播 unavailable 错误。
 
-同一 tracker 的 capture 使用一个 promise queue 串行化，Agent 整个 turn 不持锁。启动时先加载 durable state；验证通过则不做 full reconcile，验证失败才建立新 baseline。`diff()` 直接委托 store。
+同一 tracker 的 capture 使用一个 promise queue 串行化，Agent 整个 turn 不持锁。启动时可以加载 durable
+snapshot state 供校验，但 v1 feed instance 的 cursor trust 不跨进程，因此每次 feed startup 仍执行一次 full
+reconcile 建立新 baseline；之后的 warm capture 才复用 current。`diff()` 直接委托 store。
 
 - [ ] **Step 6: 测试 fail-closed 行为与 checkpoint unavailable 映射**
 

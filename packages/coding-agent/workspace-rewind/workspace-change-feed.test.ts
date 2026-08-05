@@ -92,6 +92,16 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
     });
 
+    test("requires a fresh reconcile after reopening a clean feed", async () => {
+        await reconcile(feed);
+        await feed.dispose();
+        feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot, watcher });
+
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
+        await expect(reconcile(feed)).resolves.toBeUndefined();
+        await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+    });
+
     test("preserves a change delivered after reconcile and before post-reconcile initialization", async () => {
         await feed.prepareForReconcile();
         watcher.callback?.(null, [{ type: "update", path: join(workspaceRoot, "after-reconcile.txt") }]);
@@ -156,6 +166,9 @@ describe("ParcelWorkspaceChangeFeed", () => {
 
             await expect(feed.initializeAfterReconcile()).rejects.toThrow(/continuity|gap/i);
             await expect(feed.readChanges()).resolves.toMatchObject({ status: "gap" });
+            await feed.dispose();
+            feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot, watcher, callbackPathCapacity: 1 });
+            await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
             await expect(reconcile(feed)).resolves.toBeUndefined();
             await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
         }
@@ -287,7 +300,7 @@ describe("ParcelWorkspaceChangeFeed", () => {
         watcher.subscribeError = new Error("subscribe failed");
 
         await expect(feed.prepareForReconcile()).rejects.toThrow("subscribe failed");
-        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cursor-missing" });
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
     });
 
     test("fails closed when a callback error races an historical query", async () => {
@@ -348,7 +361,7 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await symlink(outside, trackerRoot, "dir");
         feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot, watcher });
 
-        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "query-failed" });
+        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
         expect(await readdir(outside)).toEqual(["committed.cursor"]);
     });
 
@@ -546,6 +559,9 @@ describe("ParcelWorkspaceChangeFeed", () => {
 
             await expect(feed.commitCursor(result.candidateCursor)).rejects.toThrow(/continuity|candidate/i);
             await expect(feed.readChanges()).resolves.toMatchObject({ status: "gap" });
+            await feed.dispose();
+            feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot, watcher, callbackPathCapacity: 1 });
+            await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
             await expect(reconcile(feed)).resolves.toBeUndefined();
             await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
         }

@@ -207,6 +207,11 @@ cursor publication 还必须使用 monotonic continuity generation fence：initi
 disposed。若 callback error/overflow 或 dispose 在磁盘 publication 期间改变 continuity，调用必须失败并把
 lifecycle 标为 uninitialized；磁盘上的新 cursor 在下一次完整 prepare → reconcile → initialize 前不可信。
 
+v1 不把 cursor trust 持久化。任何新构造或重启的 feed 都把已有 cursor bytes 当作不可信 storage artifact，
+先返回 `cold-start`，再通过 prepare → full reconcile → initialize 在当前 instance 内建立 trust。我们明确否决
+额外的 persistent trust marker/pending marker/recovery protocol：feed startup 是低频路径，固定支付一次 full
+reconcile 可以避免第二套崩溃恢复状态机，同时保留同一 warm instance 内的增量收益。
+
 ### Immutable version 与结构共享
 
 每个版本在逻辑上仍代表完整 workspace，物理上只创建变化路径及其祖先的新对象：
@@ -309,7 +314,7 @@ drift 检查避免覆盖边界之后检测到的其他修改。
 | 少量 dirty paths | 读取、验证并 copy-on-write 更新相关路径 |
 | 文件在捕获中持续变化 | 重试受影响范围；仍不稳定则 unavailable |
 | watcher overflow/gap | full reconcile，不提交猜测性的空 diff |
-| App 重启 | 验证 persistent tracker state；无法验证则 full reconcile |
+| App/feed 重启 | cursor trust 不跨 instance；始终 full reconcile 后再进入增量模式 |
 | full reconcile 超时/失败 | 写 unavailable checkpoint，Agent 对话仍保留 |
 | 多 Session 同时到达边界 | 共享 dirty/version state，短暂串行提交 immutable version |
 | snapshot/version 对象损坏 | hard block，并进入既有 recovery/maintenance 路径 |

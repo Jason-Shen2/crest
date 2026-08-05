@@ -207,6 +207,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
 
     async readChanges(): Promise<WorkspaceChangeRead> {
         const state = getState(this);
+        if (!state.initialized) return { status: "gap", reason: "cold-start" };
         let committed: AnchoredWorkspaceCursor | undefined;
         let trackerExists = false;
         try {

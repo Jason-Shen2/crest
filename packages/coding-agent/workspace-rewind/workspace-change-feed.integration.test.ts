@@ -49,16 +49,18 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
         assertComplete(result, ["create.txt", "delete.txt", "new.txt", "old.txt", "update.txt"]);
     });
 
-    test("detects an offline change after dispose and reopen with the persisted cursor", async () => {
+    test("requires full reconcile after dispose and reopen instead of trusting the persisted cursor", async () => {
         const first = makeFeed();
         if (!(await reconcileOrUnsupported(first))) return;
         await first.dispose();
         await writeFile(join(workspaceRoot, "offline.txt"), "offline");
 
         const reopened = makeFeed();
-        const result = await reopened.readChanges();
+        await expect(reopened.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
+        if (!(await reconcileOrUnsupported(reopened))) return;
+        const recovered = await reopened.readChanges();
 
-        assertComplete(result, ["offline.txt"]);
+        assertComplete(recovered, ["offline.txt"]);
     });
 
     test("reports cursor deletion as a gap", async () => {
