@@ -459,7 +459,7 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
     }, 15_000);
 
-    test("rejects a hardlinked candidate before commit", async () => {
+    test("rejects a hardlinked candidate before commit and recovers with one reconcile", async () => {
         await reconcile(feed);
         const hardlinked = await feed.readChanges();
         if (hardlinked.status !== "complete") throw new Error("expected complete read");
@@ -468,16 +468,20 @@ describe("ParcelWorkspaceChangeFeed", () => {
         await rename(candidate, held);
         await link(held, candidate);
         await expect(feed.commitCursor(hardlinked.candidateCursor)).rejects.toThrow(/candidate cursor/i);
-    });
+        await expect(reconcile(feed)).resolves.toBeUndefined();
+        await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+    }, 15_000);
 
-    test("rejects a non-private candidate before commit", async () => {
+    test("rejects a non-private candidate before commit and recovers with one reconcile", async () => {
         await reconcile(feed);
         const nonPrivate = await feed.readChanges();
         if (nonPrivate.status !== "complete") throw new Error("expected complete read");
         const nonPrivateCandidate = join(storeRoot, "tracker", `candidate-${nonPrivate.candidateCursor}.cursor`);
         await chmod(nonPrivateCandidate, 0o644);
         await expect(feed.commitCursor(nonPrivate.candidateCursor)).rejects.toThrow(/candidate cursor/i);
-    });
+        await expect(reconcile(feed)).resolves.toBeUndefined();
+        await expect(feed.readChanges()).resolves.toMatchObject({ status: "complete" });
+    }, 15_000);
 
     test("rejects a private tracker inode replacement before candidate commit", async () => {
         await reconcile(feed);

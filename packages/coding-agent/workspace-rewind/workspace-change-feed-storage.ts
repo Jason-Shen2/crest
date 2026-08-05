@@ -11,9 +11,9 @@ import {
     type AnchoredJournalDirectoryIdentity,
     type AnchoredJournalEntry,
     ensureAnchoredJournalSubdirectory,
-    readAnchoredJournalDirectory,
     readAnchoredJournalEntry,
     removeAnchoredJournalEntry,
+    removeAnchoredJournalReservedArtifacts,
     writeAnchoredJournalEntry,
 } from "./journal-directory";
 
@@ -184,28 +184,17 @@ export async function removeAnchoredCursor(input: {
     });
 }
 
-export async function removeAbandonedCandidateCursors(
+export async function removeAbandonedCursorArtifacts(
     root: string,
-    expectedRootIdentity?: AnchoredJournalDirectoryIdentity,
+    rootIdentity: AnchoredJournalDirectoryIdentity,
     hooks?: WorkspaceChangeFeedStorageHooks
 ): Promise<void> {
-    const result = await readAnchoredJournalDirectory({
+    await hooks?.beforeAnchoredMutation?.("remove");
+    await removeAnchoredJournalReservedArtifacts({
         root,
+        rootIdentity,
         maximumEntries: MaximumTrackerCleanupEntries,
-        maximumEntryBytes: MaximumCursorBytes,
-        maximumTotalBytes: MaximumCursorBytes * MaximumTrackerCleanupEntries,
     });
-    if (!result) return;
-    if (expectedRootIdentity && !sameDirectoryIdentity(result.identity, expectedRootIdentity)) {
-        throw new Error("Workspace cursor directory changed before cleanup");
-    }
-    for (const entry of result.entries) {
-        if (!/^candidate-[0-9a-f]{32}\.cursor$/.test(entry.name) && !/^\.[0-9a-f]{32}\.tmp$/.test(entry.name)) {
-            continue;
-        }
-        await hooks?.beforeAnchoredMutation?.("remove");
-        await removeAnchoredJournalEntry({ root, rootIdentity: result.identity, source: entry });
-    }
 }
 
 export async function withMaterializedCursor<T>(

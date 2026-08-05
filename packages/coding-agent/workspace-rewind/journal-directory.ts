@@ -168,6 +168,25 @@ export async function removeAnchoredJournalEntry(input: {
     }
 }
 
+export async function removeAnchoredJournalReservedArtifacts(input: {
+    root: string;
+    rootIdentity: AnchoredJournalDirectoryIdentity;
+    maximumEntries: number;
+}): Promise<void> {
+    const result = await runWorker(input.root, {
+        type: "remove-reserved-artifacts",
+        rootIdentity: input.rootIdentity,
+        maximumEntries: input.maximumEntries,
+    });
+    if (!isRecord(result) || result.ok !== true || Object.keys(result).length !== 1) {
+        throw new Error("Workspace recovery journal reserved artifact cleanup returned invalid output");
+    }
+    const after = await lstat(input.root, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameIdentity(after, input.rootIdentity)) {
+        throw new Error("Workspace recovery journal directory changed during reserved artifact cleanup");
+    }
+}
+
 export async function writeAnchoredJournalEntry(input: {
     root: string;
     rootIdentity: AnchoredJournalDirectoryIdentity;
@@ -714,6 +733,23 @@ async function main() {
         } finally {
             await handle.close();
         }
+    }
+    if (input.type === "remove-reserved-artifacts") {
+        if (!Number.isSafeInteger(input.maximumEntries) || input.maximumEntries < 1) {
+            throw new Error("invalid journal cleanup entry limit");
+        }
+        const names = await fsp.readdir(".");
+        if (names.length > input.maximumEntries) throw new Error("journal entry limit exceeded");
+        for (const name of names.sort()) {
+            if (!/^candidate-[0-9a-f]{32}\.cursor$/.test(name) && !/^\.[0-9a-f]{32}\.tmp$/.test(name)) {
+                continue;
+            }
+            await fsp.unlink(name);
+            await syncRoot();
+            await assertRoot(input.rootIdentity);
+        }
+        await assertRoot(input.rootIdentity);
+        return { ok: true };
     }
     if (input.type === "read-publication" || input.type === "recover-publication") {
         publicationTemporaryName(input.destinationName);

@@ -14,7 +14,7 @@ import {
     ensurePrivateCursorRoot,
     readAnchoredCursor,
     readAnchoredCursorRootIdentity,
-    removeAbandonedCandidateCursors,
+    removeAbandonedCursorArtifacts,
     removeAnchoredCursor,
     sameDirectoryIdentity,
     withMaterializedCursor,
@@ -151,7 +151,7 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             assertContinuityFence(state, continuityGeneration);
             await removeCandidate(state);
             assertContinuityFence(state, continuityGeneration);
-            await removeAbandonedCandidateCursors(state.trackerRoot, trackerIdentity, state.testHooks);
+            await removeAbandonedCursorArtifacts(state.trackerRoot, trackerIdentity, state.testHooks);
             assertContinuityFence(state, continuityGeneration);
             publishedPrepared = await writeWatcherCursor({
                 root: state.trackerRoot,

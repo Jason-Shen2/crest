@@ -222,8 +222,8 @@ post-reconcile cursor，并查询两者之间的历史事件。旧的“先 full
 替换、hardlink、非 regular、非 private、stale/foreign candidate 以及 tracker directory exchange。
 tracker 目录由同一 anchored journal primitive 在 private `storeRoot` 下建立，live feed instance 固定其目录
 identity，并在 committed read、candidate publication 和 commit 间拒绝 root exchange；不得经由 storeRoot symlink
-建立 tracker。原子写在 rename 前失败必须删除随机 temporary entry，下一次 prepare 只清理保留格式的 candidate
-和 journal temporary entry。candidate 校验/提交失败会撤销内存 candidate，使一次新的
+建立 tracker。原子写在 rename 前失败必须删除随机 temporary entry；下一次 prepare 按名称清理保留格式的
+candidate 和 journal temporary entry，不打开或信任其内容。candidate 校验/提交失败会撤销内存 candidate，使一次新的
 prepare → full reconcile → initialize 可以恢复，而不引入额外 recovery protocol。
 subscription callback 使用有上限的去重 set；溢出必须进入 gap。`readChanges()` 把历史 query 与 callback hints
 取并集，只有 tracker 完成 path capture 和二次验证后才允许 `commitCursor()`。Windows 在 owner-only ACL

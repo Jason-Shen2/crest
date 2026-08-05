@@ -258,7 +258,7 @@ candidate commit 必须验证生成时的 exact identity 与内容 hash，并拒
 非 regular、非 private、stale/foreign candidate 和目录 exchange。callback dirty hints 使用有界去重集合；
 容量溢出转为 gap。tracker 必须由 anchored primitive 在 private store root 下建立，live lifecycle 固定 root
 identity，并拒绝 store-root symlink 或 read/publication 间的 root exchange。rename 前失败要删除随机 journal temp；
-prepare 只回收保留格式的 candidate/temp。candidate commit 失败撤销 candidate 后，允许一次完整 reconcile 恢复，
+prepare 只按名称回收保留格式的 candidate/temp，不打开或信任其内容。candidate commit 失败撤销 candidate 后，允许一次完整 reconcile 恢复，
 不增加跨进程恢复协议。Windows 在 owner-only ACL 支持完成前不启用该 private storage。
 
 ### Full reconcile 的角色
