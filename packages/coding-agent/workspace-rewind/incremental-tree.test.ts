@@ -214,6 +214,95 @@ describe("incremental tree writer", () => {
             })
         ).rejects.toThrow(/collision|corrupt/i);
     });
+
+    test("uses owned mutation state after asynchronous object access begins", async () => {
+        const objects = new MemoryObjects();
+        const base = await makeBaseTrees(objects);
+        const original = objects.putBlob(Buffer.from("original"));
+        const replacement = objects.putBlob(Buffer.from("replacement"));
+        const state = file(original) as Extract<CapturedPathStateV1, { state: "file" }>;
+        const gate = objects.gateNextTreeRead();
+
+        const applying = applyIncrementalTrees({
+            baseWorkspaceTree: base.workspaceTree,
+            baseStateTree: base.stateTree,
+            mutations: [{ path: "owned.txt", state }],
+            objects,
+        });
+        await gate.started;
+        state.oid = replacement;
+        gate.release();
+        const result = await applying;
+
+        expect((await workspaceLeaves(objects, result.workspaceTree)).get("owned.txt")).toEqual({
+            mode: "100644",
+            oid: original,
+        });
+    });
+
+    test.each([
+        {
+            name: "truncated object id",
+            bytes: Buffer.concat([Buffer.from("100644 file\0"), Buffer.alloc(19)]),
+        },
+        {
+            name: "illegal mode",
+            bytes: Buffer.concat([Buffer.from("100600 file\0"), Buffer.alloc(20)]),
+        },
+        {
+            name: "illegal name",
+            bytes: Buffer.concat([Buffer.from("100644 ..\0"), Buffer.alloc(20)]),
+        },
+        {
+            name: "duplicate name",
+            bytes: Buffer.concat([
+                Buffer.from("100644 same\0"),
+                Buffer.alloc(20),
+                Buffer.from("100644 same\0"),
+                Buffer.alloc(20, 1),
+            ]),
+        },
+        {
+            name: "unsorted names",
+            bytes: Buffer.concat([
+                Buffer.from("100644 z\0"),
+                Buffer.alloc(20),
+                Buffer.from("100644 a\0"),
+                Buffer.alloc(20, 1),
+            ]),
+        },
+    ])("rejects an adversarial raw tree with $name", async ({ bytes }) => {
+        const objects = new MemoryObjects();
+        const invalid = objects.putObject("tree", bytes);
+
+        await expect(
+            applyIncrementalTrees({
+                baseWorkspaceTree: invalid,
+                baseStateTree: objects.putTree([]),
+                mutations: [],
+                objects,
+            })
+        ).rejects.toThrow(/invalid|duplicate|canonical/i);
+    });
+
+    test("rejects SHA-1 entries under a SHA-256 root", async () => {
+        const objects = new MemoryObjects();
+        const mixed = objects.putObject(
+            "tree",
+            Buffer.concat([Buffer.from("100644 file\0"), Buffer.alloc(20)]),
+            "sha256"
+        );
+        const empty = objects.putObject("tree", Buffer.alloc(0), "sha256");
+
+        await expect(
+            applyIncrementalTrees({
+                baseWorkspaceTree: mixed,
+                baseStateTree: empty,
+                mutations: [],
+                objects,
+            })
+        ).rejects.toThrow(/invalid/i);
+    });
 });
 
 describe("incremental mutation normalization", () => {
@@ -346,6 +435,7 @@ class MemoryObjects implements IncrementalTreeObjectAccess {
     readonly values = new Map<string, { type: "blob" | "tree"; bytes: Buffer }>();
     readonly treeReads: string[] = [];
     collideWrites = false;
+    nextTreeReadGate?: { started: Promise<void>; releasePromise: Promise<void>; start(): void; release(): void };
 
     putBlob(bytes: Buffer): string {
         return this.put("blob", bytes);
@@ -428,6 +518,12 @@ class MemoryObjects implements IncrementalTreeObjectAccess {
     }
 
     async readTree(oid: string): Promise<Buffer> {
+        const gate = this.nextTreeReadGate;
+        if (gate) {
+            this.nextTreeReadGate = undefined;
+            gate.start();
+            await gate.releasePromise;
+        }
         this.treeReads.push(oid);
         return this.read(oid, "tree");
     }
@@ -459,9 +555,26 @@ class MemoryObjects implements IncrementalTreeObjectAccess {
     }
 
     put(type: "blob" | "tree", bytes: Buffer): string {
-        const oid = createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex");
+        return this.putObject(type, bytes);
+    }
+
+    putObject(type: "blob" | "tree", bytes: Buffer, algorithm: "sha1" | "sha256" = "sha1"): string {
+        const oid = createHash(algorithm).update(`${type} ${bytes.length}\0`).update(bytes).digest("hex");
         this.values.set(oid, { type, bytes: Buffer.from(bytes) });
         return oid;
+    }
+
+    gateNextTreeRead() {
+        let start!: () => void;
+        let release!: () => void;
+        const gate = {
+            started: new Promise<void>((resolve) => (start = resolve)),
+            releasePromise: new Promise<void>((resolve) => (release = resolve)),
+            start: () => start(),
+            release: () => release(),
+        };
+        this.nextTreeReadGate = gate;
+        return gate;
     }
 }
 

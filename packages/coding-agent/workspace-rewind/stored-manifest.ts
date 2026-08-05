@@ -204,6 +204,21 @@ export class StoredManifestReader {
         };
     }
 
+    withV2StateTree(snapshot: WorkspaceSnapshotRefV1, stateTree: string): StoredManifestReader {
+        if (this.manifest.schemaversion !== 2) {
+            throw new Error("Incremental snapshot commit requires a v2 base snapshot");
+        }
+        validateOid(stateTree);
+        if (stateTree.length !== snapshot.tree.length) {
+            throw new Error("Invalid incremental snapshot state tree");
+        }
+        return new StoredManifestReader({
+            snapshot,
+            objects: this.objects,
+            manifest: { ...this.manifest, statetree: stateTree },
+        });
+    }
+
     async collectExplicitPaths(paths: Set<string>): Promise<void> {
         if (this.manifest.schemaversion === 1) {
             for (const path of this.v1States!.keys()) paths.add(path);

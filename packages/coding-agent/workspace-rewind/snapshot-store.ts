@@ -265,7 +265,8 @@ export class WorkspaceSnapshotStore {
         newlyHashedBytes: number;
         profile: CaptureWorkspaceOptions["profile"];
     }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
-        return this.withWorkspaceLock(() => this.#commitIncrementalSnapshot(input));
+        const ownedInput = cloneIncrementalCommitInput(input);
+        return this.withWorkspaceLock(() => this.#commitIncrementalSnapshot(ownedInput));
     }
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -406,8 +407,6 @@ export class WorkspaceSnapshotStore {
         newlyHashedBytes: number;
         profile: CaptureWorkspaceOptions["profile"];
     }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
-        validateIncrementalCommitInput(input);
-        const mutations = normalizeIncrementalMutations(input.mutations);
         const timeoutMs =
             input.profile === "pre-turn"
                 ? WorkspaceCheckpointLimits.preTurnTimeoutMs
@@ -421,12 +420,17 @@ export class WorkspaceSnapshotStore {
         };
         try {
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            assertCaptureActive(runtime.deadline, runtime.signal);
+            await assertNoShadowMutationFiles(this.storeRoot, runtime);
             this.assertSnapshotIdentity(input.base);
             await this.verifyUntrustedSnapshot(input.base);
             await this.#assertSnapshotOwnerRef(input.base);
             const baseManifest = await this.#readStoredManifest(input.base);
             if (baseManifest.manifest.schemaversion !== 2) {
                 throw new Error("Incremental snapshot commit requires a v2 base snapshot");
+            }
+            if (!canonicalJson(input.scope).equals(canonicalJson(baseManifest.manifest.scope))) {
+                throw new Error("Incremental snapshot scope changed; a full capture is required");
             }
             // TODO(snapshot-quota): Task 7 replaces this authoritative scan with durable write reservations.
             const quotaStatus = await this.getQuotaStatusAssumingLock(runtime);
@@ -442,19 +446,28 @@ export class WorkspaceSnapshotStore {
             const trees = await applyIncrementalTrees({
                 baseWorkspaceTree: input.base.tree,
                 baseStateTree: baseManifest.manifest.statetree,
-                mutations,
+                mutations: input.mutations,
                 objects: this.#incrementalTreeObjects(runtime),
             });
             for (const oid of trees.objectIds) runtime.objectIds.add(oid);
+            const resultSnapshot = { ...input.base, tree: trees.workspaceTree };
+            const resultManifest = baseManifest.withV2StateTree(resultSnapshot, trees.stateTree);
+            const expectedCoverage = deriveIncrementalCoverage(
+                baseManifest.getCoverage()!,
+                await baseManifest.diff(resultManifest)
+            );
+            if (!canonicalCoverage(expectedCoverage).equals(canonicalCoverage(input.coverage))) {
+                throw new Error("Incremental snapshot coverage does not match the resulting state tree");
+            }
             const storedManifest: StoredScopeManifestV2 = {
                 schemaversion: 2,
                 workspaceidentity: this.identity.workspaceIdentity,
                 workspaceincarnation: this.identity.workspaceIncarnation,
                 scope: input.scope,
                 coverage: {
-                    complete: input.coverage.complete,
-                    eligibleentrycount: input.coverage.eligibleEntryCount,
-                    exclusions: input.coverage.exclusions.map(toStoredCoverageExclusion),
+                    complete: expectedCoverage.complete,
+                    eligibleentrycount: expectedCoverage.eligibleEntryCount,
+                    exclusions: expectedCoverage.exclusions.map(toStoredCoverageExclusion),
                 },
                 statetree: trees.stateTree,
             };
@@ -479,7 +492,7 @@ export class WorkspaceSnapshotStore {
             markSnapshotTrusted(this, ref);
             return {
                 ref,
-                coverage: { ...input.coverage, newlyHashedBytes: input.newlyHashedBytes },
+                coverage: { ...expectedCoverage, newlyHashedBytes: input.newlyHashedBytes },
             };
         } catch (error) {
             if (error instanceof AggregateError) {
@@ -2167,6 +2180,102 @@ function validateIncrementalCommitInput(input: {
         throw new Error("Invalid incremental snapshot commit input");
     }
     input.coverage.exclusions.forEach(toStoredCoverageExclusion);
+}
+
+function cloneIncrementalCommitInput(input: {
+    base: WorkspaceSnapshotRefV1;
+    mutations: IncrementalPathMutation[];
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    newlyHashedBytes: number;
+    profile: CaptureWorkspaceOptions["profile"];
+}): {
+    base: WorkspaceSnapshotRefV1;
+    mutations: IncrementalPathMutation[];
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    newlyHashedBytes: number;
+    profile: CaptureWorkspaceOptions["profile"];
+} {
+    validateIncrementalCommitInput(input);
+    return {
+        base: { ...input.base },
+        mutations: normalizeIncrementalMutations(input.mutations),
+        scope: JSON.parse(JSON.stringify(input.scope)) as WorkspaceScopeManifest,
+        coverage: {
+            complete: input.coverage.complete,
+            eligibleEntryCount: input.coverage.eligibleEntryCount,
+            exclusions: input.coverage.exclusions.map(cloneCoverageExclusion),
+        },
+        newlyHashedBytes: input.newlyHashedBytes,
+        profile: input.profile,
+    };
+}
+
+function deriveIncrementalCoverage(
+    base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
+    changes: readonly WorkspacePathChangeV1[]
+): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    let eligibleEntryCount = base.eligibleEntryCount;
+    const pathExclusions = new Map<
+        string,
+        Extract<WorkspaceSnapshotCoverage["exclusions"][number], { path: string }>
+    >();
+    const nonPathExclusions: WorkspaceSnapshotCoverage["exclusions"] = [];
+    for (const exclusion of base.exclusions) {
+        if (exclusion.path != null) {
+            pathExclusions.set(exclusion.path, { path: exclusion.path, reason: exclusion.reason });
+        } else {
+            nonPathExclusions.push(cloneCoverageExclusion(exclusion));
+        }
+    }
+    for (const change of changes) {
+        eligibleEntryCount += Number(isEligiblePathState(change.after)) - Number(isEligiblePathState(change.before));
+        if (change.before.state === "excluded") pathExclusions.delete(change.path);
+        if (change.after.state === "excluded") {
+            pathExclusions.set(change.path, {
+                path: change.path,
+                reason: change.after.reason,
+            });
+        }
+    }
+    if (!Number.isSafeInteger(eligibleEntryCount) || eligibleEntryCount < 0) {
+        throw new Error("Incremental snapshot coverage is invalid");
+    }
+    const exclusions = [...nonPathExclusions, ...pathExclusions.values()].sort(compareCoverageExclusions);
+    return {
+        complete: exclusions.length === 0,
+        eligibleEntryCount,
+        exclusions,
+    };
+}
+
+function canonicalCoverage(coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">): Buffer {
+    return canonicalJson({
+        complete: coverage.complete,
+        eligibleEntryCount: coverage.eligibleEntryCount,
+        exclusions: coverage.exclusions.map(cloneCoverageExclusion).sort(compareCoverageExclusions),
+    });
+}
+
+function compareCoverageExclusions(
+    left: WorkspaceSnapshotCoverage["exclusions"][number],
+    right: WorkspaceSnapshotCoverage["exclusions"][number]
+): number {
+    return Buffer.compare(canonicalJson(left), canonicalJson(right));
+}
+
+function cloneCoverageExclusion(
+    exclusion: WorkspaceSnapshotCoverage["exclusions"][number]
+): WorkspaceSnapshotCoverage["exclusions"][number] {
+    const stored = toStoredCoverageExclusion(exclusion);
+    if ("scope" in stored) return { scope: stored.scope, reason: stored.reason };
+    if ("path" in stored) return { path: stored.path, reason: stored.reason };
+    return { pathBytesBase64: stored.pathbytesbase64, reason: stored.reason };
+}
+
+function isEligiblePathState(state: CapturedPathStateV1): boolean {
+    return state.state === "file" || state.state === "symlink";
 }
 
 function toStoredCoverageExclusion(

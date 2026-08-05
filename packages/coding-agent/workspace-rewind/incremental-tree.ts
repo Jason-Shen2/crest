@@ -56,7 +56,7 @@ export function normalizeIncrementalMutations(mutations: IncrementalPathMutation
     const normalized = mutations.map((mutation) => {
         validateCanonicalUtf8Path(mutation.path);
         validateMutationState(mutation.state);
-        return mutation;
+        return { path: mutation.path, state: clonePathState(mutation.state) };
     });
     normalized.sort((left, right) => compareBytes(left.path, right.path));
     const mutationsByPath = new Map<string, IncrementalPathMutation>();
@@ -78,6 +78,13 @@ export function normalizeIncrementalMutations(mutations: IncrementalPathMutation
         }
     }
     return normalized;
+}
+
+function clonePathState(state: CapturedPathStateV1): CapturedPathStateV1 {
+    if (state.state === "absent") return { state: "absent" };
+    if (state.state === "file") return { state: "file", oid: state.oid, executable: state.executable };
+    if (state.state === "symlink") return { state: "symlink", oid: state.oid };
+    return { state: "excluded", reason: state.reason };
 }
 
 export async function applyIncrementalTrees(input: {

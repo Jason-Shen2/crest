@@ -17,6 +17,7 @@ import {
     rename,
     stat,
     symlink,
+    unlink,
     writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1058,6 +1059,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        input.coverage.eligibleEntryCount += 2;
         const a = await writeTestBlob(fixture, Buffer.from("a"));
         const z = await writeTestBlob(fixture, Buffer.from("z"));
         const mutations = [
@@ -1132,6 +1134,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        input.coverage.eligibleEntryCount += 1;
         const oid = await writeTestBlob(fixture, Buffer.from("new"));
         const refsBefore = await fixture.store.listCrestRefs();
         const originalRun = fixture.git.run.bind(fixture.git);
@@ -1161,6 +1164,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        input.coverage.eligibleEntryCount += 1;
         const oid = await writeTestBlob(fixture, Buffer.from("stable"));
         const commitInput = {
             ...input,
@@ -1182,6 +1186,188 @@ describe("workspace snapshots", () => {
             /repeat publication acknowledgement/i
         );
         await expect(fixture.store.verifyOwnedSnapshot(first.ref)).resolves.toBeUndefined();
+    });
+
+    test.each([
+        { relativePath: "index", message: /index/i },
+        { relativePath: "objects/info/alternates", message: /alternates/i },
+    ])(
+        "rejects a post-open $relativePath before incremental Git or quota access",
+        async ({ relativePath, message }) => {
+            const fixture = await makeStoreFixture();
+            await writeFile(join(fixture.workspace, "base.txt"), "base");
+            const captured = await fixture.store.capture({ profile: "terminal" });
+            const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+            await fixture.store.anchorSnapshot(base);
+            const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+            const refsBefore = await fixture.store.listCrestRefs();
+            const shadowPath = join(fixture.storeRoot, ...relativePath.split("/"));
+            await writeFile(shadowPath, relativePath === "index" ? "shadow index" : "/tmp/external-objects\n");
+            fixture.git.calls.length = 0;
+
+            await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toThrow(message);
+            expect(fixture.git.calls).toEqual([]);
+            await unlink(shadowPath);
+            expect(await fixture.store.listCrestRefs()).toEqual(refsBefore);
+        }
+    );
+
+    test("rejects incremental scope changes before writing objects", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        (input.scope as unknown as { policy: { maxentries: number } }).policy.maxentries += 1;
+        const refsBefore = await fixture.store.listCrestRefs();
+        fixture.git.calls.length = 0;
+
+        await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toThrow(/scope/i);
+        expect(
+            fixture.git.calls.filter(
+                (args) => args[0] === "hash-object" || args[0] === "mktree" || args[0] === "update-ref"
+            )
+        ).toEqual([]);
+        expect(await fixture.store.listCrestRefs()).toEqual(refsBefore);
+    });
+
+    test.each(["complete", "count", "exclusions"] as const)(
+        "rejects forged incremental coverage: %s",
+        async (field) => {
+            const fixture = await makeStoreFixture();
+            await writeFile(join(fixture.workspace, "base.txt"), "base");
+            const captured = await fixture.store.capture({ profile: "terminal" });
+            const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+            await fixture.store.anchorSnapshot(base);
+            const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+            if (field === "complete") input.coverage.complete = !input.coverage.complete;
+            if (field === "count") input.coverage.eligibleEntryCount += 1;
+            if (field === "exclusions") {
+                input.coverage.complete = false;
+                input.coverage.exclusions = [{ path: "forged.log", reason: "ignored" }];
+            }
+            const refsBefore = await fixture.store.listCrestRefs();
+
+            await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toThrow(
+                /coverage/i
+            );
+            expect(await fixture.store.listCrestRefs()).toEqual(refsBefore);
+        }
+    );
+
+    test("derives coverage across create, delete, and excluded transitions", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, ".gitignore"), "ignored.log\n");
+        await writeFile(join(fixture.workspace, "README.md"), "readme");
+        await writeFile(join(fixture.workspace, "delete.txt"), "delete");
+        await writeFile(join(fixture.workspace, "ignored.log"), "ignored");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const created = await writeTestBlob(fixture, Buffer.from("created"));
+        const included = await writeTestBlob(fixture, Buffer.from("included"));
+        input.coverage = {
+            complete: false,
+            eligibleEntryCount: captured.coverage.eligibleEntryCount,
+            exclusions: [{ path: "README.md", reason: "ignored" }],
+        };
+
+        const result = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [
+                { path: "created.txt", state: { state: "file", oid: created, executable: false } },
+                { path: "delete.txt", state: { state: "absent" } },
+                { path: "ignored.log", state: { state: "file", oid: included, executable: false } },
+                { path: "README.md", state: { state: "excluded", reason: "ignored" } },
+            ],
+        });
+
+        expect(withoutNewlyHashedBytes(result.coverage)).toEqual(input.coverage);
+    });
+
+    test("retains non-path and workspace-root coverage exclusions", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const retainedCoverage: WorkspaceSnapshotCoverage = {
+            ...captured.coverage,
+            complete: false,
+            exclusions: [
+                { pathBytesBase64: Buffer.from([0xff]).toString("base64"), reason: "non-utf8-path" },
+                { scope: "workspace-root", reason: "capture-budget" },
+            ],
+        };
+        const base = await convertSnapshotToV2(fixture, captured.ref, retainedCoverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, retainedCoverage);
+        const created = await writeTestBlob(fixture, Buffer.from("created"));
+        input.coverage.eligibleEntryCount += 1;
+
+        const result = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [{ path: "created.txt", state: { state: "file", oid: created, executable: false } }],
+        });
+
+        expect(result.coverage.complete).toBe(false);
+        expect(result.coverage.eligibleEntryCount).toBe(retainedCoverage.eligibleEntryCount + 1);
+        expect(result.coverage.exclusions).toHaveLength(2);
+        expect(result.coverage.exclusions).toEqual(expect.arrayContaining(retainedCoverage.exclusions));
+    });
+
+    test("derives coverage for every descendant removed by a subtree deletion", async () => {
+        const fixture = await makeStoreFixture();
+        await mkdir(join(fixture.workspace, "dir"));
+        await writeFile(join(fixture.workspace, "dir", "a.txt"), "a");
+        await writeFile(join(fixture.workspace, "dir", "b.txt"), "b");
+        await writeFile(join(fixture.workspace, "keep.txt"), "keep");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        input.coverage.eligibleEntryCount -= 2;
+
+        const result = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [{ path: "dir", state: { state: "absent" } }],
+        });
+
+        expect(result.coverage.eligibleEntryCount).toBe(captured.coverage.eligibleEntryCount - 2);
+        await expect(fixture.store.readPathState(result.ref, "dir/a.txt")).resolves.toEqual({ state: "absent" });
+        await expect(fixture.store.readPathState(result.ref, "dir/b.txt")).resolves.toEqual({ state: "absent" });
+    });
+
+    test("owns incremental commit input before waiting for the workspace lock", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const oid = await writeTestBlob(fixture, Buffer.from("owned"));
+        const state = { state: "file", oid, executable: false } as const;
+        input.coverage.eligibleEntryCount += 1;
+        const release = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => release.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
+
+        const commit = fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [{ path: "owned.txt", state }],
+        });
+        (state as { oid: string }).oid = "f".repeat(40);
+        (input.scope as unknown as { policy: { maxentries: number } }).policy.maxentries += 1;
+        input.coverage.eligibleEntryCount += 1;
+        release.resolve();
+        await held;
+        const result = await commit;
+
+        await expect(fixture.store.readPathState(result.ref, "owned.txt")).resolves.toEqual({
+            state: "file",
+            oid,
+            executable: false,
+        });
     });
 
     test("verifies v2 state leaves with a bounded number of Git batch processes", async () => {
