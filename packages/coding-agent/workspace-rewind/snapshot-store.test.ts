@@ -29,6 +29,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { IncrementalPathCapture } from "./incremental-path-capture";
 import { makeProcessOwnerIdentity } from "./process-owner";
+import { SnapshotQuotaExceededError } from "./snapshot-quota-accounting";
 import {
     initializePrivateStore,
     WorkspaceCheckpointLimits,
@@ -1067,6 +1068,7 @@ describe("workspace snapshots", () => {
         expect(manifest.schemaversion).toBe(2);
         expect(descriptor.stdout.toString()).toContain(`${manifest.statetree}\tstate\n`);
         expect(fixture.git.calls.filter((args) => args[0] === "mktree")).toHaveLength(5);
+        expect(fixture.git.calls.filter((args) => args[0] === "count-objects" || args[0] === "rev-list")).toEqual([]);
 
         await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.storeRoot, timeoutMs: 30_000 });
         await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
@@ -1333,6 +1335,116 @@ describe("workspace snapshots", () => {
 
         expect(reverse.ref).toEqual(forward.ref);
         expect(reverse.coverage).toEqual(forward.coverage);
+    });
+
+    test("rejects an incremental reservation before writing any object or owner ref", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        vi.spyOn(fixture.store.quotaAccounting, "reserve").mockRejectedValue(
+            new SnapshotQuotaExceededError({
+                measuredBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+                requestedBytes: 1,
+                maxBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+            })
+        );
+        fixture.git.calls.length = 0;
+
+        await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toMatchObject({
+            code: "quota_exceeded",
+        });
+        expect(
+            fixture.git.calls.filter(
+                (args) => args[0] === "hash-object" || args[0] === "mktree" || args[0] === "update-ref"
+            )
+        ).toEqual([]);
+    });
+
+    test("releases a reservation after a failed object write", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const measuredBefore = fixture.store.quotaAccounting.measuredBytes;
+        const originalRun = fixture.git.run.bind(fixture.git);
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "mktree") throw new Error("simulated object write failure");
+            return originalRun(args, options);
+        });
+
+        await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toThrow(
+            /object write failure/i
+        );
+        expect(fixture.store.quotaAccounting.measuredBytes).toBe(measuredBefore);
+    });
+
+    test("maps ENOSPC after reservation and releases unused quota", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const measuredBefore = fixture.store.quotaAccounting.measuredBytes;
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "mktree") {
+                throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+            }
+            return WorkspaceGitRunner.prototype.run.call(fixture.git, args, options);
+        });
+
+        await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toMatchObject({
+            code: "enospc",
+        });
+        expect(fixture.store.quotaAccounting.measuredBytes).toBe(measuredBefore);
+    });
+
+    test("accounts a partial loose-object write when a later write fails", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        input.coverage.eligibleEntryCount -= 1;
+        const measuredBefore = fixture.store.quotaAccounting.measuredBytes;
+        const originalRun = fixture.git.run.bind(fixture.git);
+        let treeWrites = 0;
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "mktree" && ++treeWrites === 2) throw new Error("later object write failed");
+            return originalRun(args, options);
+        });
+
+        await expect(
+            fixture.store.commitIncrementalSnapshot({
+                ...input,
+                mutations: [{ path: "base.txt", state: { state: "absent" } }],
+            })
+        ).rejects.toThrow(/later object write failed/i);
+        expect(fixture.store.quotaAccounting.measuredBytes).toBeGreaterThan(measuredBefore);
+    });
+
+    test("does not double charge loose objects that already exist on a deterministic retry", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const first = await fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] });
+        const measuredAfterFirst = fixture.store.quotaAccounting.measuredBytes;
+        fixture.git.calls.length = 0;
+
+        const second = await fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] });
+
+        expect(second.ref).toEqual(first.ref);
+        expect(fixture.store.quotaAccounting.measuredBytes).toBe(measuredAfterFirst);
+        expect(fixture.git.calls.some((args) => args[0] === "count-objects" || args[0] === "rev-list")).toBe(false);
     });
 
     test("preserves a safe near-limit coverage count across offsetting changes", async () => {

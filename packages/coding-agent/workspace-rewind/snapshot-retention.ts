@@ -104,6 +104,7 @@ export async function reconcileSnapshotRefsLocked(input: {
                 gitDir: input.store.storeRoot,
                 timeoutMs: 30_000,
             });
+            await input.store.reconcileQuotaAccountingAssumingLock();
         } catch (error) {
             return {
                 removedRefs,

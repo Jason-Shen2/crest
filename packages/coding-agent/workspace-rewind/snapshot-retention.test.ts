@@ -66,6 +66,7 @@ test("serializes capture with reconciliation and GC under the canonical store lo
     const { store, sessionsRoot } = await makeStore(git);
     await writeFile(join(store.identity.canonicalRoot, "second.txt"), "second");
     git.arm();
+    const quotaReconcile = vi.spyOn(store, "reconcileQuotaAccountingAssumingLock");
     const capture = store.capture({ profile: "terminal" });
     await git.captureBlocked;
     let reconciled = false;
@@ -82,6 +83,18 @@ test("serializes capture with reconciliation and GC under the canonical store lo
     expect(report.failClosedReason).toBeUndefined();
     expect((await store.listCrestRefs()).map((value) => value.name)).toContain(`refs/crest/snapshots/${ref.id}`);
     expect(git.calls.some((args) => args[0] === "gc")).toBe(true);
+    expect(quotaReconcile).toHaveBeenCalledTimes(1);
+});
+
+test("reports Git cleanup failure when the post-GC exact quota reconcile fails", async () => {
+    const { store, sessionsRoot } = await makeStore();
+    vi.spyOn(store, "reconcileQuotaAccountingAssumingLock").mockRejectedValue(new Error("exact quota scan failed"));
+    const git = vi.spyOn(store.git, "run");
+
+    const report = await reconcileSnapshotRefs({ store, sessionsRoot });
+
+    expect(git.mock.calls.some(([args]) => args[0] === "gc")).toBe(true);
+    expect(report.failClosedReason).toMatch(/cleanup failed.*exact quota scan failed/i);
 });
 
 test("synthetic destructive consumer preserves owner refs without deadlock", async () => {

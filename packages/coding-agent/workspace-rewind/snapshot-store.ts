@@ -45,6 +45,11 @@ import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
 import {
+    SnapshotQuotaAccounting,
+    SnapshotQuotaExceededError,
+    type SnapshotQuotaReservation,
+} from "./snapshot-quota-accounting";
+import {
     encodeCanonicalStoredJson as canonicalJson,
     StoredManifestBlobBatchSize,
     StoredManifestReader,
@@ -85,6 +90,10 @@ const QuotaMaxRefCount = 200_000;
 const QuotaMaxObjectCount = 1_000_000;
 const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
+const IncrementalQuotaBaseMetadataBytes = 256 * 1024 ** 2;
+const IncrementalQuotaPerMutationBytes = 8 * 1024;
+const IncrementalQuotaPerPathByte = 4;
+const IncrementalQuotaMaxMetadataBytes = 1024 ** 3;
 const StoredPathStateMaxBytes = 4 * 1024;
 const StoredPathStateBatchOutputBytes = StoredManifestBlobBatchSize * (StoredPathStateMaxBytes + 128);
 
@@ -166,6 +175,7 @@ interface CaptureRuntime {
     deadline: number;
     signal: AbortSignal;
     objectIds: Set<string>;
+    newLooseObjectCandidates?: Set<string>;
 }
 
 const StoreGitTimeoutMs = 30_000;
@@ -204,17 +214,20 @@ export class WorkspaceSnapshotStore {
     readonly git: WorkspaceGitRunner;
     readonly processOwner: ProcessOwnerIdentity;
     readonly mutationLock: WorkspaceMutationLock;
+    readonly quotaAccounting: SnapshotQuotaAccounting;
 
     private constructor(input: {
         storeRoot: string;
         identity: CanonicalWorkspaceIdentity;
         git: WorkspaceGitRunner;
         processOwner: ProcessOwnerIdentity;
+        quotaAccounting: SnapshotQuotaAccounting;
     }) {
         this.storeRoot = input.storeRoot;
         this.identity = input.identity;
         this.git = input.git;
         this.processOwner = input.processOwner;
+        this.quotaAccounting = input.quotaAccounting;
         this.mutationLock = new WorkspaceMutationLock({
             workspaceRoot: dirname(input.storeRoot),
             workspaceIdentity: input.identity.workspaceIdentity,
@@ -253,7 +266,13 @@ export class WorkspaceSnapshotStore {
             processOwner: input.processOwner,
         });
         await quarantineLegacyRestoreJournals(storeRoot);
-        return new WorkspaceSnapshotStore({ ...input, storeRoot });
+        const quotaAccounting = await SnapshotQuotaAccounting.open({
+            storeRoot,
+            maxBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+            generation: quotaGeneration(input.processOwner),
+            measureExactUsage: () => measureExactStoreUsage(storeRoot, input.git),
+        });
+        return new WorkspaceSnapshotStore({ ...input, storeRoot, quotaAccounting });
     }
 
     capture(options: CaptureWorkspaceOptions): Promise<{
@@ -349,6 +368,7 @@ export class WorkspaceSnapshotStore {
                 });
             }
             await assertFreeSpace(this.storeRoot, runtime);
+            this.quotaAccounting.markNeedsReconcile();
             let scope: WorkspaceScope | undefined;
             let captured: CapturedWorkspaceEntries | undefined;
             let newlyHashedBytes = 0;
@@ -423,6 +443,7 @@ export class WorkspaceSnapshotStore {
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             SnapshotFingerprints.set(this, captured.fingerprints);
             markSnapshotTrusted(this, ref);
+            await this.quotaAccounting.reconcileExactUsage();
             return {
                 ref,
                 coverage: {
@@ -472,7 +493,9 @@ export class WorkspaceSnapshotStore {
             deadline: Date.now() + timeoutMs,
             signal: controller.signal,
             objectIds: new Set(),
+            newLooseObjectCandidates: new Set(),
         };
+        let quotaReservation: SnapshotQuotaReservation | undefined;
         try {
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             assertCaptureActive(runtime.deadline, runtime.signal);
@@ -487,16 +510,10 @@ export class WorkspaceSnapshotStore {
             if (!canonicalJson(input.scope).equals(canonicalJson(baseManifest.manifest.scope))) {
                 throw new Error("Incremental snapshot scope changed; a full capture is required");
             }
-            // TODO(snapshot-quota): Task 7 replaces this authoritative scan with durable write reservations.
-            const quotaStatus = await this.getQuotaStatusAssumingLock(runtime);
-            if (
-                quotaStatus.status !== "ok" ||
-                input.newlyHashedBytes > WorkspaceCheckpointLimits.softQuotaBytes - quotaStatus.usedBytes
-            ) {
-                throw new WorkspaceSnapshotStoreError("quota_exceeded", "Workspace checkpoint quota exceeded", {
-                    quotaStatus,
-                });
-            }
+            quotaReservation = await this.quotaAccounting.reserve({
+                contentBytes: input.newlyHashedBytes,
+                metadataBytes: estimateIncrementalMetadataBytes(input),
+            });
             await assertFreeSpace(this.storeRoot, runtime);
             await materialize?.(runtime);
             const trees = await applyIncrementalTrees({
@@ -544,15 +561,33 @@ export class WorkspaceSnapshotStore {
             await StoredManifestReader.open({ snapshot: ref, objects: this.#storedManifestObjects() });
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
+            await this.#settleIncrementalQuota(quotaReservation, runtime);
+            quotaReservation = undefined;
             await this.#publishIncrementalOwnerRef(ref, runtime);
             markSnapshotTrusted(this, ref);
             return {
                 ref,
                 coverage: { ...expectedCoverage, newlyHashedBytes: input.newlyHashedBytes },
             };
-        } catch (error) {
+        } catch (caught) {
+            let error = caught;
+            if (quotaReservation) {
+                try {
+                    await this.#settleIncrementalQuota(quotaReservation, runtime);
+                } catch (quotaError) {
+                    error = new AggregateError([caught, quotaError], "Incremental snapshot quota settlement failed");
+                }
+            }
             if (error instanceof AggregateError) {
                 throw error;
+            }
+            if (error instanceof SnapshotQuotaExceededError) {
+                throw new WorkspaceSnapshotStoreError("quota_exceeded", error.message, { cause: error });
+            }
+            if (isNoSpaceError(error)) {
+                throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
+                    cause: error,
+                });
             }
             if (controller.signal.aborted) {
                 throw new WorkspaceSnapshotStoreError(
@@ -571,6 +606,19 @@ export class WorkspaceSnapshotStore {
             throw error;
         } finally {
             clearTimeout(timer);
+        }
+    }
+
+    async #settleIncrementalQuota(reservation: SnapshotQuotaReservation, runtime: CaptureRuntime): Promise<void> {
+        try {
+            const actualNewLooseBytes = await measureNewLooseObjectBytes(
+                this.storeRoot,
+                runtime.newLooseObjectCandidates ?? new Set()
+            );
+            await reservation.commit({ actualNewLooseBytes });
+        } catch (error) {
+            await reservation.invalidate();
+            throw error;
         }
     }
 
@@ -935,6 +983,11 @@ export class WorkspaceSnapshotStore {
         return this.#getQuotaStatusUnlocked(runtime);
     }
 
+    /** Caller must already own this store's workspace lock. */
+    reconcileQuotaAccountingAssumingLock(): Promise<number> {
+        return this.quotaAccounting.reconcileExactUsage();
+    }
+
     async #getQuotaStatusUnlocked(runtime = makeMaintenanceRuntime()): Promise<WorkspaceSnapshotQuotaStatus> {
         assertCaptureActive(runtime.deadline, runtime.signal);
         const objectStatus = await this.git.run(["count-objects", "-v"], {
@@ -944,6 +997,7 @@ export class WorkspaceSnapshotStore {
         });
         const usedBytes = parseCountObjectsBytes(objectStatus.stdout);
         const referencedBytes = await this.referencedObjectBytes(runtime);
+        await this.quotaAccounting.replaceExactUsage(usedBytes);
         return {
             status:
                 referencedBytes > WorkspaceCheckpointLimits.softQuotaBytes
@@ -1270,6 +1324,7 @@ export class WorkspaceSnapshotStore {
     }
 
     async writeBlob(bytes: Buffer, runtime: CaptureRuntime): Promise<string> {
+        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "blob", bytes, runtime);
         const result = await this.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
             gitDir: this.storeRoot,
             stdin: bytes,
@@ -1277,6 +1332,7 @@ export class WorkspaceSnapshotStore {
             signal: runtime.signal,
         });
         const oid = parseOid(result.stdout);
+        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected snapshot blob");
         runtime.objectIds.add(oid);
         return oid;
     }
@@ -1340,6 +1396,7 @@ export class WorkspaceSnapshotStore {
             });
         }
         const stdin = makeTreeInput(records);
+        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "tree", makeTreeObject(records), runtime);
         const result = await this.git.run(["mktree", "-z"], {
             gitDir: this.storeRoot,
             stdin,
@@ -1347,6 +1404,7 @@ export class WorkspaceSnapshotStore {
             signal: runtime.signal,
         });
         const oid = parseOid(result.stdout);
+        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected snapshot tree");
         runtime.objectIds.add(oid);
         return oid;
     }
@@ -1364,13 +1422,16 @@ export class WorkspaceSnapshotStore {
         if (stateTree) {
             records.push({ name: "state", mode: "040000", type: "tree", oid: stateTree });
         }
+        const stdin = makeTreeInput(records);
+        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "tree", makeTreeObject(records), runtime);
         const result = await this.git.run(["mktree", "-z"], {
             gitDir: this.storeRoot,
-            stdin: makeTreeInput(records),
+            stdin,
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
         const oid = parseOid(result.stdout);
+        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected snapshot descriptor");
         runtime.objectIds.add(oid);
         return oid;
     }
@@ -1413,13 +1474,16 @@ export class WorkspaceSnapshotStore {
     }
 
     async #writeIncrementalTree(entries: IncrementalTreeEntry[], runtime: CaptureRuntime): Promise<string> {
+        const stdin = makeTreeInput(entries);
+        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "tree", makeTreeObject(entries), runtime);
         const result = await this.git.run(["mktree", "-z"], {
             gitDir: this.storeRoot,
-            stdin: makeTreeInput(entries),
+            stdin,
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
         const oid = parseOid(result.stdout);
+        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected incremental tree");
         runtime.objectIds.add(oid);
         return oid;
     }
@@ -2110,6 +2174,23 @@ function makeTreeInput(records: Array<{ name: string; mode: string; type: string
     return Buffer.concat(chunks);
 }
 
+function makeTreeObject(records: Array<{ name: string; mode: string; type: string; oid: string }>): Buffer {
+    const sorted = [...records].sort((left, right) =>
+        Buffer.compare(
+            Buffer.from(`${left.name}${left.type === "tree" ? "/" : ""}`),
+            Buffer.from(`${right.name}${right.type === "tree" ? "/" : ""}`)
+        )
+    );
+    return Buffer.concat(
+        sorted.map((record) =>
+            Buffer.concat([
+                Buffer.from(`${record.mode.replace(/^0/, "")} ${record.name}\0`),
+                Buffer.from(record.oid, "hex"),
+            ])
+        )
+    );
+}
+
 async function repairStorePermissions(storeRoot: string): Promise<void> {
     for (const directory of ["objects", "refs", "journal", "lock", "private-hooks"]) {
         await makePrivateDirectory(join(storeRoot, directory));
@@ -2686,6 +2767,100 @@ function parseCountObjectsBytes(value: Buffer): number {
         throw new Error("Git object usage exceeds the supported range");
     }
     return usedBytes;
+}
+
+async function measureExactStoreUsage(storeRoot: string, git: WorkspaceGitRunner): Promise<number> {
+    const result = await git.run(["count-objects", "-v"], {
+        gitDir: storeRoot,
+        timeoutMs: StoreGitTimeoutMs,
+    });
+    return parseCountObjectsBytes(result.stdout);
+}
+
+function quotaGeneration(processOwner: ProcessOwnerIdentity): string {
+    return createHash("sha256").update(`${processOwner.pid}\0${processOwner.processStartToken}`, "utf8").digest("hex");
+}
+
+function estimateIncrementalMetadataBytes(input: {
+    mutations: readonly IncrementalPathMutation[];
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+}): number {
+    let metadataBytes = IncrementalQuotaBaseMetadataBytes;
+    metadataBytes = addBoundedQuotaEstimate(metadataBytes, canonicalJson(input.scope).length * 2);
+    metadataBytes = addBoundedQuotaEstimate(metadataBytes, canonicalJson(input.coverage).length * 2);
+    metadataBytes = addBoundedQuotaEstimate(metadataBytes, input.mutations.length * IncrementalQuotaPerMutationBytes);
+    const pathBytes = input.mutations.reduce((total, mutation) => total + Buffer.byteLength(mutation.path), 0);
+    metadataBytes = addBoundedQuotaEstimate(metadataBytes, pathBytes * IncrementalQuotaPerPathByte);
+    if (metadataBytes > IncrementalQuotaMaxMetadataBytes) {
+        throw new WorkspaceSnapshotStoreError(
+            "capture_budget",
+            "Incremental snapshot metadata exceeds its quota bound"
+        );
+    }
+    return metadataBytes;
+}
+
+function addBoundedQuotaEstimate(left: number, right: number): number {
+    const sum = left + right;
+    if (!Number.isSafeInteger(right) || right < 0 || !Number.isSafeInteger(sum)) {
+        throw new WorkspaceSnapshotStoreError(
+            "capture_budget",
+            "Incremental snapshot metadata exceeds its quota bound"
+        );
+    }
+    return sum;
+}
+
+async function prepareQuotaObjectWrite(
+    storeRoot: string,
+    type: "blob" | "tree",
+    bytes: Buffer,
+    runtime: CaptureRuntime
+): Promise<string | undefined> {
+    if (!runtime.newLooseObjectCandidates) return undefined;
+    const oid = createHash("sha1").update(`${type} ${bytes.length}\0`, "ascii").update(bytes).digest("hex");
+    if ((await readLooseObjectBytes(storeRoot, oid)) == null) {
+        runtime.newLooseObjectCandidates.add(oid);
+    }
+    return oid;
+}
+
+async function measureNewLooseObjectBytes(storeRoot: string, objectIds: ReadonlySet<string>): Promise<number> {
+    let measuredBytes = 0;
+    for (const oid of objectIds) {
+        const bytes = await readLooseObjectBytes(storeRoot, oid);
+        if (bytes == null) continue;
+        measuredBytes += bytes;
+        if (!Number.isSafeInteger(measuredBytes)) throw new Error("New loose object usage exceeds the supported range");
+    }
+    return measuredBytes;
+}
+
+async function readLooseObjectBytes(storeRoot: string, oid: string): Promise<number | undefined> {
+    validateOid(oid);
+    try {
+        const state = await lstat(join(storeRoot, "objects", oid.slice(0, 2), oid.slice(2)));
+        if (!state.isFile() || state.isSymbolicLink() || state.nlink !== 1) {
+            throw new Error("Unsafe loose snapshot object");
+        }
+        if (!Number.isSafeInteger(state.size) || state.size < 0) {
+            throw new Error("Invalid loose snapshot object size");
+        }
+        return state.size;
+    } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") return undefined;
+        throw error;
+    }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+    return error instanceof Error && "code" in error;
+}
+
+function isNoSpaceError(error: unknown): boolean {
+    if (isNodeError(error) && (error.code === "ENOSPC" || error.code === "EDQUOT")) return true;
+    return error instanceof Error && /(?:ENOSPC|EDQUOT|no space left|disk quota exceeded)/i.test(error.message);
 }
 
 function parseBatchObjectBytes(value: Buffer, expectedObjectIds: string[]): number {
