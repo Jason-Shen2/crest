@@ -296,6 +296,38 @@ describe("WorkspaceCheckpointManager", () => {
         expect(fixture.pending.complete).not.toHaveBeenCalled();
     });
 
+    it("maps a final tracker reconcile failure to an unstable-file unavailable checkpoint", async () => {
+        const fixture = makeFixture();
+        fixture.store.capture
+            .mockReset()
+            .mockResolvedValueOnce({
+                ref: snapshot(OidA),
+                coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
+            })
+            .mockRejectedValueOnce(new WorkspaceSnapshotStoreError("unstable_file", "Workspace did not settle"));
+
+        await fixture.emit({
+            type: "session_before_user_turn",
+            boundaryToken: "boundary-reconcile",
+            userMessage: { role: "user", content: [] },
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_committed",
+            boundaryToken: "boundary-reconcile",
+            userEntryId: "user-reconcile",
+        } as AgentHarnessEvent);
+        await fixture.emit({
+            type: "session_user_turn_terminal",
+            boundaryToken: "boundary-reconcile",
+            reason: "agent_end",
+        } as AgentHarnessEvent);
+
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: { status: "unavailable", turnId: "user-reconcile", reasonCode: "unstable_file" },
+        });
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-reconcile");
+    });
+
     it("retires an uncommitted preparation failure without appending a checkpoint", async () => {
         const fixture = makeFixture();
         await fixture.emit({

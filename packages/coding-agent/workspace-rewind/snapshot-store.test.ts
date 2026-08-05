@@ -939,6 +939,25 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.capture({ profile: "terminal" })).rejects.toThrow(/identity chain changed/i);
     });
 
+    test("exposes full reconcile as the v2 baseline primitive while preserving capture compatibility", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "a.txt"), "a");
+
+        const reconciled = await fixture.store.captureFullReconcile({ profile: "pre-turn" });
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const reconciledManifest = JSON.parse(
+            (await fixture.store.readBlob(reconciled.ref.scopeManifest)).toString("utf8")
+        );
+        const capturedManifest = JSON.parse(
+            (await fixture.store.readBlob(captured.ref.scopeManifest)).toString("utf8")
+        );
+
+        expect(reconciledManifest).toMatchObject({ schemaversion: 2, statetree: expect.stringMatching(/^[0-9a-f]+$/) });
+        expect(capturedManifest).toMatchObject({ schemaversion: 2, statetree: expect.stringMatching(/^[0-9a-f]+$/) });
+        await expect(fixture.store.verifyOwnedSnapshot(reconciled.ref)).resolves.toBeUndefined();
+        await expect(fixture.store.verifyOwnedSnapshot(captured.ref)).resolves.toBeUndefined();
+    });
+
     test("builds a descriptor that references the workspace tree and canonical scope manifest", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "a.txt"), "a");
@@ -952,7 +971,7 @@ describe("workspace snapshots", () => {
 
         expect(descriptor.stdout.toString()).toContain(`${ref.tree}\tworkspace\n`);
         expect(descriptor.stdout.toString()).toContain(`${ref.scopeManifest}\tscope-manifest\n`);
-        expect(JSON.parse(manifest.toString("utf8"))).toMatchObject({ schemaversion: 1 });
+        expect(JSON.parse(manifest.toString("utf8"))).toMatchObject({ schemaversion: 2 });
         expect(ref.workspaceIdentity).toBe(fixture.identity.workspaceIdentity);
         expect(ref.workspaceIncarnation).toBe(fixture.identity.workspaceIncarnation);
     });
@@ -1361,8 +1380,10 @@ describe("workspace snapshots", () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "base.txt"), "base");
         const captured = await fixture.store.capture({ profile: "terminal" });
+        const v1 = await convertSnapshotToV1(fixture, captured.ref, ["base.txt"]);
+        await fixture.store.anchorSnapshot(v1);
         const scope = (
-            JSON.parse((await fixture.store.readBlob(captured.ref.scopeManifest)).toString("utf8")) as {
+            JSON.parse((await fixture.store.readBlob(v1.scopeManifest)).toString("utf8")) as {
                 scope: unknown;
             }
         ).scope;
@@ -1370,7 +1391,7 @@ describe("workspace snapshots", () => {
 
         await expect(
             fixture.store.commitIncrementalSnapshot({
-                base: captured.ref,
+                base: v1,
                 mutations: [{ path: "base.txt", state: { state: "absent" } }],
                 scope: scope as never,
                 coverage: withoutNewlyHashedBytes(captured.coverage),
@@ -1671,6 +1692,7 @@ describe("workspace snapshots", () => {
         await writeFile(join(fixture.workspace, "README.md"), "descriptor");
         const captured = await fixture.store.capture({ profile: "terminal" });
         const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const v1 = await convertSnapshotToV1(fixture, captured.ref, ["README.md"]);
         const v2Manifest = JSON.parse((await fixture.store.readBlob(v2.scopeManifest)).toString("utf8")) as {
             statetree: string;
         };
@@ -1681,18 +1703,13 @@ describe("workspace snapshots", () => {
         const extra = await writeTestV2Descriptor(fixture, v2.tree, v2.scopeManifest, v2Manifest.statetree, [
             { name: "unexpected", mode: "100644", type: "blob", oid: extraBlob },
         ]);
-        const v1WithState = await writeTestV2Descriptor(
-            fixture,
-            captured.ref.tree,
-            captured.ref.scopeManifest,
-            emptyStateTree
-        );
+        const v1WithState = await writeTestV2Descriptor(fixture, v1.tree, v1.scopeManifest, emptyStateTree);
 
         for (const snapshot of [
             { ...v2, id: missing },
             { ...v2, id: mismatched },
             { ...v2, id: extra },
-            { ...captured.ref, id: v1WithState },
+            { ...v1, id: v1WithState },
         ]) {
             await expect(fixture.store.verify(snapshot)).rejects.toMatchObject({ code: "corrupt_snapshot" });
         }
@@ -1992,15 +2009,18 @@ describe("workspace snapshots", () => {
         expect(snapshot.coverage.eligibleEntryCount).toBe(fileCount);
         expect(
             fixture.git.calls.filter((args) => args[0] === "hash-object" && args.includes("--stdin-paths"))
-        ).toHaveLength(1);
-        expect(fixture.git.calls.length).toBeLessThanOrEqual(20);
+        ).toHaveLength(2);
+        expect(fixture.git.calls.length).toBeLessThanOrEqual(24);
         fixture.git.calls.length = 0;
         const verifyStarted = Date.now();
 
         await fixture.store.verify(snapshot.ref);
 
         expect(Date.now() - verifyStarted).toBeLessThan(30_000);
-        expect(fixture.git.calls.filter((args) => args[0] === "cat-file")).toHaveLength(4);
+        expect(fixture.git.calls.filter((args) => args[0] === "cat-file" && args[1] === "--batch")).toHaveLength(
+            Math.ceil(fileCount / 512)
+        );
+        expect(fixture.git.calls.filter((args) => args[0] === "cat-file").length).toBeLessThanOrEqual(26);
     }, 60_000);
 
     test("reports referenced-over-quota without deleting an existing owner ref", async () => {
@@ -2419,11 +2439,47 @@ async function convertSnapshotToV2(
     source: WorkspaceSnapshotRefV1,
     coverage: WorkspaceSnapshotCoverage
 ): Promise<WorkspaceSnapshotRefV1> {
-    const v1 = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
-        entries: Array<{ path: string; state: CapturedPathStateV1 }>;
+    const manifest = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
+        schemaversion: number;
+        entries?: Array<{ path: string; state: CapturedPathStateV1 }>;
+        statetree?: string;
     };
-    const stateTree = await writeTestStateTree(fixture, new Map(v1.entries.map((entry) => [entry.path, entry.state])));
+    if (manifest.schemaversion === 2 && manifest.statetree) {
+        return await makeV2SnapshotWithStateTree(fixture, source, coverage, manifest.statetree);
+    }
+    if (!manifest.entries) throw new Error("Test snapshot manifest has no inline entries");
+    const stateTree = await writeTestStateTree(
+        fixture,
+        new Map(manifest.entries.map((entry) => [entry.path, entry.state]))
+    );
     return await makeV2SnapshotWithStateTree(fixture, source, coverage, stateTree);
+}
+
+async function convertSnapshotToV1(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    source: WorkspaceSnapshotRefV1,
+    paths: readonly string[]
+): Promise<WorkspaceSnapshotRefV1> {
+    const sourceManifest = JSON.parse((await fixture.store.readBlob(source.scopeManifest)).toString("utf8")) as {
+        scope: unknown;
+    };
+    const manifestOid = await writeTestBlob(
+        fixture,
+        canonicalTestJson({
+            schemaversion: 1,
+            workspaceidentity: source.workspaceIdentity,
+            workspaceincarnation: source.workspaceIncarnation,
+            scope: sourceManifest.scope,
+            entries: await Promise.all(
+                paths.map(async (path) => ({ path, state: await fixture.store.readPathState(source, path) }))
+            ),
+        })
+    );
+    return {
+        ...source,
+        id: await writeTestDescriptor(fixture, source.tree, manifestOid),
+        scopeManifest: manifestOid,
+    };
 }
 
 async function readIncrementalCommitInput(

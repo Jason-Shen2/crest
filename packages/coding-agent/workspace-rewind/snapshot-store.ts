@@ -4,6 +4,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
+    chmod,
     link,
     lstat,
     mkdir,
@@ -17,6 +18,7 @@ import {
     unlink,
     writeFile,
 } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 import {
@@ -48,7 +50,6 @@ import {
     StoredManifestReader,
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
-    type StoredScopeManifestV1,
     type StoredScopeManifestV2,
 } from "./stored-manifest";
 import type {
@@ -262,6 +263,13 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#captureUnlocked(options));
     }
 
+    captureFullReconcile(options: CaptureWorkspaceOptions): Promise<{
+        ref: WorkspaceSnapshotRefV1;
+        coverage: WorkspaceSnapshotCoverage;
+    }> {
+        return this.withWorkspaceLock(() => this.#captureUnlocked(options));
+    }
+
     async commitIncrementalSnapshot(input: {
         base: WorkspaceSnapshotRefV1;
         mutations: IncrementalPathMutation[];
@@ -380,15 +388,21 @@ export class WorkspaceSnapshotStore {
                 );
             }
             const workspaceTree = await this.writeWorkspaceTree(captured.entries, runtime);
-            const storedManifest: StoredScopeManifestV1 = {
-                schemaversion: 1,
+            const stateTree = await this.writeStateTree(captured.entries, runtime);
+            const storedManifest: StoredScopeManifestV2 = {
+                schemaversion: 2,
                 workspaceidentity: this.identity.workspaceIdentity,
                 workspaceincarnation: this.identity.workspaceIncarnation,
                 scope: scope.manifest,
-                entries: captured.entries.map((entry) => ({ path: entry.path, state: entry.state })),
+                coverage: {
+                    complete: scope.coverage.complete,
+                    eligibleentrycount: scope.coverage.eligibleEntryCount,
+                    exclusions: scope.coverage.exclusions.map(toStoredCoverageExclusion),
+                },
+                statetree: stateTree,
             };
             const manifestOid = await this.writeBlob(canonicalJson(storedManifest), runtime);
-            const descriptorOid = await this.writeDescriptor(workspaceTree, manifestOid, runtime);
+            const descriptorOid = await this.writeDescriptor(workspaceTree, manifestOid, runtime, stateTree);
             const ref: WorkspaceSnapshotRefV1 = {
                 id: descriptorOid,
                 workspaceIdentity: this.identity.workspaceIdentity,
@@ -604,6 +618,50 @@ export class WorkspaceSnapshotStore {
             if (signal?.aborted) throw signal.reason ?? cause;
             throw asCorruptSnapshot(cause);
         }
+    }
+
+    readIncrementalSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    }> {
+        return this.withWorkspaceLock(async () => {
+            const manifest = await this.#readStoredManifest(snapshot);
+            const coverage = manifest.getCoverage();
+            if (manifest.manifest.schemaversion !== 2 || !coverage) {
+                throw new Error("Incremental snapshot metadata requires a v2 snapshot");
+            }
+            return {
+                scope: JSON.parse(JSON.stringify(manifest.manifest.scope)) as WorkspaceScopeManifest,
+                coverage: {
+                    complete: coverage.complete,
+                    eligibleEntryCount: coverage.eligibleEntryCount,
+                    exclusions: coverage.exclusions.map(cloneCoverageExclusion),
+                },
+            };
+        });
+    }
+
+    computeIncrementalSnapshotCoverage(
+        snapshot: WorkspaceSnapshotRefV1,
+        mutations: IncrementalPathMutation[]
+    ): Promise<Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">> {
+        const ownedMutations = normalizeIncrementalMutations(mutations);
+        return this.withWorkspaceLock(async () => {
+            const manifest = await this.#readStoredManifest(snapshot);
+            const coverage = manifest.getCoverage();
+            if (manifest.manifest.schemaversion !== 2 || !coverage) {
+                throw new Error("Incremental snapshot coverage requires a v2 snapshot");
+            }
+            const changes: WorkspacePathChangeV1[] = [];
+            for (const mutation of ownedMutations) {
+                changes.push({
+                    path: mutation.path,
+                    before: await manifest.readPathState(mutation.path),
+                    after: mutation.state,
+                });
+            }
+            return deriveIncrementalCoverage(coverage, changes);
+        });
     }
 
     readBlob(oid: string): Promise<Buffer> {
@@ -1235,6 +1293,36 @@ export class WorkspaceSnapshotStore {
             });
         }
         return this.writeTreeNode(root, runtime);
+    }
+
+    async writeStateTree(entries: CapturedEntry[], runtime: CaptureRuntime): Promise<string> {
+        const stagingRoot = await mkdtemp(join(tmpdir(), "crest-snapshot-state-tree-"));
+        await chmod(stagingRoot, 0o700);
+        try {
+            const storedEntries = entries.filter((entry) => entry.state.state !== "absent");
+            const paths = storedEntries.map((_, index) => join(stagingRoot, `${index}.json`));
+            let nextIndex = 0;
+            const writeNext = async () => {
+                while (nextIndex < storedEntries.length) {
+                    const index = nextIndex++;
+                    assertCaptureActive(runtime.deadline, runtime.signal);
+                    await writeFile(
+                        paths[index]!,
+                        canonicalJson({ schemaversion: 1, state: storedEntries[index]!.state }),
+                        { mode: 0o600, signal: runtime.signal }
+                    );
+                }
+            };
+            await Promise.all(Array.from({ length: Math.min(8, storedEntries.length) }, writeNext));
+            const oids = await this.hashStagedPaths(paths, runtime);
+            const root: TreeNode = { children: new Map() };
+            for (let index = 0; index < storedEntries.length; index++) {
+                insertTreeLeaf(root, storedEntries[index]!.path, { mode: "100644", oid: oids[index]! });
+            }
+            return await this.writeTreeNode(root, runtime);
+        } finally {
+            await rm(stagingRoot, { recursive: true, force: true });
+        }
     }
 
     async writeTreeNode(node: TreeNode, runtime: CaptureRuntime): Promise<string> {
