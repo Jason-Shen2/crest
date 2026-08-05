@@ -1004,6 +1004,186 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.diff(v2, v2)).resolves.toEqual([]);
     });
 
+    test("commits a copy-on-write v2 snapshot and roots every new object through its owner ref", async () => {
+        const fixture = await makeStoreFixture();
+        await mkdir(join(fixture.workspace, "docs"));
+        await mkdir(join(fixture.workspace, "src"));
+        await mkdir(join(fixture.workspace, "assets"));
+        await writeFile(join(fixture.workspace, "docs", "README.md"), "before");
+        await writeFile(join(fixture.workspace, "src", "index.ts"), "source");
+        await writeFile(join(fixture.workspace, "assets", "logo.txt"), "logo");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const updatedOid = await writeTestBlob(fixture, Buffer.from("after"));
+        const baseSrc = await readChildTreeOid(fixture, base.tree, "src");
+        const baseAssets = await readChildTreeOid(fixture, base.tree, "assets");
+        fixture.git.calls.length = 0;
+
+        const committed = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [{ path: "docs/README.md", state: { state: "file", oid: updatedOid, executable: false } }],
+        });
+
+        expect(committed.coverage).toEqual({ ...captured.coverage, newlyHashedBytes: 5 });
+        expect(await fixture.store.readPathState(committed.ref, "docs/README.md")).toEqual({
+            state: "file",
+            oid: updatedOid,
+            executable: false,
+        });
+        expect(await readChildTreeOid(fixture, committed.ref.tree, "src")).toBe(baseSrc);
+        expect(await readChildTreeOid(fixture, committed.ref.tree, "assets")).toBe(baseAssets);
+        const manifest = JSON.parse((await fixture.store.readBlob(committed.ref.scopeManifest)).toString("utf8")) as {
+            schemaversion: number;
+            statetree: string;
+        };
+        const descriptor = await fixture.git.run(["cat-file", "-p", committed.ref.id], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 5_000,
+        });
+        expect(manifest.schemaversion).toBe(2);
+        expect(descriptor.stdout.toString()).toContain(`${manifest.statetree}\tstate\n`);
+        expect(fixture.git.calls.filter((args) => args[0] === "mktree")).toHaveLength(5);
+
+        await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.storeRoot, timeoutMs: 30_000 });
+        await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
+        await expect(fixture.store.diff(base, committed.ref)).resolves.toHaveLength(1);
+    });
+
+    test("commits deterministic incremental snapshot ids independent of mutation order", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const a = await writeTestBlob(fixture, Buffer.from("a"));
+        const z = await writeTestBlob(fixture, Buffer.from("z"));
+        const mutations = [
+            { path: "z.txt", state: { state: "file", oid: z, executable: false } as const },
+            { path: "a.txt", state: { state: "file", oid: a, executable: false } as const },
+        ];
+
+        const forward = await fixture.store.commitIncrementalSnapshot({ ...input, mutations });
+        const reverse = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [...mutations].reverse(),
+        });
+
+        expect(reverse.ref).toEqual(forward.ref);
+        expect(reverse.coverage).toEqual(forward.coverage);
+    });
+
+    test("hard-blocks a v1 incremental base before writing or publishing objects", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const scope = (
+            JSON.parse((await fixture.store.readBlob(captured.ref.scopeManifest)).toString("utf8")) as {
+                scope: unknown;
+            }
+        ).scope;
+        fixture.git.calls.length = 0;
+
+        await expect(
+            fixture.store.commitIncrementalSnapshot({
+                base: captured.ref,
+                mutations: [{ path: "base.txt", state: { state: "absent" } }],
+                scope: scope as never,
+                coverage: withoutNewlyHashedBytes(captured.coverage),
+                newlyHashedBytes: 0,
+                profile: "terminal",
+            })
+        ).rejects.toThrow(/v2.*base|incremental.*v2/i);
+        expect(
+            fixture.git.calls.filter(
+                (args) => args[0] === "hash-object" || args[0] === "mktree" || args[0] === "update-ref"
+            )
+        ).toEqual([]);
+    });
+
+    test("serializes incremental commits under the workspace lock", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const release = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => release.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
+        let settled = false;
+
+        const commit = fixture.store
+            .commitIncrementalSnapshot({ ...input, mutations: [] })
+            .finally(() => (settled = true));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        release.resolve();
+        await held;
+        await commit;
+    });
+
+    test("removes an owner ref when publication acknowledgement fails", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const oid = await writeTestBlob(fixture, Buffer.from("new"));
+        const refsBefore = await fixture.store.listCrestRefs();
+        const originalRun = fixture.git.run.bind(fixture.git);
+        let failed = false;
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (!failed && args[0] === "update-ref" && args[1]?.startsWith("refs/crest/snapshots/")) {
+                failed = true;
+                await originalRun(args, options);
+                throw new Error("lost publication acknowledgement");
+            }
+            return await originalRun(args, options);
+        });
+
+        await expect(
+            fixture.store.commitIncrementalSnapshot({
+                ...input,
+                mutations: [{ path: "new.txt", state: { state: "file", oid, executable: false } }],
+            })
+        ).rejects.toThrow(/publication acknowledgement/i);
+        expect(await fixture.store.listCrestRefs()).toEqual(refsBefore);
+    });
+
+    test("preserves a deterministic pre-existing owner ref when repeat publication fails", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const oid = await writeTestBlob(fixture, Buffer.from("stable"));
+        const commitInput = {
+            ...input,
+            mutations: [{ path: "stable.txt", state: { state: "file", oid, executable: false } as const }],
+        };
+        const first = await fixture.store.commitIncrementalSnapshot(commitInput);
+        const originalRun = fixture.git.run.bind(fixture.git);
+        let failed = false;
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (!failed && args[0] === "update-ref" && args[1] === fixture.store.ownerRefName(first.ref.id)) {
+                failed = true;
+                await originalRun(args, options);
+                throw new Error("lost repeat publication acknowledgement");
+            }
+            return await originalRun(args, options);
+        });
+
+        await expect(fixture.store.commitIncrementalSnapshot(commitInput)).rejects.toThrow(
+            /repeat publication acknowledgement/i
+        );
+        await expect(fixture.store.verifyOwnedSnapshot(first.ref)).resolves.toBeUndefined();
+    });
+
     test("verifies v2 state leaves with a bounded number of Git batch processes", async () => {
         const fixture = await makeStoreFixture();
         await Promise.all(
@@ -1778,6 +1958,57 @@ async function convertSnapshotToV2(
     };
     const stateTree = await writeTestStateTree(fixture, new Map(v1.entries.map((entry) => [entry.path, entry.state])));
     return await makeV2SnapshotWithStateTree(fixture, source, coverage, stateTree);
+}
+
+async function readIncrementalCommitInput(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    base: WorkspaceSnapshotRefV1,
+    coverage: WorkspaceSnapshotCoverage
+) {
+    const manifest = JSON.parse((await fixture.store.readBlob(base.scopeManifest)).toString("utf8")) as {
+        scope: unknown;
+    };
+    return {
+        base,
+        scope: manifest.scope as never,
+        coverage: withoutNewlyHashedBytes(coverage),
+        newlyHashedBytes: 5,
+        profile: "terminal" as const,
+    };
+}
+
+function withoutNewlyHashedBytes(
+    coverage: WorkspaceSnapshotCoverage
+): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    return {
+        complete: coverage.complete,
+        eligibleEntryCount: coverage.eligibleEntryCount,
+        exclusions: coverage.exclusions,
+    };
+}
+
+async function readChildTreeOid(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    treeOid: string,
+    name: string
+): Promise<string> {
+    const tree = await fixture.git.run(["cat-file", "tree", treeOid], {
+        gitDir: fixture.storeRoot,
+        timeoutMs: 5_000,
+    });
+    const hashBytes = treeOid.length / 2;
+    let offset = 0;
+    while (offset < tree.stdout.length) {
+        const space = tree.stdout.indexOf(0x20, offset);
+        const nul = tree.stdout.indexOf(0, space + 1);
+        const mode = tree.stdout.subarray(offset, space).toString("ascii");
+        const entryName = tree.stdout.subarray(space + 1, nul).toString("utf8");
+        if (entryName === name && mode === "40000") {
+            return tree.stdout.subarray(nul + 1, nul + 1 + hashBytes).toString("hex");
+        }
+        offset = nul + 1 + hashBytes;
+    }
+    throw new Error(`Missing test child tree: ${name}`);
 }
 
 async function makeV2SnapshotWithStateTree(

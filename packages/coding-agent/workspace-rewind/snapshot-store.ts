@@ -27,6 +27,13 @@ import {
 } from "./anchored-reader";
 import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
+import {
+    applyIncrementalTrees,
+    normalizeIncrementalMutations,
+    type IncrementalPathMutation,
+    type IncrementalTreeEntry,
+    type IncrementalTreeObjectAccess,
+} from "./incremental-tree";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
@@ -37,6 +44,7 @@ import {
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
     type StoredScopeManifestV1,
+    type StoredScopeManifestV2,
 } from "./stored-manifest";
 import type {
     CapturedPathStateV1,
@@ -53,6 +61,7 @@ import {
     type WorkspaceScopeDirectoryIdentity,
     type WorkspaceScopeEntry,
     type WorkspaceScopeEntryIdentity,
+    type WorkspaceScopeManifest,
 } from "./workspace-scope";
 
 export const WorkspaceCheckpointLimits = Object.freeze({
@@ -248,6 +257,17 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#captureUnlocked(options));
     }
 
+    commitIncrementalSnapshot(input: {
+        base: WorkspaceSnapshotRefV1;
+        mutations: IncrementalPathMutation[];
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+        newlyHashedBytes: number;
+        profile: CaptureWorkspaceOptions["profile"];
+    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
+        return this.withWorkspaceLock(() => this.#commitIncrementalSnapshot(input));
+    }
+
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
         return this.mutationLock.runExclusive(operation);
     }
@@ -378,6 +398,113 @@ export class WorkspaceSnapshotStore {
         }
     }
 
+    async #commitIncrementalSnapshot(input: {
+        base: WorkspaceSnapshotRefV1;
+        mutations: IncrementalPathMutation[];
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+        newlyHashedBytes: number;
+        profile: CaptureWorkspaceOptions["profile"];
+    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
+        validateIncrementalCommitInput(input);
+        const mutations = normalizeIncrementalMutations(input.mutations);
+        const timeoutMs =
+            input.profile === "pre-turn"
+                ? WorkspaceCheckpointLimits.preTurnTimeoutMs
+                : WorkspaceCheckpointLimits.terminalTimeoutMs;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(new Error("incremental commit deadline exceeded")), timeoutMs);
+        const runtime: CaptureRuntime = {
+            deadline: Date.now() + timeoutMs,
+            signal: controller.signal,
+            objectIds: new Set(),
+        };
+        try {
+            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            this.assertSnapshotIdentity(input.base);
+            await this.verifyUntrustedSnapshot(input.base);
+            await this.#assertSnapshotOwnerRef(input.base);
+            const baseManifest = await this.#readStoredManifest(input.base);
+            if (baseManifest.manifest.schemaversion !== 2) {
+                throw new Error("Incremental snapshot commit requires a v2 base snapshot");
+            }
+            // TODO(snapshot-quota): Task 7 replaces this authoritative scan with durable write reservations.
+            const quotaStatus = await this.getQuotaStatusAssumingLock(runtime);
+            if (
+                quotaStatus.status !== "ok" ||
+                input.newlyHashedBytes > WorkspaceCheckpointLimits.softQuotaBytes - quotaStatus.usedBytes
+            ) {
+                throw new WorkspaceSnapshotStoreError("quota_exceeded", "Workspace checkpoint quota exceeded", {
+                    quotaStatus,
+                });
+            }
+            await assertFreeSpace(this.storeRoot, runtime);
+            const trees = await applyIncrementalTrees({
+                baseWorkspaceTree: input.base.tree,
+                baseStateTree: baseManifest.manifest.statetree,
+                mutations,
+                objects: this.#incrementalTreeObjects(runtime),
+            });
+            for (const oid of trees.objectIds) runtime.objectIds.add(oid);
+            const storedManifest: StoredScopeManifestV2 = {
+                schemaversion: 2,
+                workspaceidentity: this.identity.workspaceIdentity,
+                workspaceincarnation: this.identity.workspaceIncarnation,
+                scope: input.scope,
+                coverage: {
+                    complete: input.coverage.complete,
+                    eligibleentrycount: input.coverage.eligibleEntryCount,
+                    exclusions: input.coverage.exclusions.map(toStoredCoverageExclusion),
+                },
+                statetree: trees.stateTree,
+            };
+            const manifestOid = await this.writeBlob(canonicalJson(storedManifest), runtime);
+            const descriptorOid = await this.writeDescriptor(
+                trees.workspaceTree,
+                manifestOid,
+                runtime,
+                trees.stateTree
+            );
+            const ref: WorkspaceSnapshotRefV1 = {
+                id: descriptorOid,
+                workspaceIdentity: this.identity.workspaceIdentity,
+                workspaceIncarnation: this.identity.workspaceIncarnation,
+                tree: trees.workspaceTree,
+                scopeManifest: manifestOid,
+            };
+            await StoredManifestReader.open({ snapshot: ref, objects: this.#storedManifestObjects() });
+            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
+            await this.#publishIncrementalOwnerRef(ref, runtime);
+            markSnapshotTrusted(this, ref);
+            return {
+                ref,
+                coverage: { ...input.coverage, newlyHashedBytes: input.newlyHashedBytes },
+            };
+        } catch (error) {
+            if (error instanceof AggregateError) {
+                throw error;
+            }
+            if (controller.signal.aborted) {
+                throw new WorkspaceSnapshotStoreError(
+                    "capture_timeout",
+                    "Workspace incremental snapshot commit timed out",
+                    { cause: error }
+                );
+            }
+            if (error instanceof WorkspaceGitRunnerError && error.code === "timeout") {
+                throw new WorkspaceSnapshotStoreError(
+                    "capture_timeout",
+                    "Workspace incremental snapshot commit timed out",
+                    { cause: error }
+                );
+            }
+            throw error;
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
     diff(before: WorkspaceSnapshotRefV1, after: WorkspaceSnapshotRefV1): Promise<WorkspacePathChangeV1[]> {
         return this.withWorkspaceLock(() => this.#diffUnlocked(before, after));
     }
@@ -429,18 +556,15 @@ export class WorkspaceSnapshotStore {
     verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         return this.withWorkspaceLock(async () => {
             await this.#verifyUnlocked(snapshot);
-            const owner = await this.git.run(
-                ["for-each-ref", "--format=%(objectname)", this.ownerRefName(snapshot.id)],
-                {
-                    gitDir: this.storeRoot,
-                    timeoutMs: StoreGitTimeoutMs,
-                    maxStdoutBytes: 256,
-                }
-            );
-            if (owner.stdout.length === 0 || parseOid(owner.stdout) !== snapshot.id) {
-                throw new Error("Workspace snapshot owner ref is missing or changed");
-            }
+            await this.#assertSnapshotOwnerRef(snapshot);
         });
+    }
+
+    async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
+        const owner = await this.#readExactRef(this.ownerRefName(snapshot.id));
+        if (owner !== snapshot.id) {
+            throw new Error("Workspace snapshot owner ref is missing or changed");
+        }
     }
 
     measureSnapshotUsage(snapshots: readonly WorkspaceSnapshotRefV1[]): Promise<number> {
@@ -1066,19 +1190,121 @@ export class WorkspaceSnapshotStore {
         return oid;
     }
 
-    async writeDescriptor(workspaceTree: string, manifestOid: string, runtime: CaptureRuntime): Promise<string> {
+    async writeDescriptor(
+        workspaceTree: string,
+        manifestOid: string,
+        runtime: CaptureRuntime,
+        stateTree?: string
+    ): Promise<string> {
+        const records: Array<{ name: string; mode: string; type: string; oid: string }> = [
+            { name: "scope-manifest", mode: "100644", type: "blob", oid: manifestOid },
+            { name: "workspace", mode: "040000", type: "tree", oid: workspaceTree },
+        ];
+        if (stateTree) {
+            records.push({ name: "state", mode: "040000", type: "tree", oid: stateTree });
+        }
         const result = await this.git.run(["mktree", "-z"], {
             gitDir: this.storeRoot,
-            stdin: makeTreeInput([
-                { name: "scope-manifest", mode: "100644", type: "blob", oid: manifestOid },
-                { name: "workspace", mode: "040000", type: "tree", oid: workspaceTree },
-            ]),
+            stdin: makeTreeInput(records),
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
         const oid = parseOid(result.stdout);
         runtime.objectIds.add(oid);
         return oid;
+    }
+
+    #incrementalTreeObjects(runtime: CaptureRuntime): IncrementalTreeObjectAccess {
+        return {
+            readTree: async (oid) => {
+                validateOid(oid);
+                const result = await this.git.run(["cat-file", "tree", oid], {
+                    gitDir: this.storeRoot,
+                    timeoutMs: remainingTimeout(runtime.deadline),
+                    signal: runtime.signal,
+                });
+                return result.stdout;
+            },
+            readBlob: async (oid) => {
+                validateOid(oid);
+                const result = await this.git.run(["cat-file", "blob", oid], {
+                    gitDir: this.storeRoot,
+                    timeoutMs: remainingTimeout(runtime.deadline),
+                    signal: runtime.signal,
+                });
+                return result.stdout;
+            },
+            readObjectType: async (oid) => {
+                validateOid(oid);
+                const result = await this.git.run(["cat-file", "-t", oid], {
+                    gitDir: this.storeRoot,
+                    timeoutMs: remainingTimeout(runtime.deadline),
+                    maxStdoutBytes: 16,
+                    signal: runtime.signal,
+                });
+                const type = result.stdout.toString("ascii").trim();
+                if (type !== "blob" && type !== "tree") throw new Error("Invalid incremental Git object type");
+                return type;
+            },
+            writeBlob: (bytes) => this.writeBlob(bytes, runtime),
+            writeTree: (entries) => this.#writeIncrementalTree(entries, runtime),
+        };
+    }
+
+    async #writeIncrementalTree(entries: IncrementalTreeEntry[], runtime: CaptureRuntime): Promise<string> {
+        const result = await this.git.run(["mktree", "-z"], {
+            gitDir: this.storeRoot,
+            stdin: makeTreeInput(entries),
+            timeoutMs: remainingTimeout(runtime.deadline),
+            signal: runtime.signal,
+        });
+        const oid = parseOid(result.stdout);
+        runtime.objectIds.add(oid);
+        return oid;
+    }
+
+    async #publishIncrementalOwnerRef(ref: WorkspaceSnapshotRefV1, runtime: CaptureRuntime): Promise<void> {
+        const refName = this.ownerRefName(ref.id);
+        const previous = await this.#readExactRef(refName, runtime);
+        if (previous && previous !== ref.id) {
+            throw new Error("Workspace snapshot owner ref changed before publication");
+        }
+        try {
+            await this.git.run(["update-ref", refName, ref.id, previous ?? "0".repeat(ref.id.length)], {
+                gitDir: this.storeRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+            });
+            await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, refName, runtime);
+            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), runtime.signal);
+        } catch (error) {
+            if (!previous) {
+                try {
+                    await this.git.run(["update-ref", "-d", refName, ref.id], {
+                        gitDir: this.storeRoot,
+                        timeoutMs: StoreGitTimeoutMs,
+                    });
+                } catch (cleanupError) {
+                    throw new AggregateError(
+                        [error, cleanupError],
+                        "Incremental snapshot publication failed and owner ref cleanup failed"
+                    );
+                }
+            }
+            throw error;
+        }
+    }
+
+    async #readExactRef(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
+        validateCrestRefName(refName);
+        const owner = await this.git.run(["for-each-ref", "--format=%(objectname)", refName], {
+            gitDir: this.storeRoot,
+            timeoutMs: remainingTimeout(runtime.deadline),
+            maxStdoutBytes: 256,
+            signal: runtime.signal,
+        });
+        if (owner.stdout.length === 0) return undefined;
+        return parseOid(owner.stdout);
     }
 
     async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
@@ -1912,6 +2138,74 @@ function validateCaptureOptions(options: CaptureWorkspaceOptions): void {
     if (options.requiredPaths != null && !Array.isArray(options.requiredPaths)) {
         throw new Error("Invalid required paths");
     }
+}
+
+function validateIncrementalCommitInput(input: {
+    base: WorkspaceSnapshotRefV1;
+    mutations: IncrementalPathMutation[];
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    newlyHashedBytes: number;
+    profile: CaptureWorkspaceOptions["profile"];
+}): void {
+    if (
+        !input ||
+        !input.base ||
+        !Array.isArray(input.mutations) ||
+        !input.scope ||
+        typeof input.scope !== "object" ||
+        !input.coverage ||
+        typeof input.coverage.complete !== "boolean" ||
+        !Number.isSafeInteger(input.coverage.eligibleEntryCount) ||
+        input.coverage.eligibleEntryCount < 0 ||
+        !Array.isArray(input.coverage.exclusions) ||
+        !Number.isSafeInteger(input.newlyHashedBytes) ||
+        input.newlyHashedBytes < 0 ||
+        input.newlyHashedBytes > WorkspaceCheckpointLimits.maxNewlyHashedBytes ||
+        !["pre-turn", "terminal", "safety"].includes(input.profile)
+    ) {
+        throw new Error("Invalid incremental snapshot commit input");
+    }
+    input.coverage.exclusions.forEach(toStoredCoverageExclusion);
+}
+
+function toStoredCoverageExclusion(
+    exclusion: WorkspaceSnapshotCoverage["exclusions"][number]
+): StoredScopeManifestV2["coverage"]["exclusions"][number] {
+    if (!exclusion || typeof exclusion !== "object" || typeof exclusion.reason !== "string") {
+        throw new Error("Invalid incremental snapshot coverage exclusion");
+    }
+    const record = exclusion as unknown as Record<string, unknown>;
+    if (Object.hasOwn(record, "scope")) {
+        if (
+            record.scope !== "workspace-root" ||
+            Object.keys(record).some((key) => !["scope", "reason"].includes(key))
+        ) {
+            throw new Error("Invalid incremental snapshot coverage exclusion");
+        }
+        if (exclusion.reason !== "capture-budget") {
+            throw new Error("Invalid incremental snapshot coverage exclusion");
+        }
+        return { scope: "workspace-root", reason: "capture-budget" };
+    }
+    if (Object.hasOwn(record, "path")) {
+        if (typeof record.path !== "string" || Object.keys(record).some((key) => !["path", "reason"].includes(key))) {
+            throw new Error("Invalid incremental snapshot coverage exclusion");
+        }
+        validateRelativePath(record.path);
+        return { path: record.path, reason: exclusion.reason };
+    }
+    if (
+        typeof record.pathBytesBase64 !== "string" ||
+        Object.keys(record).some((key) => !["pathBytesBase64", "reason"].includes(key))
+    ) {
+        throw new Error("Invalid incremental snapshot coverage exclusion");
+    }
+    const bytes = Buffer.from(record.pathBytesBase64, "base64");
+    if (bytes.length === 0 || bytes.toString("base64") !== record.pathBytesBase64) {
+        throw new Error("Invalid incremental snapshot coverage exclusion");
+    }
+    return { pathbytesbase64: record.pathBytesBase64, reason: exclusion.reason };
 }
 
 function validateProcessOwner(owner: ProcessOwnerIdentity): void {
