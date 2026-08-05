@@ -59,14 +59,22 @@ export function normalizeIncrementalMutations(mutations: IncrementalPathMutation
         return mutation;
     });
     normalized.sort((left, right) => compareBytes(left.path, right.path));
-    for (let index = 1; index < normalized.length; index++) {
-        const previous = normalized[index - 1]!;
-        const current = normalized[index]!;
-        if (previous.path === current.path) {
-            throw new Error(`Duplicate incremental mutation path: ${current.path}`);
+    const mutationsByPath = new Map<string, IncrementalPathMutation>();
+    for (const mutation of normalized) {
+        if (mutationsByPath.has(mutation.path)) {
+            throw new Error(`Duplicate incremental mutation path: ${mutation.path}`);
         }
-        if (current.path.startsWith(`${previous.path}/`) && previous.state.state !== "absent") {
-            throw new Error(`Incremental mutation ancestor leaf conflicts with descendant: ${previous.path}`);
+        mutationsByPath.set(mutation.path, mutation);
+    }
+    for (const mutation of normalized) {
+        let separator = mutation.path.indexOf("/");
+        while (separator >= 0) {
+            const ancestorPath = mutation.path.slice(0, separator);
+            const ancestor = mutationsByPath.get(ancestorPath);
+            if (ancestor && ancestor.state.state !== "absent") {
+                throw new Error(`Incremental mutation ancestor leaf conflicts with descendant: ${ancestorPath}`);
+            }
+            separator = mutation.path.indexOf("/", separator + 1);
         }
     }
     return normalized;

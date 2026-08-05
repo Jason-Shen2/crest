@@ -251,6 +251,36 @@ describe("incremental mutation normalization", () => {
             ])
         ).toThrow(/ancestor.*descendant/i);
     });
+
+    test("finds every ancestor leaf when raw-byte siblings are interleaved", () => {
+        const oid = "a".repeat(40);
+        expect(() =>
+            normalizeIncrementalMutations([
+                { path: "a/b", state: { state: "absent" } },
+                { path: "a!", state: { state: "absent" } },
+                { path: "a", state: file(oid) },
+            ])
+        ).toThrow(/ancestor.*descendant.*a/i);
+        expect(() =>
+            normalizeIncrementalMutations([
+                { path: "root", state: { state: "absent" } },
+                { path: "root/branch/child", state: { state: "absent" } },
+                { path: "root/branch!", state: { state: "absent" } },
+                { path: "root/branch", state: { state: "symlink", oid } },
+            ])
+        ).toThrow(/ancestor.*descendant.*root\/branch/i);
+    });
+
+    test("allows absent ancestors while preserving raw-byte output order", () => {
+        expect(
+            normalizeIncrementalMutations([
+                { path: "root/branch/child", state: { state: "absent" } },
+                { path: "root!", state: { state: "absent" } },
+                { path: "root", state: { state: "absent" } },
+                { path: "root/branch", state: { state: "absent" } },
+            ]).map((mutation) => mutation.path)
+        ).toEqual(["root", "root!", "root/branch", "root/branch/child"]);
+    });
 });
 
 function file(oid: string, executable = false): CapturedPathStateV1 {
