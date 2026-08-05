@@ -571,10 +571,12 @@ export class WorkspaceSnapshotStore {
             };
         } catch (caught) {
             let error = caught;
+            let settlementError: unknown;
             if (quotaReservation) {
                 try {
                     await this.#settleIncrementalQuota(quotaReservation, runtime);
                 } catch (quotaError) {
+                    settlementError = quotaError;
                     error = new AggregateError([caught, quotaError], "Incremental snapshot quota settlement failed");
                 }
             }
@@ -582,6 +584,14 @@ export class WorkspaceSnapshotStore {
                 throw new WorkspaceSnapshotStoreError("quota_exceeded", caught.message, { cause: error });
             }
             if (isNoSpaceError(caught)) {
+                throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
+                    cause: error,
+                });
+            }
+            if (settlementError instanceof SnapshotQuotaExceededError) {
+                throw new WorkspaceSnapshotStoreError("quota_exceeded", settlementError.message, { cause: error });
+            }
+            if (isNoSpaceError(settlementError)) {
                 throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
                     cause: error,
                 });

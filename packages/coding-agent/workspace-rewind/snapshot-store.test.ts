@@ -1441,6 +1441,47 @@ describe("workspace snapshots", () => {
         });
     });
 
+    test.each([
+        [
+            "ENOSPC",
+            () => Object.assign(new Error("ENOSPC: no space left during settlement"), { code: "ENOSPC" }),
+            "enospc",
+        ],
+        [
+            "quota exceeded",
+            () =>
+                new SnapshotQuotaExceededError({
+                    measuredBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+                    requestedBytes: 1,
+                    maxBytes: WorkspaceCheckpointLimits.softQuotaBytes,
+                }),
+            "quota_exceeded",
+        ],
+    ])("maps typed %s from settlement when the primary error is generic", async (_name, makeSettlement, code) => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        const originalReserve = fixture.store.quotaAccounting.reserve.bind(fixture.store.quotaAccounting);
+        vi.spyOn(fixture.store.quotaAccounting, "reserve").mockImplementation(async (reservationInput) => {
+            const reservation = await originalReserve(reservationInput);
+            vi.spyOn(reservation, "commit").mockRejectedValue(makeSettlement());
+            vi.spyOn(reservation, "invalidate").mockResolvedValue(undefined);
+            return reservation;
+        });
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "mktree") throw new Error("generic incremental write failure");
+            return WorkspaceGitRunner.prototype.run.call(fixture.git, args, options);
+        });
+
+        await expect(fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] })).rejects.toMatchObject({
+            cause: expect.any(AggregateError),
+            code,
+        });
+    });
+
     test("accounts a partial loose-object write when a later write fails", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "base.txt"), "base");
