@@ -9,7 +9,7 @@ import { isAbsolute, resolve, sep } from "node:path";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
-import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
 
 export interface WorkspaceScopeEntry {
     pathBytes: Buffer;
@@ -76,6 +76,14 @@ export interface WorkspaceScopeManifest {
 }
 
 export type WorkspaceScopeBudgetExhaustion = { scope: "workspace-root" };
+
+export type IncrementalWorkspaceScopeEntry =
+    | WorkspaceScopeEntry
+    | { pathBytes: Buffer; path: string; kind: "absent"; tracked: boolean };
+
+export type IncrementalWorkspaceScopeResult =
+    | { status: "captured"; entries: IncrementalWorkspaceScopeEntry[] }
+    | { status: "reconcile"; reason: "scope-invalidated" | "unstable-path" | "unsafe-evidence" };
 
 interface IgnoreMatcher {
     basePathBytes: Buffer;
@@ -148,6 +156,7 @@ interface WorkspaceScopeAttempt {
 const ScopeGitTimeoutMs = 30_000;
 const IgnoreInputMaxBytes = 1024 * 1024;
 const Utf8Decoder = new TextDecoder("utf-8", { fatal: true });
+const IncrementalGitPathChunkBytes = 64 * 1024;
 
 class WorkspaceBudgetExceeded extends Error {
     constructor() {
@@ -165,6 +174,394 @@ export async function discoverWorkspaceScope(input: WorkspaceScopeInput): Promis
         }
     }
     throw new Error("Workspace changed repeatedly during scope discovery");
+}
+
+export async function classifyIncrementalWorkspacePaths(input: {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    scope: WorkspaceScopeManifest;
+    paths: readonly string[];
+    maxEntries: number;
+    maxUntrackedBytes: number;
+    signal?: AbortSignal;
+}): Promise<IncrementalWorkspaceScopeResult> {
+    if (input.paths.length === 0) return { status: "captured", entries: [] };
+    validateLimits(input.maxEntries, input.maxUntrackedBytes);
+    const paths = normalizeIncrementalPaths(input.paths);
+    if (paths.some((path) => invalidatesWorkspaceScope(path, input.scope))) {
+        return { status: "reconcile", reason: "scope-invalidated" };
+    }
+    try {
+        const rootBytes = Buffer.from(input.identity.canonicalRoot);
+        await verifyCanonicalWorkspaceIdentity(input.identity);
+        if (!(await verifyIncrementalScopeAuthority(rootBytes, input.scope, input.signal))) {
+            return { status: "reconcile", reason: "scope-invalidated" };
+        }
+        const candidates: IncrementalWorkspaceScopeEntry[] = [];
+        let visited = 0;
+        for (const path of paths) {
+            const result = await enumerateIncrementalPath(rootBytes, Buffer.from(path), input, () => {
+                visited += 1;
+                if (visited > input.maxEntries) throw new WorkspaceBudgetExceeded();
+            });
+            if (result === "scope-invalidated") return { status: "reconcile", reason: result };
+            if (result === "unsafe-evidence") return { status: "reconcile", reason: result };
+            candidates.push(...result);
+        }
+        const gitWorkspace = await isGitWorkspace(input);
+        const { tracked, ignored } = gitWorkspace
+            ? await classifyIncrementalGitPaths(
+                  input,
+                  candidates.map((entry) => entry.path!)
+              )
+            : {
+                  tracked: new Set<string>(),
+                  ignored: await classifyIncrementalIgnoredPaths(rootBytes, input.scope, candidates, input.signal),
+              };
+        const entries: IncrementalWorkspaceScopeEntry[] = [];
+        for (const candidate of candidates) {
+            const path = candidate.path!;
+            const isTracked = tracked.has(path);
+            if (ignored.has(path)) {
+                entries.push({ ...candidate, kind: "excluded", tracked: isTracked, exclusionReason: "ignored" });
+                continue;
+            }
+            if (candidate.kind === "file" && !isTracked && candidate.size! > input.maxUntrackedBytes) {
+                entries.push({
+                    ...candidate,
+                    kind: "excluded",
+                    tracked: false,
+                    exclusionReason: "oversized-untracked",
+                });
+                continue;
+            }
+            entries.push({ ...candidate, tracked: isTracked });
+        }
+        await verifyCanonicalWorkspaceIdentity(input.identity);
+        if (!(await verifyIncrementalScopeAuthority(rootBytes, input.scope, input.signal))) {
+            return { status: "reconcile", reason: "scope-invalidated" };
+        }
+        entries.sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes));
+        return { status: "captured", entries };
+    } catch (error) {
+        if (error instanceof WorkspaceBudgetExceeded) return { status: "reconcile", reason: "unsafe-evidence" };
+        if (isWorkspaceGitRunnerFailure(error, "aborted")) throw error;
+        if (isUnsafeIncrementalEvidence(error)) return { status: "reconcile", reason: "unsafe-evidence" };
+        if (isScopeInvalidation(error)) return { status: "reconcile", reason: "scope-invalidated" };
+        return { status: "reconcile", reason: "unstable-path" };
+    }
+}
+
+function normalizeIncrementalPaths(paths: readonly string[]): string[] {
+    const values = [...new Set(paths)];
+    for (const path of values) {
+        if (
+            !path ||
+            path.includes("\0") ||
+            path.includes("\\") ||
+            path.startsWith("/") ||
+            /^[A-Za-z]:/.test(path) ||
+            path.split("/").some((segment) => !segment || segment === "." || segment === "..") ||
+            Buffer.from(path).toString("utf8") !== path
+        ) {
+            throw new Error(`unsafe incremental path: ${path}`);
+        }
+    }
+    values.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+    const accepted = new Set<string>();
+    return values.filter((path) => {
+        let separator = path.indexOf("/");
+        while (separator >= 0) {
+            if (accepted.has(path.slice(0, separator))) return false;
+            separator = path.indexOf("/", separator + 1);
+        }
+        accepted.add(path);
+        return true;
+    });
+}
+
+function invalidatesWorkspaceScope(path: string, scope: WorkspaceScopeManifest): boolean {
+    if (path.split("/").includes(".git")) return true;
+    if (path.endsWith(".gitignore") && (path === ".gitignore" || path.endsWith("/.gitignore"))) return true;
+    if (
+        scope.ignoreInputs.some(
+            (entry) => entry.source === "gitignore" && manifestLocatorBytes(entry).equals(Buffer.from(path))
+        )
+    ) {
+        return true;
+    }
+    return scope.nestedRepositoryBoundaries.some((entry) => {
+        const boundary = decodePath(manifestLocatorBytes(entry));
+        return (
+            boundary != null &&
+            (path === boundary || path.startsWith(`${boundary}/`) || boundary.startsWith(`${path}/`))
+        );
+    });
+}
+
+async function verifyIncrementalScopeAuthority(
+    rootBytes: Buffer,
+    scope: WorkspaceScopeManifest,
+    signal?: AbortSignal
+): Promise<boolean> {
+    for (const input of scope.ignoreInputs) {
+        if (input.source === "gitignore") continue;
+        assertScopeActive(signal);
+        try {
+            const content = await readSafeIgnoreInput(platformPath(manifestLocatorBytes(input)), signal);
+            if (hashContent(content) !== input.contentHash) return false;
+        } catch (error) {
+            if (isMissing(error)) return false;
+            throw error;
+        }
+    }
+    return true;
+}
+
+async function enumerateIncrementalPath(
+    rootBytes: Buffer,
+    pathBytes: Buffer,
+    input: {
+        signal?: AbortSignal;
+        maxEntries: number;
+    },
+    visit: () => void
+): Promise<IncrementalWorkspaceScopeEntry[] | "scope-invalidated" | "unsafe-evidence"> {
+    assertScopeActive(input.signal);
+    const path = decodePath(pathBytes);
+    if (path == null) return "unsafe-evidence";
+    const parentBytes = dirnameBytes(pathBytes);
+    const parent = await readSafeIncrementalParent(rootBytes, parentBytes);
+    let metadata: BigIntStats;
+    try {
+        metadata = await lstat(absolutePath(rootBytes, pathBytes), { bigint: true });
+    } catch (error) {
+        if (!isMissing(error)) throw error;
+        assertSameDirectory(parent, await readDirectoryIdentity(absolutePath(rootBytes, parentBytes)));
+        return [{ pathBytes, path, kind: "absent", tracked: false }];
+    }
+    visit();
+    assertSameDirectory(parent, await readDirectoryIdentity(absolutePath(rootBytes, parentBytes)));
+    if (metadata.isSymbolicLink()) {
+        return [makeIncrementalScopeEntry(pathBytes, path, metadata, parent, "symlink")];
+    }
+    if (metadata.isFile()) {
+        if (metadata.nlink !== 1n) return "unsafe-evidence";
+        return [makeIncrementalScopeEntry(pathBytes, path, metadata, parent, "file")];
+    }
+    if (!metadata.isDirectory()) return "unsafe-evidence";
+    const before = await readDirectoryIdentity(absolutePath(rootBytes, pathBytes));
+    const children = await readBoundedDirectory(absolutePath(rootBytes, pathBytes), input.maxEntries + 1, input.signal);
+    children.sort((left, right) => Buffer.compare(left.name, right.name));
+    const entries: IncrementalWorkspaceScopeEntry[] = [];
+    for (const child of children) {
+        if (!Buffer.isBuffer(child.name)) return "unsafe-evidence";
+        if (child.name.equals(Buffer.from(".git")) || child.name.equals(Buffer.from(".gitignore"))) {
+            return "scope-invalidated";
+        }
+        const childPath = appendPath(pathBytes, child.name);
+        if (decodePath(childPath) == null) return "unsafe-evidence";
+        const result = await enumerateIncrementalPath(rootBytes, childPath, input, visit);
+        if (typeof result === "string") return result;
+        entries.push(...result);
+    }
+    assertSameDirectory(before, await readDirectoryIdentity(absolutePath(rootBytes, pathBytes)));
+    return entries;
+}
+
+async function readSafeIncrementalParent(rootBytes: Buffer, parentBytes: Buffer): Promise<DirectoryIdentity> {
+    let current: Buffer = Buffer.alloc(0);
+    let identity = await readDirectoryIdentity(rootBytes);
+    if (parentBytes.length === 0) return identity;
+    for (const segment of splitPathBytes(parentBytes)) {
+        current = appendPath(current, segment);
+        const metadata = await lstat(absolutePath(rootBytes, current), { bigint: true });
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+            throw new Error("unsafe incremental ancestor");
+        }
+        identity = {
+            dev: metadata.dev,
+            ino: metadata.ino,
+            birthtimeNs: metadata.birthtimeNs,
+            mtimeNs: metadata.mtimeNs,
+            ctimeNs: metadata.ctimeNs,
+        };
+    }
+    return identity;
+}
+
+function makeIncrementalScopeEntry(
+    pathBytes: Buffer,
+    path: string,
+    metadata: BigIntStats,
+    parent: DirectoryIdentity,
+    kind: "file" | "symlink"
+): WorkspaceScopeEntry {
+    return {
+        pathBytes,
+        path,
+        kind,
+        tracked: false,
+        ...(kind === "file" ? { executable: (metadata.mode & 0o111n) !== 0n } : {}),
+        size: Number(metadata.size),
+        parentIdentity: directoryIdentityEvidence(parent),
+        entryIdentity: entryIdentityEvidence(metadata),
+    };
+}
+
+async function isGitWorkspace(input: {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    signal?: AbortSignal;
+}): Promise<boolean> {
+    try {
+        const result = await input.git.run(["rev-parse", "--is-inside-work-tree"], {
+            cwd: input.identity.canonicalRoot,
+            timeoutMs: ScopeGitTimeoutMs,
+            signal: input.signal,
+        });
+        return stripLineEnding(result.stdout).toString("ascii") === "true";
+    } catch (error) {
+        if (isWorkspaceGitRunnerFailure(error, "nonzero_exit")) return false;
+        throw error;
+    }
+}
+
+async function classifyIncrementalGitPaths(
+    input: { identity: CanonicalWorkspaceIdentity; git: WorkspaceGitRunner; signal?: AbortSignal },
+    paths: string[]
+): Promise<{ tracked: Set<string>; ignored: Set<string> }> {
+    const tracked = new Set<string>();
+    for (const chunk of chunkGitPaths(paths)) {
+        const result = await input.git.run(["ls-files", "--cached", "-z", "--", ...chunk], {
+            cwd: input.identity.canonicalRoot,
+            timeoutMs: ScopeGitTimeoutMs,
+            signal: input.signal,
+        });
+        for (const path of splitNul(result.stdout)) tracked.add(decodeGitPath(path));
+    }
+    const ignored = new Set<string>();
+    for (const chunk of chunkGitPaths(paths)) {
+        let ignoredOutput: Buffer;
+        try {
+            ignoredOutput = (
+                await input.git.run(["check-ignore", "-z", "--stdin"], {
+                    cwd: input.identity.canonicalRoot,
+                    stdin: Buffer.concat(chunk.map((path) => Buffer.from(`${path}\0`))),
+                    timeoutMs: ScopeGitTimeoutMs,
+                    signal: input.signal,
+                })
+            ).stdout;
+        } catch (error) {
+            if (!isWorkspaceGitRunnerFailure(error, "nonzero_exit") || error.exitCode !== 1) {
+                throw error;
+            }
+            ignoredOutput = error.stdout;
+        }
+        for (const path of splitNul(ignoredOutput)) ignored.add(decodeGitPath(path));
+    }
+    return { tracked, ignored };
+}
+
+async function classifyIncrementalIgnoredPaths(
+    rootBytes: Buffer,
+    scope: WorkspaceScopeManifest,
+    entries: IncrementalWorkspaceScopeEntry[],
+    signal?: AbortSignal
+): Promise<Set<string>> {
+    const matchers: IgnoreMatcher[] = [];
+    for (const input of scope.ignoreInputs) {
+        if (input.source !== "gitignore") continue;
+        const pathBytes = manifestLocatorBytes(input);
+        const basePathBytes = dirnameBytes(pathBytes);
+        if (!entries.some((entry) => relativeToBase(basePathBytes, entry.pathBytes) != null)) continue;
+        const content = await readSafeIgnoreInput(absolutePath(rootBytes, pathBytes), signal);
+        matchers.push({
+            basePathBytes,
+            matcher: ignore().add(content.toString("utf8")),
+        });
+    }
+    const ignored = new Set<string>();
+    for (const entry of entries) {
+        let excluded = false;
+        for (const item of matchers) {
+            const relative = relativeToBase(item.basePathBytes, entry.pathBytes);
+            if (!relative) continue;
+            const result = item.matcher.test(relative);
+            if (result.ignored) excluded = true;
+            if (result.unignored) excluded = false;
+        }
+        if (excluded) ignored.add(entry.path!);
+    }
+    return ignored;
+}
+
+function chunkGitPaths(paths: string[]): string[][] {
+    const chunks: string[][] = [];
+    let current: string[] = [];
+    let bytes = 0;
+    for (const path of paths) {
+        const pathBytes = Buffer.byteLength(path) + 1;
+        if (current.length > 0 && bytes + pathBytes > IncrementalGitPathChunkBytes) {
+            chunks.push(current);
+            current = [];
+            bytes = 0;
+        }
+        current.push(path);
+        bytes += pathBytes;
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+}
+
+function decodeGitPath(path: Buffer): string {
+    const value = decodePath(path);
+    if (value == null) throw new Error("unsafe non-UTF-8 Git path evidence");
+    return value;
+}
+
+function dirnameBytes(path: Buffer): Buffer {
+    const separator = path.lastIndexOf(0x2f);
+    return separator < 0 ? Buffer.alloc(0) : path.subarray(0, separator);
+}
+
+function splitPathBytes(path: Buffer): Buffer[] {
+    if (path.length === 0) return [];
+    const parts: Buffer[] = [];
+    let start = 0;
+    for (let index = 0; index <= path.length; index++) {
+        if (index === path.length || path[index] === 0x2f) {
+            parts.push(path.subarray(start, index));
+            start = index + 1;
+        }
+    }
+    return parts;
+}
+
+function relativeToBase(base: Buffer, path: Buffer): string | undefined {
+    if (base.length === 0) return decodePath(path);
+    if (path.length <= base.length || !path.subarray(0, base.length).equals(base) || path[base.length] !== 0x2f) {
+        return undefined;
+    }
+    return decodePath(path.subarray(base.length + 1));
+}
+
+function isUnsafeIncrementalEvidence(error: unknown): boolean {
+    return error instanceof Error && /unsafe|non-UTF-8|capture budget/i.test(error.message);
+}
+
+function isScopeInvalidation(error: unknown): boolean {
+    return (
+        error instanceof Error &&
+        /workspace identity chain changed|canonical workspace identity chain/i.test(error.message)
+    );
+}
+
+function isWorkspaceGitRunnerFailure(
+    error: unknown,
+    code: WorkspaceGitRunnerError["code"]
+): error is WorkspaceGitRunnerError {
+    return error instanceof Error && error.name === "WorkspaceGitRunnerError" && "code" in error && error.code === code;
 }
 
 async function verifyWorkspaceScope(input: WorkspaceScopeInput, attempt: WorkspaceScopeAttempt): Promise<boolean> {

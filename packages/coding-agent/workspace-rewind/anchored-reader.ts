@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
+import { basename, dirname, join } from "node:path";
 
 import { waitForChildProcess } from "../tools/_child-process";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
@@ -37,6 +38,10 @@ export interface AnchoredReaderResult {
     hashedBytes: number;
 }
 
+export interface AnchoredReaderBatchEntry extends AnchoredReaderEntry {
+    parentIdentity: AnchoredReaderIdentity;
+}
+
 export class AnchoredReaderError extends Error {
     readonly code: "aborted" | "timeout" | "capture_budget" | "unstable_file" | "worker_failed";
 
@@ -49,6 +54,68 @@ export class AnchoredReaderError extends Error {
 
 const ReaderInputMaxBytes = 64 * 1024 ** 2;
 const ReaderOutputMaxBytes = 64 * 1024 ** 2;
+export const IncrementalReaderConcurrency = 8;
+
+export async function runAnchoredReaderBatch(input: {
+    rootPath: string;
+    entries: AnchoredReaderBatchEntry[];
+    maxSingleFileBytes: number;
+    maxTotalBytes: number;
+    timeoutMs: number;
+    signal: AbortSignal;
+}): Promise<AnchoredReaderResult[]> {
+    if (input.entries.length === 0) return [];
+    const entries = [...input.entries];
+    for (const entry of entries) {
+        if (basename(entry.path) !== entry.name) {
+            throw new AnchoredReaderError("worker_failed", "Anchored reader batch received an invalid path");
+        }
+    }
+    const maximumBytes = entries.reduce((total, entry) => total + Number(entry.identity.size), 0);
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes > input.maxTotalBytes) {
+        throw new AnchoredReaderError("capture_budget", "Anchored reader batch byte budget exceeded");
+    }
+    const groups = new Map<string, AnchoredReaderBatchEntry[]>();
+    for (const entry of entries) {
+        const parent = dirname(entry.path) === "." ? "" : dirname(entry.path);
+        const group = groups.get(parent) ?? [];
+        group.push(entry);
+        groups.set(parent, group);
+    }
+    const queue = [...groups.entries()];
+    const results: AnchoredReaderResult[] = [];
+    let cursor = 0;
+    const runWorker = async () => {
+        while (cursor < queue.length) {
+            const group = queue[cursor++]!;
+            const [parent, groupEntries] = group;
+            const parentIdentity = groupEntries[0]!.parentIdentity;
+            if (
+                groupEntries.some(
+                    (entry) =>
+                        entry.parentIdentity.dev !== parentIdentity.dev ||
+                        entry.parentIdentity.ino !== parentIdentity.ino ||
+                        entry.parentIdentity.birthtimeNs !== parentIdentity.birthtimeNs
+                )
+            ) {
+                throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
+            }
+            results.push(
+                ...(await runAnchoredReader({
+                    parentPath: parent ? join(input.rootPath, ...parent.split("/")) : input.rootPath,
+                    parentIdentity,
+                    entries: groupEntries,
+                    maxSingleFileBytes: input.maxSingleFileBytes,
+                    maxTotalBytes: input.maxTotalBytes,
+                    timeoutMs: input.timeoutMs,
+                    signal: input.signal,
+                }))
+            );
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(IncrementalReaderConcurrency, queue.length) }, () => runWorker()));
+    return results.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
+}
 
 export async function runAnchoredReader(input: {
     parentPath: string;

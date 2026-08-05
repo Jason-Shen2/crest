@@ -3,7 +3,7 @@
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmod, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -228,7 +228,6 @@ describe.sequential("WorkspaceGitRunner", () => {
         "config",
         "rev-parse",
         "ls-files",
-        "check-ignore",
         "hash-object",
         "mktree",
         "cat-file",
@@ -248,6 +247,26 @@ describe.sequential("WorkspaceGitRunner", () => {
         await expect(runner.run([subcommand], { timeoutMs: 100 })).rejects.toMatchObject({
             code: "spawn_failed",
         });
+    });
+
+    test("supports only the NUL-delimited check-ignore stdin form without Git literal pathspec injection", async () => {
+        const repository = join(root, "repository");
+        await mkdir(repository);
+        const runner = new WorkspaceGitRunner();
+        await runner.run(["init"], { cwd: repository, timeoutMs: 5_000 });
+        await writeFile(join(repository, ".gitignore"), "*.secret\n");
+        const paths = Buffer.from("literal[1].secret\0-leading.secret\0plain.txt\0");
+
+        const result = await runner.run(["check-ignore", "-z", "--stdin"], {
+            cwd: repository,
+            stdin: paths,
+            timeoutMs: 5_000,
+        });
+
+        expect(result.stdout).toEqual(Buffer.from("literal[1].secret\0-leading.secret\0"));
+        await expect(
+            runner.run(["check-ignore", "plain.txt"], { cwd: repository, timeoutMs: 5_000 })
+        ).rejects.toMatchObject({ code: "invalid_options" });
     });
 
     test.each(["read-tree", "checkout-index", "reset", "clean"])(

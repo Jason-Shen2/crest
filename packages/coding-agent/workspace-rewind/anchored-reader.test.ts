@@ -1,14 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renameSync, watch, writeFileSync } from "node:fs";
-import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { renameSync, watch, writeFileSync, type BigIntStats } from "node:fs";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { runAnchoredReader, type AnchoredReaderEntryIdentity, type AnchoredReaderIdentity } from "./anchored-reader";
+import {
+    IncrementalReaderConcurrency,
+    runAnchoredReader,
+    type AnchoredReaderEntryIdentity,
+    type AnchoredReaderIdentity,
+} from "./anchored-reader";
 
 const cleanupRoots: string[] = [];
 
@@ -19,6 +24,92 @@ afterEach(async () => {
 });
 
 describe("anchored reader", () => {
+    test("uses a fixed batch concurrency and starts no workers for no entries", async () => {
+        expect(IncrementalReaderConcurrency).toBe(8);
+        let spawnCount = 0;
+        vi.doMock("node:child_process", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:child_process")>();
+            return {
+                ...actual,
+                spawn: (...args: Parameters<typeof actual.spawn>) => {
+                    spawnCount += 1;
+                    return actual.spawn(...args);
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./anchored-reader");
+
+        await expect(
+            isolated.runAnchoredReaderBatch({
+                rootPath: "/unused",
+                entries: [],
+                maxSingleFileBytes: 1,
+                maxTotalBytes: 1,
+                timeoutMs: 1,
+                signal: new AbortController().signal,
+            })
+        ).resolves.toEqual([]);
+        expect(spawnCount).toBe(0);
+    });
+
+    test("runs parent groups with at most eight reader workers", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-anchored-batch-test-"));
+        cleanupRoots.push(root);
+        const entries = [];
+        for (let index = 0; index < 9; index++) {
+            const parentPath = join(root, `parent-${index}`);
+            const path = join(parentPath, "file.txt");
+            const stagingPath = join(root, `staging-${index}`);
+            await mkdir(parentPath);
+            await writeFile(path, "content");
+            const [parent, entry] = await Promise.all([
+                lstat(parentPath, { bigint: true }),
+                lstat(path, { bigint: true }),
+            ]);
+            entries.push({
+                path: `parent-${index}/file.txt`,
+                name: "file.txt",
+                kind: "file" as const,
+                stagingPath,
+                parentIdentity: identity(parent),
+                identity: entryIdentity(entry),
+            });
+        }
+        let active = 0;
+        let peak = 0;
+        vi.doMock("node:child_process", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("node:child_process")>();
+            return {
+                ...actual,
+                spawn: (...args: Parameters<typeof actual.spawn>) => {
+                    const child = actual.spawn(...args);
+                    active += 1;
+                    peak = Math.max(peak, active);
+                    child.once("exit", () => {
+                        active -= 1;
+                    });
+                    return child;
+                },
+            };
+        });
+        vi.resetModules();
+        const isolated = await import("./anchored-reader");
+
+        const result = await isolated.runAnchoredReaderBatch({
+            rootPath: root,
+            entries,
+            maxSingleFileBytes: 1024,
+            maxTotalBytes: 1024,
+            timeoutMs: 5_000,
+            signal: new AbortController().signal,
+        });
+
+        expect(result).toHaveLength(9);
+        expect(peak).toBeLessThanOrEqual(IncrementalReaderConcurrency);
+        expect(peak).toBeGreaterThan(1);
+    });
+
     test("rehashes a same-size rewrite when an otherwise identical fingerprint is inside the racy window", async () => {
         const fixture = await makeReaderFixture("racy.txt", "other");
         const result = await runAnchoredReader({
@@ -213,5 +304,24 @@ async function makeReaderFixture(name: string, content: string) {
             timeoutMs: 5_000,
             signal: new AbortController().signal,
         },
+    };
+}
+
+function identity(value: BigIntStats): AnchoredReaderIdentity {
+    return {
+        dev: value.dev.toString(),
+        ino: value.ino.toString(),
+        birthtimeNs: value.birthtimeNs.toString(),
+    };
+}
+
+function entryIdentity(value: BigIntStats): AnchoredReaderEntryIdentity {
+    return {
+        ...identity(value),
+        mode: value.mode.toString(),
+        nlink: value.nlink.toString(),
+        size: value.size.toString(),
+        mtimeNs: value.mtimeNs.toString(),
+        ctimeNs: value.ctimeNs.toString(),
     };
 }

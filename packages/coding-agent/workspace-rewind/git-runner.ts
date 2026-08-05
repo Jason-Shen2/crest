@@ -102,6 +102,7 @@ export class WorkspaceGitRunner {
 
     async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
         const limits = validateOptions(args, options);
+        const checkIgnoreStdin = isCheckIgnoreStdin(args);
         if (options.signal?.aborted) {
             throw makeError("aborted");
         }
@@ -123,7 +124,7 @@ export class WorkspaceGitRunner {
             ...(options.workTree == null ? [] : [`--work-tree=${options.workTree}`]),
             ...args,
         ];
-        const env = makeIsolatedEnv(options.gitDir == null, securePaths.globalConfig);
+        const env = makeIsolatedEnv(options.gitDir == null, securePaths.globalConfig, !checkIgnoreStdin);
         let child;
 
         try {
@@ -143,7 +144,6 @@ export class WorkspaceGitRunner {
         let stdoutBytes = 0;
         let stderrBytes = 0;
         let terminalError: WorkspaceGitRunnerError | undefined;
-        let timeout: NodeJS.Timeout | undefined;
 
         const snapshot = (): GitRunResult => ({
             stdout: Buffer.concat(stdoutChunks, stdoutBytes),
@@ -204,7 +204,7 @@ export class WorkspaceGitRunner {
         if (options.signal?.aborted) {
             onAbort();
         }
-        timeout = setTimeout(() => terminate("timeout"), options.timeoutMs);
+        const timeout = setTimeout(() => terminate("timeout"), options.timeoutMs);
 
         try {
             try {
@@ -256,6 +256,9 @@ function validateOptions(
     if (!ApprovedGitSubcommands.has(args[0])) {
         throw makeError("invalid_options");
     }
+    if (args[0] === "check-ignore" && !isCheckIgnoreStdin(args)) {
+        throw makeError("invalid_options");
+    }
     if (options == null || !isNonnegativeSafeInteger(options.timeoutMs) || options.timeoutMs > MaxTimeoutMs) {
         throw makeError("invalid_options");
     }
@@ -269,6 +272,9 @@ function validateOptions(
         throw makeError("invalid_options");
     }
     if (options.stdin != null && !Buffer.isBuffer(options.stdin)) {
+        throw makeError("invalid_options");
+    }
+    if (isCheckIgnoreStdin(args) && !isValidNulDelimitedPaths(options.stdin)) {
         throw makeError("invalid_options");
     }
 
@@ -291,14 +297,29 @@ function isValidLimit(value: number, hardCap: number): boolean {
     return isNonnegativeSafeInteger(value) && value <= hardCap;
 }
 
-function makeIsolatedEnv(discovery: boolean, globalConfigPath: string): NodeJS.ProcessEnv {
+function isCheckIgnoreStdin(args: readonly string[]): boolean {
+    return args.length === 3 && args[0] === "check-ignore" && args[1] === "-z" && args[2] === "--stdin";
+}
+
+function isValidNulDelimitedPaths(value: Buffer | undefined): boolean {
+    if (!value || value.length === 0 || value.at(-1) !== 0) return false;
+    let previous = -1;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        if (index === previous + 1) return false;
+        previous = index;
+    }
+    return true;
+}
+
+function makeIsolatedEnv(discovery: boolean, globalConfigPath: string, literalPathspecs: boolean): NodeJS.ProcessEnv {
     const env = Object.fromEntries(
         Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))
     );
     return {
         ...env,
         GIT_TERMINAL_PROMPT: "0",
-        GIT_LITERAL_PATHSPECS: "1",
+        ...(literalPathspecs ? { GIT_LITERAL_PATHSPECS: "1" } : {}),
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: globalConfigPath,
         GIT_ATTR_NOSYSTEM: "1",
