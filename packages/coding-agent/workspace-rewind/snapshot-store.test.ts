@@ -1077,6 +1077,47 @@ describe("workspace snapshots", () => {
         expect(reverse.coverage).toEqual(forward.coverage);
     });
 
+    test("preserves a safe near-limit coverage count across offsetting changes", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "y-delete.txt"), "y");
+        await writeFile(join(fixture.workspace, "z-delete.txt"), "z");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const nearLimitCoverage: WorkspaceSnapshotCoverage = {
+            ...captured.coverage,
+            eligibleEntryCount: Number.MAX_SAFE_INTEGER,
+        };
+        const base = await convertSnapshotToV2(fixture, captured.ref, nearLimitCoverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, nearLimitCoverage);
+        const a = await writeTestBlob(fixture, Buffer.from("a"));
+        const b = await writeTestBlob(fixture, Buffer.from("b"));
+
+        const result = await fixture.store.commitIncrementalSnapshot({
+            ...input,
+            mutations: [
+                { path: "a-create.txt", state: { state: "file", oid: a, executable: false } },
+                { path: "b-create.txt", state: { state: "file", oid: b, executable: false } },
+                { path: "y-delete.txt", state: { state: "absent" } },
+                { path: "z-delete.txt", state: { state: "absent" } },
+            ],
+        });
+
+        expect(result.coverage.eligibleEntryCount).toBe(Number.MAX_SAFE_INTEGER);
+    });
+
+    test("reports invalid incremental input as a rejected promise without acquiring the lock", async () => {
+        const fixture = await makeStoreFixture();
+        const runExclusive = vi.spyOn(fixture.store.mutationLock, "runExclusive");
+        let result!: Promise<unknown>;
+
+        expect(() => {
+            result = fixture.store.commitIncrementalSnapshot({} as never);
+        }).not.toThrow();
+        expect(runExclusive).not.toHaveBeenCalled();
+        await expect(result).rejects.toThrow(/invalid incremental snapshot commit input/i);
+        expect(runExclusive).not.toHaveBeenCalled();
+    });
+
     test("hard-blocks a v1 incremental base before writing or publishing objects", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "base.txt"), "base");

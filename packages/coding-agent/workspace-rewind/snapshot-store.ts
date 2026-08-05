@@ -257,7 +257,7 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#captureUnlocked(options));
     }
 
-    commitIncrementalSnapshot(input: {
+    async commitIncrementalSnapshot(input: {
         base: WorkspaceSnapshotRefV1;
         mutations: IncrementalPathMutation[];
         scope: WorkspaceScopeManifest;
@@ -2216,7 +2216,7 @@ function deriveIncrementalCoverage(
     base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
     changes: readonly WorkspacePathChangeV1[]
 ): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
-    let eligibleEntryCount = base.eligibleEntryCount;
+    let eligibleEntryDelta = 0;
     const pathExclusions = new Map<
         string,
         Extract<WorkspaceSnapshotCoverage["exclusions"][number], { path: string }>
@@ -2230,7 +2230,10 @@ function deriveIncrementalCoverage(
         }
     }
     for (const change of changes) {
-        eligibleEntryCount += Number(isEligiblePathState(change.after)) - Number(isEligiblePathState(change.before));
+        eligibleEntryDelta += Number(isEligiblePathState(change.after)) - Number(isEligiblePathState(change.before));
+        if (!Number.isSafeInteger(eligibleEntryDelta)) {
+            throw new Error("Incremental snapshot coverage is invalid");
+        }
         if (change.before.state === "excluded") pathExclusions.delete(change.path);
         if (change.after.state === "excluded") {
             pathExclusions.set(change.path, {
@@ -2239,6 +2242,7 @@ function deriveIncrementalCoverage(
             });
         }
     }
+    const eligibleEntryCount = base.eligibleEntryCount + eligibleEntryDelta;
     if (!Number.isSafeInteger(eligibleEntryCount) || eligibleEntryCount < 0) {
         throw new Error("Incremental snapshot coverage is invalid");
     }
