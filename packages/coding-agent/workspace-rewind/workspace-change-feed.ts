@@ -74,6 +74,7 @@ interface FeedState {
     callbackPaths: Set<string>;
     callbackPathCapacity: number;
     continuityGeneration: number;
+    transitionQueue: Promise<void>;
     trackerIdentity?: AnchoredJournalDirectoryIdentity;
     gapReason?: "query-failed" | "unsafe-path";
     subscription?: WorkspaceChangeSubscription;
@@ -112,13 +113,19 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
             callbackPaths: new Set(),
             callbackPathCapacity,
             continuityGeneration: 0,
+            transitionQueue: Promise.resolve(),
             disposed: false,
             initialized: false,
             testHooks: options.testHooks,
         });
     }
 
-    async prepareForReconcile(): Promise<void> {
+    prepareForReconcile(): Promise<void> {
+        const state = getState(this);
+        return enqueueTransition(state, () => this.prepareForReconcileUnlocked());
+    }
+
+    async prepareForReconcileUnlocked(): Promise<void> {
         const state = getState(this);
         if (state.disposed) {
             setGap(state, "query-failed");
@@ -179,7 +186,12 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         }
     }
 
-    async initializeAfterReconcile(): Promise<void> {
+    initializeAfterReconcile(): Promise<void> {
+        const state = getState(this);
+        return enqueueTransition(state, () => this.initializeAfterReconcileUnlocked());
+    }
+
+    async initializeAfterReconcileUnlocked(): Promise<void> {
         const state = getState(this);
         const prepared = state.preparedCursor;
         if (!prepared || state.disposed) {
@@ -233,7 +245,12 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         }
     }
 
-    async readChanges(): Promise<WorkspaceChangeRead> {
+    readChanges(): Promise<WorkspaceChangeRead> {
+        const state = getState(this);
+        return enqueueTransition(state, () => this.readChangesUnlocked());
+    }
+
+    async readChangesUnlocked(): Promise<WorkspaceChangeRead> {
         const state = getState(this);
         if (!state.initialized) return state.gapReason ? gap(state) : { status: "gap", reason: "cold-start" };
         let committed: AnchoredWorkspaceCursor | undefined;
@@ -315,7 +332,12 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         };
     }
 
-    async commitCursor(candidateCursor: string): Promise<void> {
+    commitCursor(candidateCursor: string): Promise<void> {
+        const state = getState(this);
+        return enqueueTransition(state, () => this.commitCursorUnlocked(candidateCursor));
+    }
+
+    async commitCursorUnlocked(candidateCursor: string): Promise<void> {
         const state = getState(this);
         const candidate = state.candidate;
         if (
@@ -351,7 +373,12 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         state.callbackPaths.clear();
     }
 
-    async advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
+    advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
+        const state = getState(this);
+        return enqueueTransition(state, () => this.advanceCandidateUnlocked(candidateCursor));
+    }
+
+    async advanceCandidateUnlocked(candidateCursor: string): Promise<WorkspaceChangeRead> {
         const state = getState(this);
         const current = state.candidate;
         if (
@@ -418,9 +445,18 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         if (state.disposePromise) return state.disposePromise;
         state.disposed = true;
         state.continuityGeneration++;
-        state.disposePromise = disposeState(state);
+        state.disposePromise = enqueueTransition(state, () => disposeState(state));
         return state.disposePromise;
     }
+}
+
+function enqueueTransition<T>(state: FeedState, operation: () => Promise<T>): Promise<T> {
+    const result = state.transitionQueue.then(operation);
+    state.transitionQueue = result.then(
+        () => undefined,
+        () => undefined
+    );
+    return result;
 }
 
 async function ensureSubscription(state: FeedState): Promise<WorkspaceChangeSubscription> {

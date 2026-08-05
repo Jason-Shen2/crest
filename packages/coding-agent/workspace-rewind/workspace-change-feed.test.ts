@@ -30,12 +30,12 @@ import {
 
 class FakeWatcher implements WorkspaceChangeWatcher {
     callback?: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown;
-    events: WorkspaceChangeEvent[] = [];
+    eventLog: Array<{ sequence: number; event: WorkspaceChangeEvent }> = [];
+    eventSequence = 0;
     queryError?: Error;
     querySnapshots: string[] = [];
     onQuery?: () => void;
     onSnapshot?: () => void;
-    snapshot = 0;
     snapshotGate?: Promise<void>;
     snapshotStarted?: () => void;
     subscribeError?: Error;
@@ -44,18 +44,30 @@ class FakeWatcher implements WorkspaceChangeWatcher {
     unsubscribeGate?: Promise<void>;
     unsubscribeCalls = 0;
 
+    set events(events: WorkspaceChangeEvent[]) {
+        for (const event of events) this.eventLog.push({ sequence: ++this.eventSequence, event });
+    }
+
+    get events(): WorkspaceChangeEvent[] {
+        return this.eventLog.map((entry) => entry.event);
+    }
+
     async getEventsSince(_directory: string, snapshot: string): Promise<WorkspaceChangeEvent[]> {
         if (this.queryError) throw this.queryError;
         this.onQuery?.();
-        this.querySnapshots.push(await readFile(snapshot, "utf8"));
-        return [...this.events];
+        const snapshotSequence = Number.parseInt(await readFile(snapshot, "utf8"), 10);
+        this.querySnapshots.push(String(snapshotSequence));
+        return this.eventLog.filter((entry) => entry.sequence > snapshotSequence).map((entry) => entry.event);
     }
 
     async subscribe(_directory: string, callback: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown) {
         if (this.subscribeError) throw this.subscribeError;
         this.subscribeStarted?.();
         await this.subscribeGate;
-        this.callback = callback;
+        this.callback = (error, events) => {
+            if (!error) this.events = [...events];
+            return callback(error, events);
+        };
         return {
             unsubscribe: async () => {
                 this.unsubscribeCalls++;
@@ -69,7 +81,7 @@ class FakeWatcher implements WorkspaceChangeWatcher {
         this.onSnapshot?.();
         this.snapshotStarted?.();
         await this.snapshotGate;
-        await writeFile(snapshotPath, String(++this.snapshot), { mode: 0o600 });
+        await writeFile(snapshotPath, String(this.eventSequence), { mode: 0o600 });
         return snapshotPath;
     }
 }
@@ -277,7 +289,7 @@ describe("ParcelWorkspaceChangeFeed", () => {
         });
         if (advanced.status !== "complete") return;
         expect(advanced.candidateCursor).not.toBe(first.candidateCursor);
-        expect(watcher.querySnapshots.at(-1)).toBe("3");
+        expect(watcher.querySnapshots.at(-1)).toBe("1");
         expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([
             `candidate-${advanced.candidateCursor}.cursor`,
         ]);
@@ -479,6 +491,113 @@ describe("ParcelWorkspaceChangeFeed", () => {
         expect(secondFinished).toBe(false);
         release();
         await Promise.all([first, second]);
+        expect(watcher.unsubscribeCalls).toBe(1);
+    });
+
+    test("serializes concurrent reads to one live candidate owner", async () => {
+        await reconcile(feed);
+        watcher.events = [{ type: "update", path: join(workspaceRoot, "a.txt") }];
+        let releaseSnapshot!: () => void;
+        let signalSnapshotStarted!: () => void;
+        watcher.snapshotGate = new Promise<void>((resolve) => {
+            releaseSnapshot = resolve;
+        });
+        const snapshotStarted = new Promise<void>((resolve) => {
+            signalSnapshotStarted = resolve;
+        });
+        watcher.snapshotStarted = signalSnapshotStarted;
+
+        const first = feed.readChanges();
+        await snapshotStarted;
+        const second = feed.readChanges();
+        releaseSnapshot();
+        const reads = await Promise.all([first, second]);
+
+        expect(reads.every((read) => read.status === "complete")).toBe(true);
+        expect(
+            (await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))
+        ).toHaveLength(1);
+    });
+
+    test("serializes read then reconcile preparation and removes the read candidate", async () => {
+        await reconcile(feed);
+        let releaseSnapshot!: () => void;
+        let signalSnapshotStarted!: () => void;
+        watcher.snapshotGate = new Promise<void>((resolve) => {
+            releaseSnapshot = resolve;
+        });
+        const snapshotStarted = new Promise<void>((resolve) => {
+            signalSnapshotStarted = resolve;
+        });
+        watcher.snapshotStarted = signalSnapshotStarted;
+
+        const reading = feed.readChanges();
+        await snapshotStarted;
+        const preparing = feed.prepareForReconcile();
+        releaseSnapshot();
+
+        await expect(reading).resolves.toMatchObject({ status: "complete" });
+        await expect(preparing).resolves.toBeUndefined();
+        const artifacts = await readdir(join(storeRoot, "tracker"));
+        expect(artifacts.filter((name) => name.startsWith("candidate-"))).toEqual([]);
+        expect(artifacts).toContain("reconcile.cursor");
+    });
+
+    test("serializes candidate advance before a concurrent stale commit without leaking ownership", async () => {
+        await reconcile(feed);
+        watcher.events = [{ type: "update", path: join(workspaceRoot, "a.txt") }];
+        const first = await feed.readChanges();
+        if (first.status !== "complete") throw new Error("expected complete read");
+        watcher.events = [{ type: "update", path: join(workspaceRoot, "a.txt") }];
+        let releaseSnapshot!: () => void;
+        let signalSnapshotStarted!: () => void;
+        watcher.snapshotGate = new Promise<void>((resolve) => {
+            releaseSnapshot = resolve;
+        });
+        const snapshotStarted = new Promise<void>((resolve) => {
+            signalSnapshotStarted = resolve;
+        });
+        watcher.snapshotStarted = signalSnapshotStarted;
+
+        const advancing = feed.advanceCandidate(first.candidateCursor);
+        await snapshotStarted;
+        const committing = feed.commitCursor(first.candidateCursor).then(
+            () => ({ status: "fulfilled" as const }),
+            (error) => ({ status: "rejected" as const, error })
+        );
+        releaseSnapshot();
+        const advanced = await advancing;
+        const commit = await committing;
+
+        expect(advanced).toMatchObject({ status: "complete", changedPaths: ["a.txt"] });
+        expect(commit).toMatchObject({ status: "rejected", error: expect.any(Error) });
+        if (advanced.status !== "complete") return;
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([
+            `candidate-${advanced.candidateCursor}.cursor`,
+        ]);
+        await feed.commitCursor(advanced.candidateCursor);
+    });
+
+    test("fences an in-flight read immediately on dispose and joins candidate cleanup", async () => {
+        await reconcile(feed);
+        let releaseSnapshot!: () => void;
+        let signalSnapshotStarted!: () => void;
+        watcher.snapshotGate = new Promise<void>((resolve) => {
+            releaseSnapshot = resolve;
+        });
+        const snapshotStarted = new Promise<void>((resolve) => {
+            signalSnapshotStarted = resolve;
+        });
+        watcher.snapshotStarted = signalSnapshotStarted;
+
+        const reading = feed.readChanges();
+        await snapshotStarted;
+        const disposing = feed.dispose();
+        releaseSnapshot();
+
+        await expect(reading).resolves.toMatchObject({ status: "gap" });
+        await expect(disposing).resolves.toBeUndefined();
+        expect((await readdir(join(storeRoot, "tracker"))).filter((name) => name.startsWith("candidate-"))).toEqual([]);
         expect(watcher.unsubscribeCalls).toBe(1);
     });
 

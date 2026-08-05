@@ -1,11 +1,10 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { createHash } from "node:crypto";
-import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
 
-import { encodeDurableJson, writeDurableJson } from "./durability";
+import { encodeDurableJson } from "./durability";
+import { readAnchoredJournalEntry, writeAnchoredJournalEntry } from "./journal-directory";
 import { validateWorkspaceRelativePath } from "./stored-manifest";
 import type {
     WorkspaceCoverageReason,
@@ -13,10 +12,14 @@ import type {
     WorkspaceSnapshotCoverageExclusion,
     WorkspaceSnapshotRefV1,
 } from "./types";
+import { readAnchoredCursor, sameCursor, sameDirectoryIdentity } from "./workspace-change-feed-storage";
 
 const OidPattern = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const IdentityPattern = /^[0-9a-f]{64}$/;
 const CursorHashPattern = /^[0-9a-f]{64}$/;
+const CommittedCursorName = "committed.cursor";
+const TrackerStateName = "state-v1.json";
+const MaximumTrackerStateBytes = 1024 * 1024;
 const CoverageReasons = new Set<WorkspaceCoverageReason>([
     "ignored",
     "nested-repository",
@@ -40,6 +43,12 @@ export interface WorkspaceTrackerStateSnapshotVerifier {
     verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
 }
 
+export interface WorkspaceTrackerStateTestHooks {
+    afterCursorRead?(): void | Promise<void>;
+    afterPublishRead?(): void | Promise<void>;
+    afterStateWrite?(): void | Promise<void>;
+}
+
 export type LoadedWorkspaceTrackerState =
     | {
           status: "trusted";
@@ -53,10 +62,23 @@ export async function loadWorkspaceTrackerState(input: {
     workspaceIdentity: string;
     workspaceIncarnation: string;
     verifier: WorkspaceTrackerStateSnapshotVerifier;
+    testHooks?: WorkspaceTrackerStateTestHooks;
 }): Promise<LoadedWorkspaceTrackerState> {
     try {
         validateLocation(input.storeRoot, input.workspaceIdentity, input.workspaceIncarnation);
-        const stateBytes = await readPrivateRegularFile(statePath(input.storeRoot));
+        const root = trackerRoot(input.storeRoot);
+        const cursor = await readAnchoredCursor(root, CommittedCursorName);
+        if (!cursor) return { status: "untrusted" };
+        await input.testHooks?.afterCursorRead?.();
+        const storedState = await readAnchoredJournalEntry({
+            root,
+            name: TrackerStateName,
+            maximumEntryBytes: MaximumTrackerStateBytes,
+        });
+        if (!storedState?.entry || !sameDirectoryIdentity(storedState.identity, cursor.rootIdentity)) {
+            return { status: "untrusted" };
+        }
+        const stateBytes = storedState.entry.bytes;
         const value: unknown = JSON.parse(stateBytes.toString("utf8"));
         if (!encodeDurableJson(value).equals(stateBytes)) return { status: "untrusted" };
         const state = decodeState(value);
@@ -68,10 +90,10 @@ export async function loadWorkspaceTrackerState(input: {
         ) {
             return { status: "untrusted" };
         }
-        const cursor = await readPrivateRegularFile(committedCursorPath(input.storeRoot));
-        if (sha256(cursor) !== state.cursorhash) return { status: "untrusted" };
+        if (cursor.hash !== state.cursorhash) return { status: "untrusted" };
         await input.verifier.verifyOwnedSnapshot(state.current);
-        if (sha256(await readPrivateRegularFile(committedCursorPath(input.storeRoot))) !== state.cursorhash) {
+        const verifiedCursor = await readAnchoredCursor(root, CommittedCursorName);
+        if (!verifiedCursor || !sameCursor(verifiedCursor, cursor)) {
             return { status: "untrusted" };
         }
         return { status: "trusted", current: state.current, coverage: state.coverage };
@@ -86,6 +108,7 @@ export async function publishWorkspaceTrackerState(input: {
     workspaceIncarnation: string;
     current: WorkspaceSnapshotRefV1;
     coverage: WorkspaceSnapshotCoverage | Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    testHooks?: WorkspaceTrackerStateTestHooks;
 }): Promise<void> {
     validateLocation(input.storeRoot, input.workspaceIdentity, input.workspaceIncarnation);
     if (
@@ -95,8 +118,18 @@ export async function publishWorkspaceTrackerState(input: {
         throw new Error("Workspace tracker snapshot identity mismatch");
     }
     validateSnapshot(input.current);
-    const cursorPath = committedCursorPath(input.storeRoot);
-    const cursorHash = sha256(await readPrivateRegularFile(cursorPath));
+    const root = trackerRoot(input.storeRoot);
+    const cursor = await readAnchoredCursor(root, CommittedCursorName);
+    if (!cursor) throw new Error("Workspace tracker committed cursor is missing");
+    const existingState = await readAnchoredJournalEntry({
+        root,
+        name: TrackerStateName,
+        maximumEntryBytes: MaximumTrackerStateBytes,
+    });
+    if (!existingState || !sameDirectoryIdentity(existingState.identity, cursor.rootIdentity)) {
+        throw new Error("Workspace tracker directory changed during state publication");
+    }
+    await input.testHooks?.afterPublishRead?.();
     const coverage = cloneCoverage(input.coverage);
     const wire = {
         schemaversion: 1,
@@ -114,10 +147,30 @@ export async function publishWorkspaceTrackerState(input: {
             eligibleentrycount: coverage.eligibleEntryCount,
             exclusions: coverage.exclusions.map(toWireExclusion),
         },
-        cursorhash: cursorHash,
+        cursorhash: cursor.hash,
     };
-    await writeDurableJson(statePath(input.storeRoot), wire);
-    if (sha256(await readPrivateRegularFile(cursorPath)) !== cursorHash) {
+    const stateBytes = encodeDurableJson(wire);
+    if (stateBytes.length > MaximumTrackerStateBytes) throw new Error("Workspace tracker state exceeds maximum size");
+    await writeAnchoredJournalEntry({
+        root,
+        rootIdentity: cursor.rootIdentity,
+        destinationName: TrackerStateName,
+        bytes: stateBytes,
+        expectedDestination: existingState.entry,
+    });
+    await input.testHooks?.afterStateWrite?.();
+    const [publishedState, publishedCursor] = await Promise.all([
+        readAnchoredJournalEntry({ root, name: TrackerStateName, maximumEntryBytes: MaximumTrackerStateBytes }),
+        readAnchoredCursor(root, CommittedCursorName),
+    ]);
+    if (
+        !publishedState?.entry ||
+        !publishedState.entry.bytes.equals(stateBytes) ||
+        !sameDirectoryIdentity(publishedState.identity, cursor.rootIdentity)
+    ) {
+        throw new Error("Workspace tracker state publication failed validation");
+    }
+    if (!publishedCursor || !sameCursor(publishedCursor, cursor)) {
         throw new Error("Workspace tracker cursor changed during state publication");
     }
 }
@@ -241,29 +294,6 @@ function toWireExclusion(exclusion: WorkspaceSnapshotCoverageExclusion): Record<
     return { scope: exclusion.scope, reason: exclusion.reason };
 }
 
-async function readPrivateRegularFile(path: string): Promise<Buffer> {
-    const before = await lstat(path, { bigint: true });
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || (before.mode & 0o077n) !== 0n) {
-        throw new Error("Workspace tracker file is not private regular storage");
-    }
-    const bytes = await readFile(path);
-    const after = await lstat(path, { bigint: true });
-    if (
-        !after.isFile() ||
-        after.dev !== before.dev ||
-        after.ino !== before.ino ||
-        after.birthtimeNs !== before.birthtimeNs ||
-        after.size !== before.size ||
-        after.mtimeNs !== before.mtimeNs ||
-        after.ctimeNs !== before.ctimeNs ||
-        after.nlink !== 1n ||
-        (after.mode & 0o077n) !== 0n
-    ) {
-        throw new Error("Workspace tracker file changed while reading");
-    }
-    return bytes;
-}
-
 function validateLocation(storeRoot: string, workspaceIdentity: string, workspaceIncarnation: string): void {
     if (!isAbsolute(storeRoot) || normalize(storeRoot) !== storeRoot) throw new Error("Invalid tracker store root");
     if (!IdentityPattern.test(workspaceIdentity) || !IdentityPattern.test(workspaceIncarnation)) {
@@ -285,16 +315,8 @@ function validateSnapshot(snapshot: WorkspaceSnapshotRefV1): void {
     }
 }
 
-function statePath(storeRoot: string): string {
-    return join(storeRoot, "tracker", "state-v1.json");
-}
-
-function committedCursorPath(storeRoot: string): string {
-    return join(storeRoot, "tracker", "committed.cursor");
-}
-
-function sha256(bytes: Buffer): string {
-    return createHash("sha256").update(bytes).digest("hex");
+function trackerRoot(storeRoot: string): string {
+    return join(storeRoot, "tracker");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

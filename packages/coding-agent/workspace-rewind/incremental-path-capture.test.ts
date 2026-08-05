@@ -11,7 +11,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
-import { IncrementalPathCapture, materializeIncrementalCapturedBatch } from "./incremental-path-capture";
+import {
+    IncrementalPathCapture,
+    materializeIncrementalCapturedBatch,
+    type IncrementalPathCaptureResult,
+} from "./incremental-path-capture";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -35,6 +39,7 @@ describe("IncrementalPathCapture", () => {
     });
 
     afterEach(async () => {
+        vi.useRealTimers();
         await Promise.all(capturesForCleanup.splice(0).map((capture) => capture.dispose()));
         vi.doUnmock("node:child_process");
         vi.doUnmock("node:fs/promises");
@@ -107,6 +112,36 @@ describe("IncrementalPathCapture", () => {
         capturesForCleanup.push(expired);
         await expect(expired.capture([])).rejects.toMatchObject({ code: "timeout" });
         expect(expired.pendingBatches.size).toBe(0);
+    });
+
+    test("allows a per-call terminal deadline to exceed a pre-turn constructor deadline", async () => {
+        vi.useFakeTimers();
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        const capture = new IncrementalPathCapture({ ...fixture.options, timeoutMs: 5_000 });
+        capturesForCleanup.push(capture);
+        vi.spyOn(capture, "captureActive").mockImplementation(
+            async (_paths, signal) =>
+                await new Promise<IncrementalPathCaptureResult>((resolve, reject) => {
+                    const timer = setTimeout(
+                        () => resolve({ status: "captured", mutations: [], newlyHashedBytes: 0 }),
+                        6_000
+                    );
+                    signal.addEventListener(
+                        "abort",
+                        () => {
+                            clearTimeout(timer);
+                            reject(signal.reason);
+                        },
+                        { once: true }
+                    );
+                })
+        );
+
+        const pending = capture.capture([], undefined, 30_000);
+        const assertion = expect(pending).resolves.toEqual({ status: "captured", mutations: [], newlyHashedBytes: 0 });
+        await vi.advanceTimersByTimeAsync(6_000);
+
+        await assertion;
     });
 
     test("waits for an active consumer before dispose can clean its staging", async () => {

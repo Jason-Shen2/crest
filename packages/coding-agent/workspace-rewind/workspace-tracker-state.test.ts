@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -111,19 +111,81 @@ describe("workspace tracker state", () => {
 
         await expect(loadWorkspaceTrackerState(fixture.loadInput)).resolves.toEqual({ status: "untrusted" });
     });
+
+    test("rejects an anchored state publication when the expected destination changes", async () => {
+        const fixture = await makePublishedFixture();
+
+        await expect(
+            publishWorkspaceTrackerState({
+                ...fixture.publishInput,
+                testHooks: {
+                    afterPublishRead: async () => writeFile(fixture.statePath, "tampered", { mode: 0o600 }),
+                },
+            })
+        ).rejects.toThrow(/destination|changed/i);
+
+        await expect(readFile(fixture.statePath, "utf8")).resolves.toBe("tampered");
+    });
+
+    test("rejects when the committed cursor changes after anchored state publication", async () => {
+        const fixture = await makeFixture();
+
+        await expect(
+            publishWorkspaceTrackerState({
+                ...fixture.publishInput,
+                testHooks: {
+                    afterStateWrite: async () => writeFile(fixture.cursorPath, "cursor-v2\n", { mode: 0o600 }),
+                },
+            })
+        ).rejects.toThrow(/cursor.*changed/i);
+    });
+
+    test("treats a tracker directory replacement between cursor and state reads as untrusted", async () => {
+        const fixture = await makePublishedFixture();
+        const held = join(fixture.root, "held-tracker");
+        const replacement = join(fixture.root, "replacement-tracker");
+
+        await expect(
+            loadWorkspaceTrackerState({
+                ...fixture.loadInput,
+                testHooks: {
+                    afterCursorRead: async () => {
+                        await rename(fixture.trackerRoot, held);
+                        await mkdir(replacement, { mode: 0o700 });
+                        await copyFile(join(held, "committed.cursor"), join(replacement, "committed.cursor"));
+                        await copyFile(join(held, "state-v1.json"), join(replacement, "state-v1.json"));
+                        await rename(replacement, fixture.trackerRoot);
+                    },
+                },
+            })
+        ).resolves.toEqual({ status: "untrusted" });
+    });
+
+    test("treats a symlinked or oversized state entry as untrusted", async () => {
+        const symlinked = await makePublishedFixture();
+        const heldState = join(symlinked.trackerRoot, "held-state.json");
+        await rename(symlinked.statePath, heldState);
+        await symlink(heldState, symlinked.statePath);
+        await expect(loadWorkspaceTrackerState(symlinked.loadInput)).resolves.toEqual({ status: "untrusted" });
+
+        const oversized = await makePublishedFixture();
+        await writeFile(oversized.statePath, Buffer.alloc(1024 * 1024 + 1, 0x20), { mode: 0o600 });
+        await expect(loadWorkspaceTrackerState(oversized.loadInput)).resolves.toEqual({ status: "untrusted" });
+    });
+
+    test("rejects an oversized committed cursor before state publication", async () => {
+        const fixture = await makeFixture();
+        await writeFile(fixture.cursorPath, Buffer.alloc(16 * 1024 * 1024 + 1, 0x63), { mode: 0o600 });
+
+        await expect(publishWorkspaceTrackerState(fixture.publishInput)).rejects.toThrow(/cursor|maximum|output/i);
+    });
 });
 
 type Fixture = Awaited<ReturnType<typeof makeFixture>>;
 
 async function makePublishedFixture(): Promise<Fixture> {
     const fixture = await makeFixture();
-    await publishWorkspaceTrackerState({
-        storeRoot: fixture.storeRoot,
-        workspaceIdentity: WorkspaceIdentity,
-        workspaceIncarnation: WorkspaceIncarnation,
-        current: Ref,
-        coverage: Coverage,
-    });
+    await publishWorkspaceTrackerState(fixture.publishInput);
     return fixture;
 }
 
@@ -140,11 +202,20 @@ async function makeFixture() {
         verifyOwnedSnapshot: vi.fn(async () => undefined),
     } satisfies WorkspaceTrackerStateSnapshotVerifier;
     return {
+        root,
         storeRoot,
+        trackerRoot,
         cursorPath,
         cursorBytes,
         statePath: join(trackerRoot, "state-v1.json"),
         verifier,
+        publishInput: {
+            storeRoot,
+            workspaceIdentity: WorkspaceIdentity,
+            workspaceIncarnation: WorkspaceIncarnation,
+            current: Ref,
+            coverage: Coverage,
+        },
         loadInput: {
             storeRoot,
             workspaceIdentity: WorkspaceIdentity,

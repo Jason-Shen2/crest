@@ -110,17 +110,22 @@ export class IncrementalPathCapture {
         }
     }
 
-    capture(paths: readonly string[], signal?: AbortSignal): Promise<IncrementalPathCaptureResult> {
+    capture(
+        paths: readonly string[],
+        signal?: AbortSignal,
+        timeoutMs: number = this.timeoutMs
+    ): Promise<IncrementalPathCaptureResult> {
         if (this.lifecycle !== "active") {
             return Promise.reject(new Error("Incremental path capture is disposed"));
         }
+        const captureTimeoutMs = validateNonNegativeLimit(timeoutMs, "timeout");
         const controller = new AbortController();
         const onAbort = () => controller.abort(signal?.reason);
         signal?.addEventListener("abort", onAbort, { once: true });
         if (signal?.aborted) onAbort();
-        const deadline = Date.now() + this.timeoutMs;
+        const deadline = Date.now() + captureTimeoutMs;
         const deadlineError = new AnchoredReaderError("timeout", "Incremental path capture timed out");
-        const timer = setTimeout(() => controller.abort(deadlineError), this.timeoutMs);
+        const timer = setTimeout(() => controller.abort(deadlineError), captureTimeoutMs);
         const tracked = { controller, promise: Promise.resolve() as Promise<unknown> };
         const promise = this.captureActive([...paths], controller.signal, deadline)
             .catch((error) => {

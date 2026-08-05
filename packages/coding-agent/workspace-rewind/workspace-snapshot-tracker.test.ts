@@ -4,7 +4,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { IncrementalPathCaptureResult } from "./incremental-path-capture";
-import { WorkspaceSnapshotStoreError } from "./snapshot-store";
+import { WorkspaceCheckpointLimits, WorkspaceSnapshotStoreError } from "./snapshot-store";
 import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
 import {
@@ -85,6 +85,90 @@ describe("WorkspaceSnapshotTracker", () => {
         expect(fixture.store.captureFullReconcile).toHaveBeenCalledTimes(1);
     });
 
+    test("forces the full reconcile lifecycle for warm captures with required paths", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.order.length = 0;
+        fixture.store.captureFullReconcile.mockResolvedValueOnce({ ref: Ref2, coverage: Coverage });
+
+        await expect(
+            fixture.tracker.capture({
+                profile: "terminal",
+                requiredPaths: ["oversized.bin", "ignored/required.txt"],
+            })
+        ).resolves.toEqual({ ref: Ref2, coverage: Coverage });
+
+        expect(fixture.store.captureFullReconcile).toHaveBeenLastCalledWith({
+            profile: "terminal",
+            requiredPaths: ["oversized.bin", "ignored/required.txt"],
+        });
+        expect(fixture.feed.readChanges).not.toHaveBeenCalled();
+        expect(fixture.feed.commitCursor).not.toHaveBeenCalled();
+        expect(fixture.pathCapture.capture).not.toHaveBeenCalled();
+        expect(fixture.order.slice(0, 4)).toEqual([
+            "feed:prepare",
+            "store:metadata:2",
+            "feed:initialize",
+            "state:publish:2",
+        ]);
+        expectReconcileOrder(fixture);
+    });
+
+    test.each([
+        ["pre-turn", WorkspaceCheckpointLimits.preTurnTimeoutMs],
+        ["terminal", WorkspaceCheckpointLimits.terminalTimeoutMs],
+        ["safety", WorkspaceCheckpointLimits.terminalTimeoutMs],
+    ] as const)("forwards the fixed %s incremental timeout", async (profile, timeoutMs) => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        fixture.feed.advanceCandidate.mockResolvedValueOnce(complete([], "candidate-2"));
+
+        await fixture.tracker.capture({ profile });
+
+        expect(fixture.pathCapture.capture).toHaveBeenCalledWith(["a.txt"], undefined, timeoutMs);
+    });
+
+    test("rejects a pre-aborted warm empty capture without publishing cursor or state", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockClear();
+        fixture.feed.commitCursor.mockClear();
+        fixture.state.publish.mockClear();
+        const controller = new AbortController();
+        const reason = new Error("capture cancelled");
+        controller.abort(reason);
+
+        await expect(fixture.tracker.capture({ profile: "terminal", signal: controller.signal })).rejects.toBe(reason);
+
+        expect(fixture.feed.readChanges).not.toHaveBeenCalled();
+        expect(fixture.feed.commitCursor).not.toHaveBeenCalled();
+        expect(fixture.state.publish).not.toHaveBeenCalled();
+    });
+
+    test("does not publish a queued capture whose signal aborts before it starts", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockClear();
+        fixture.feed.commitCursor.mockClear();
+        fixture.state.publish.mockClear();
+        const firstRead = deferred<WorkspaceChangeRead>();
+        fixture.feed.readChanges.mockReturnValueOnce(firstRead.promise).mockResolvedValueOnce(complete([], "second"));
+        const first = fixture.tracker.capture({ profile: "terminal" });
+        await vi.waitFor(() => expect(fixture.feed.readChanges).toHaveBeenCalledTimes(1));
+        const controller = new AbortController();
+        const reason = new Error("queued capture cancelled");
+        const second = fixture.tracker.capture({ profile: "terminal", signal: controller.signal });
+        controller.abort(reason);
+        firstRead.resolve(complete([], "first"));
+
+        await first;
+        await expect(second).rejects.toBe(reason);
+        expect(fixture.feed.readChanges).toHaveBeenCalledTimes(1);
+        expect(fixture.feed.commitCursor).toHaveBeenCalledTimes(1);
+        expect(fixture.state.publish).toHaveBeenCalledTimes(1);
+    });
+
     test("recaptures a same-path interval mutation and commits only bytes covered by the stable candidate", async () => {
         const fixture = makeFixture();
         await fixture.tracker.capture({ profile: "pre-turn" });
@@ -113,8 +197,8 @@ describe("WorkspaceSnapshotTracker", () => {
             coverage: { ...Coverage, newlyHashedBytes: 2 },
         });
 
-        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(1, ["a.txt"], undefined);
-        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(2, ["a.txt"], undefined);
+        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(1, ["a.txt"], undefined, 30_000);
+        expect(fixture.pathCapture.capture).toHaveBeenNthCalledWith(2, ["a.txt"], undefined, 30_000);
         expect(fixture.feed.advanceCandidate).toHaveBeenNthCalledWith(1, "candidate-1");
         expect(fixture.feed.advanceCandidate).toHaveBeenNthCalledWith(2, "candidate-2");
         expect(fixture.pathCapture.discardCaptured).toHaveBeenCalledTimes(1);
@@ -220,6 +304,40 @@ describe("WorkspaceSnapshotTracker", () => {
 
         await fixture.tracker.capture({ profile: "terminal" });
         expect(fixture.store.captureFullReconcile).toHaveBeenCalledTimes(2);
+    });
+
+    test("retains an old path capture when full-reconcile replacement disposal fails", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        const oldCapture = fixture.pathCapture;
+        const nextCapture = makePathCapture();
+        fixture.makePathCapture.mockReturnValueOnce(nextCapture);
+        oldCapture.dispose.mockRejectedValueOnce(new Error("old dispose failed"));
+        fixture.feed.readChanges.mockResolvedValueOnce({ status: "gap", reason: "query-failed" });
+
+        await expect(fixture.tracker.capture({ profile: "terminal" })).rejects.toThrow("old dispose failed");
+
+        expect(fixture.tracker.pathCapture).toBe(oldCapture);
+        expect(nextCapture.dispose).toHaveBeenCalledTimes(1);
+        await expect(fixture.tracker.dispose()).resolves.toBeUndefined();
+        expect(oldCapture.dispose).toHaveBeenCalledTimes(2);
+    });
+
+    test("aggregates replacement cleanup failures and retains both captures for later disposal", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        const oldCapture = fixture.pathCapture;
+        const nextCapture = makePathCapture();
+        fixture.makePathCapture.mockReturnValueOnce(nextCapture);
+        oldCapture.dispose.mockRejectedValueOnce(new Error("old dispose failed"));
+        nextCapture.dispose.mockRejectedValueOnce(new Error("new dispose failed"));
+        fixture.feed.readChanges.mockResolvedValueOnce({ status: "gap", reason: "query-failed" });
+
+        await expect(fixture.tracker.capture({ profile: "terminal" })).rejects.toBeInstanceOf(AggregateError);
+        expect(fixture.tracker.pathCapture).toBe(oldCapture);
+        await expect(fixture.tracker.dispose()).resolves.toBeUndefined();
+        expect(oldCapture.dispose).toHaveBeenCalledTimes(2);
+        expect(nextCapture.dispose).toHaveBeenCalledTimes(2);
     });
 
     test.each(["prepare", "initialize"] as const)(
@@ -379,7 +497,29 @@ function makeFixture(
         markGap: vi.fn(),
         dispose: vi.fn(async () => undefined),
     } satisfies WorkspaceChangeFeed;
-    const pathCapture = {
+    const pathCapture = makePathCapture(order);
+    const state = input.state ?? makeStateAccess({ status: "untrusted" }, order);
+    const makePathCaptureFactory = vi.fn(() => pathCapture);
+    const tracker = new WorkspaceSnapshotTracker({
+        store,
+        feed,
+        state,
+        makePathCapture: makePathCaptureFactory,
+        hooks: input.hooks,
+    });
+    return {
+        tracker,
+        store,
+        feed,
+        pathCapture,
+        state,
+        makePathCapture: makePathCaptureFactory,
+        order,
+    };
+}
+
+function makePathCapture(order: string[] = []) {
+    return {
         capture: vi.fn(async (paths) => {
             order.push(`path:capture:${paths.join(",")}`);
             return captured(...paths);
@@ -393,16 +533,6 @@ function makeFixture(
         }),
         dispose: vi.fn(async () => undefined),
     } satisfies WorkspaceSnapshotTrackerPathCapture;
-    const state = input.state ?? makeStateAccess({ status: "untrusted" }, order);
-    const makePathCapture = vi.fn(() => pathCapture);
-    const tracker = new WorkspaceSnapshotTracker({
-        store,
-        feed,
-        state,
-        makePathCapture,
-        hooks: input.hooks,
-    });
-    return { tracker, store, feed, pathCapture, state, makePathCapture, order };
 }
 
 function makeStateAccess(
