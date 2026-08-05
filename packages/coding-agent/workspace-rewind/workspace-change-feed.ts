@@ -2,17 +2,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { randomBytes } from "node:crypto";
-import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import ParcelWatcher from "@parcel/watcher";
+
+import {
+    type AnchoredWorkspaceCursor,
+    type WorkspaceChangeFeedStorageHooks,
+    anchoredCursorRootExists,
+    commitAnchoredCursor,
+    ensurePrivateCursorRoot,
+    readAnchoredCursor,
+    removeAbandonedCandidateCursors,
+    removeAnchoredCursor,
+    withMaterializedCursor,
+    writeWatcherCursor,
+} from "./workspace-change-feed-storage";
 
 export type WorkspaceChangeRead =
     | { status: "complete"; changedPaths: string[]; scopeInvalidated: boolean; candidateCursor: string }
     | { status: "gap"; reason: "cold-start" | "cursor-missing" | "query-failed" | "unsafe-path" };
 
 export interface WorkspaceChangeFeed {
+    prepareForReconcile(): Promise<void>;
     initializeAfterReconcile(): Promise<void>;
     readChanges(): Promise<WorkspaceChangeRead>;
     commitCursor(candidateCursor: string): Promise<void>;
@@ -42,24 +54,37 @@ export interface ParcelWorkspaceChangeFeedOptions {
     workspaceRoot: string;
     storeRoot: string;
     watcher?: WorkspaceChangeWatcher;
+    callbackPathCapacity?: number;
+    testHooks?: WorkspaceChangeFeedStorageHooks;
+}
+
+interface CandidateCursor {
+    token: string;
+    cursor: AnchoredWorkspaceCursor;
 }
 
 interface FeedState {
     workspaceRoot: string;
     trackerRoot: string;
-    committedPath: string;
     watcher: WorkspaceChangeWatcher;
+    callbackPaths: Set<string>;
+    callbackPathCapacity: number;
+    gapReason?: "query-failed" | "unsafe-path";
     subscription?: WorkspaceChangeSubscription;
-    callbackEvents: WorkspaceChangeEvent[];
-    gap: boolean;
-    initialized: boolean;
-    disposed: boolean;
+    subscriptionPromise?: Promise<WorkspaceChangeSubscription>;
     disposePromise?: Promise<void>;
-    candidateToken?: string;
-    candidatePath?: string;
+    disposed: boolean;
+    initialized: boolean;
+    preparedCursor?: AnchoredWorkspaceCursor;
+    candidate?: CandidateCursor;
+    testHooks?: WorkspaceChangeFeedStorageHooks;
 }
 
 const CandidateTokenPattern = /^[0-9a-f]{32}$/;
+const CommittedCursorName = "committed.cursor";
+const ReconcileCursorName = "reconcile.cursor";
+const PostReconcileCursorName = "reconcile-post.cursor";
+const DefaultCallbackPathCapacity = 10_000;
 const State = new WeakMap<ParcelWorkspaceChangeFeed, FeedState>();
 
 export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
@@ -70,137 +95,199 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
         if (!isAbsolute(options.storeRoot) || normalize(options.storeRoot) !== options.storeRoot) {
             throw new Error("Store root must be a canonical absolute path");
         }
-        const trackerRoot = join(options.storeRoot, "tracker");
+        const callbackPathCapacity = options.callbackPathCapacity ?? DefaultCallbackPathCapacity;
+        if (!Number.isSafeInteger(callbackPathCapacity) || callbackPathCapacity < 1) {
+            throw new Error("Callback path capacity must be a positive safe integer");
+        }
         State.set(this, {
             workspaceRoot: options.workspaceRoot,
-            trackerRoot,
-            committedPath: join(trackerRoot, "committed.cursor"),
+            trackerRoot: join(options.storeRoot, "tracker"),
             watcher: options.watcher ?? ParcelWatcher,
-            callbackEvents: [],
-            gap: false,
-            initialized: false,
+            callbackPaths: new Set(),
+            callbackPathCapacity,
             disposed: false,
+            initialized: false,
+            testHooks: options.testHooks,
         });
+    }
+
+    async prepareForReconcile(): Promise<void> {
+        const state = getState(this);
+        if (state.disposed) {
+            setGap(state, "query-failed");
+            throw new Error("Workspace change feed is disposed");
+        }
+        if (state.preparedCursor && !state.gapReason) {
+            setGap(state, "query-failed");
+            throw new Error("Workspace change feed reconcile is already prepared");
+        }
+        try {
+            if (state.preparedCursor) {
+                await removeAnchoredCursor({
+                    root: state.trackerRoot,
+                    cursor: state.preparedCursor,
+                    hooks: state.testHooks,
+                });
+                state.preparedCursor = undefined;
+            }
+            state.callbackPaths.clear();
+            state.gapReason = undefined;
+            await ensurePrivateCursorRoot(state.trackerRoot);
+            await ensureSubscription(state);
+            await removeCandidate(state);
+            await removeAbandonedCandidateCursors(state.trackerRoot, state.testHooks);
+            state.preparedCursor = await writeWatcherCursor({
+                root: state.trackerRoot,
+                name: ReconcileCursorName,
+                workspaceRoot: state.workspaceRoot,
+                writer: state.watcher,
+                hooks: state.testHooks,
+            });
+        } catch (error) {
+            setGap(state, "query-failed");
+            throw error;
+        }
     }
 
     async initializeAfterReconcile(): Promise<void> {
         const state = getState(this);
-        await ensureTrackerRoot(state.trackerRoot);
-        await removeCandidate(state);
-        state.gap = false;
-        state.callbackEvents = [];
-        try {
-            await ensureSubscription(state);
-        } catch {
-            state.gap = true;
+        const prepared = state.preparedCursor;
+        if (!prepared || state.disposed) {
+            setGap(state, "query-failed");
+            throw new Error("Workspace change feed reconcile was not prepared");
         }
-        await publishSnapshot(state, state.committedPath);
-        state.initialized = true;
+        if (state.gapReason) throw new Error("Workspace change feed reconcile has a continuity gap");
+        let post: AnchoredWorkspaceCursor | undefined;
+        try {
+            post = await writeWatcherCursor({
+                root: state.trackerRoot,
+                name: PostReconcileCursorName,
+                workspaceRoot: state.workspaceRoot,
+                writer: state.watcher,
+                hooks: state.testHooks,
+            });
+            const events = await withMaterializedCursor(prepared, (path) =>
+                state.watcher.getEventsSince(state.workspaceRoot, path)
+            );
+            addEvents(state, events);
+            if (state.gapReason) throw new Error("Workspace change feed reconcile has a continuity gap");
+        } catch (error) {
+            if (post) {
+                await removeAnchoredCursor({ root: state.trackerRoot, cursor: post, hooks: state.testHooks }).catch(
+                    () => undefined
+                );
+            }
+            setGap(state, "query-failed");
+            throw error;
+        }
+        try {
+            await commitAnchoredCursor({
+                root: state.trackerRoot,
+                candidate: post,
+                committedName: CommittedCursorName,
+                hooks: state.testHooks,
+            });
+            await removeAnchoredCursor({ root: state.trackerRoot, cursor: prepared, hooks: state.testHooks });
+            state.preparedCursor = undefined;
+            state.initialized = true;
+        } catch (error) {
+            setGap(state, "query-failed");
+            throw error;
+        }
     }
 
     async readChanges(): Promise<WorkspaceChangeRead> {
         const state = getState(this);
-
-        let trackerExists: boolean;
-        let cursorExists: boolean;
+        let committed: AnchoredWorkspaceCursor | undefined;
+        let trackerExists = false;
         try {
-            trackerExists = await validateExistingTrackerRoot(state.trackerRoot);
-            cursorExists = await isRegularFile(state.committedPath);
+            trackerExists = await anchoredCursorRootExists(state.trackerRoot);
+            committed = trackerExists ? await readAnchoredCursor(state.trackerRoot, CommittedCursorName) : undefined;
         } catch {
-            state.gap = true;
-            return { status: "gap", reason: "query-failed" };
+            setGap(state, "query-failed");
+            return gap(state);
         }
-        if (!cursorExists) {
+        if (!committed) {
             return { status: "gap", reason: state.initialized || trackerExists ? "cursor-missing" : "cold-start" };
         }
-        if (state.gap) return { status: "gap", reason: "query-failed" };
+        if (state.gapReason || state.disposed || state.preparedCursor) return gap(state);
         try {
             await ensureSubscription(state);
-        } catch {
-            state.gap = true;
-            return { status: "gap", reason: "query-failed" };
-        }
-        if (state.gap) return { status: "gap", reason: "query-failed" };
-
-        try {
             await removeCandidate(state);
         } catch {
-            state.gap = true;
-            return { status: "gap", reason: "query-failed" };
+            setGap(state, "query-failed");
+            return gap(state);
         }
+
         const token = randomBytes(16).toString("hex");
-        const candidatePath = join(state.trackerRoot, `candidate-${token}.cursor`);
+        let candidate: AnchoredWorkspaceCursor | undefined;
         try {
-            await publishSnapshot(state, candidatePath);
+            candidate = await writeWatcherCursor({
+                root: state.trackerRoot,
+                name: `candidate-${token}.cursor`,
+                workspaceRoot: state.workspaceRoot,
+                writer: state.watcher,
+                hooks: state.testHooks,
+            });
+            const historical = await withMaterializedCursor(committed, (path) =>
+                state.watcher.getEventsSince(state.workspaceRoot, path)
+            );
+            addEvents(state, historical);
         } catch {
-            state.gap = true;
-            return { status: "gap", reason: "query-failed" };
-        }
-        if (state.gap) {
-            await unlink(candidatePath).catch(ignoreMissing);
-            return { status: "gap", reason: "query-failed" };
-        }
-
-        let historicalEvents: WorkspaceChangeEvent[];
-        try {
-            historicalEvents = await state.watcher.getEventsSince(state.workspaceRoot, state.committedPath);
-        } catch {
-            await unlink(candidatePath).catch(ignoreMissing);
-            state.gap = true;
-            return { status: "gap", reason: "query-failed" };
-        }
-        if (state.gap) {
-            await unlink(candidatePath).catch(ignoreMissing);
-            return { status: "gap", reason: "query-failed" };
-        }
-
-        const changedPaths = new Set<string>();
-        let scopeInvalidated = false;
-        for (const event of [...historicalEvents, ...state.callbackEvents]) {
-            const path = normalizeEventPath(state.workspaceRoot, event.path);
-            if (!path) {
-                await unlink(candidatePath).catch(ignoreMissing);
-                state.gap = true;
-                return { status: "gap", reason: "unsafe-path" };
+            if (candidate) {
+                await removeAnchoredCursor({
+                    root: state.trackerRoot,
+                    cursor: candidate,
+                    hooks: state.testHooks,
+                }).catch(() => undefined);
             }
-            changedPaths.add(path);
-            scopeInvalidated ||= invalidatesScope(path);
+            setGap(state, "query-failed");
+            return gap(state);
         }
-        state.candidateToken = token;
-        state.candidatePath = candidatePath;
+        if (state.gapReason) {
+            await removeAnchoredCursor({ root: state.trackerRoot, cursor: candidate, hooks: state.testHooks }).catch(
+                () => undefined
+            );
+            return gap(state);
+        }
+        state.candidate = { token, cursor: candidate };
+        const changedPaths = [...state.callbackPaths].sort(comparePathBytes);
         return {
             status: "complete",
-            changedPaths: [...changedPaths].sort(comparePathBytes),
-            scopeInvalidated,
+            changedPaths,
+            scopeInvalidated: changedPaths.some(invalidatesScope),
             candidateCursor: token,
         };
     }
 
     async commitCursor(candidateCursor: string): Promise<void> {
         const state = getState(this);
+        const candidate = state.candidate;
         if (
-            state.gap ||
+            state.gapReason ||
+            !candidate ||
             !CandidateTokenPattern.test(candidateCursor) ||
-            candidateCursor !== state.candidateToken ||
-            basename(state.candidatePath ?? "") !== `candidate-${candidateCursor}.cursor`
+            candidate.token !== candidateCursor
         ) {
             throw new Error("Invalid or stale candidate cursor");
         }
-        if (!(await validateExistingTrackerRoot(state.trackerRoot))) {
+        try {
+            await commitAnchoredCursor({
+                root: state.trackerRoot,
+                candidate: candidate.cursor,
+                committedName: CommittedCursorName,
+                hooks: state.testHooks,
+            });
+        } catch {
+            setGap(state, "query-failed");
             throw new Error("Invalid or stale candidate cursor");
         }
-        if (!(await isRegularFile(state.candidatePath!))) {
-            throw new Error("Invalid or stale candidate cursor");
-        }
-        await rename(state.candidatePath!, state.committedPath);
-        await syncDirectory(state.trackerRoot);
-        state.candidatePath = undefined;
-        state.candidateToken = undefined;
-        state.callbackEvents = [];
+        state.candidate = undefined;
+        state.callbackPaths.clear();
     }
 
     markGap(): void {
-        getState(this).gap = true;
+        setGap(getState(this), "query-failed");
     }
 
     dispose(): Promise<void> {
@@ -212,93 +299,76 @@ export class ParcelWorkspaceChangeFeed implements WorkspaceChangeFeed {
     }
 }
 
+async function ensureSubscription(state: FeedState): Promise<WorkspaceChangeSubscription> {
+    if (state.subscription) return state.subscription;
+    if (state.subscriptionPromise) return state.subscriptionPromise;
+    if (state.disposed) throw new Error("Workspace change feed is disposed");
+    const promise = state.watcher
+        .subscribe(state.workspaceRoot, (error, events) => {
+            if (state.disposed) return;
+            try {
+                if (error) {
+                    setGap(state, "query-failed");
+                    return;
+                }
+                addEvents(state, events);
+            } catch {
+                setGap(state, "query-failed");
+            }
+        })
+        .then(async (subscription) => {
+            if (state.disposed) {
+                await subscription.unsubscribe().catch(() => undefined);
+                throw new Error("Workspace change feed was disposed while subscribing");
+            }
+            state.subscription = subscription;
+            return subscription;
+        });
+    state.subscriptionPromise = promise;
+    const clearPending = () => {
+        if (state.subscriptionPromise === promise) state.subscriptionPromise = undefined;
+    };
+    void promise.then(clearPending, clearPending);
+    return promise;
+}
+
 async function disposeState(state: FeedState): Promise<void> {
+    await state.subscriptionPromise?.catch(() => undefined);
     const subscription = state.subscription;
     state.subscription = undefined;
     if (subscription) await subscription.unsubscribe().catch(() => undefined);
-    try {
-        await removeCandidate(state);
-    } catch {
-        clearCandidate(state);
+    await removeCandidate(state).catch(() => undefined);
+    if (state.preparedCursor) {
+        await removeAnchoredCursor({
+            root: state.trackerRoot,
+            cursor: state.preparedCursor,
+            hooks: state.testHooks,
+        }).catch(() => undefined);
+        state.preparedCursor = undefined;
     }
-}
-
-async function ensureSubscription(state: FeedState): Promise<void> {
-    if (state.subscription) return;
-    if (state.disposed) throw new Error("Workspace change feed is disposed");
-    state.subscription = await state.watcher.subscribe(state.workspaceRoot, (error, events) => {
-        try {
-            if (error) {
-                state.gap = true;
-                return;
-            }
-            state.callbackEvents.push(...events);
-        } catch {
-            state.gap = true;
-        }
-    });
-}
-
-async function publishSnapshot(state: FeedState, destination: string): Promise<void> {
-    const temporaryPath = join(state.trackerRoot, `.snapshot-${randomBytes(16).toString("hex")}.tmp`);
-    try {
-        await state.watcher.writeSnapshot(state.workspaceRoot, temporaryPath);
-        const handle = await open(temporaryPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-        try {
-            await handle.chmod(0o600);
-            await handle.sync();
-        } finally {
-            await handle.close();
-        }
-        await rename(temporaryPath, destination);
-        await syncDirectory(dirname(destination));
-    } catch (error) {
-        await unlink(temporaryPath).catch(ignoreMissing);
-        throw error;
-    }
-}
-
-async function ensureTrackerRoot(path: string): Promise<void> {
-    await mkdir(path, { recursive: true, mode: 0o700 });
-    const stat = await lstat(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe tracker directory");
-    await chmod(path, 0o700);
-}
-
-async function validateExistingTrackerRoot(path: string): Promise<boolean> {
-    let stat;
-    try {
-        stat = await lstat(path);
-    } catch (error) {
-        if (isCode(error, "ENOENT")) return false;
-        throw error;
-    }
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe tracker directory");
-    await chmod(path, 0o700);
-    return true;
 }
 
 async function removeCandidate(state: FeedState): Promise<void> {
-    if (!(await validateExistingTrackerRoot(state.trackerRoot))) {
-        clearCandidate(state);
-        return;
-    }
-    if (state.candidatePath) await unlink(state.candidatePath).catch(ignoreMissing);
-    clearCandidate(state);
-    const entries = await readdir(state.trackerRoot);
-    await Promise.all(
-        entries
-            .filter(
-                (entry) =>
-                    /^candidate-[0-9a-f]{32}\.cursor$/.test(entry) || /^\.snapshot-[0-9a-f]{32}\.tmp$/.test(entry)
-            )
-            .map((entry) => unlink(join(state.trackerRoot, entry)).catch(ignoreMissing))
-    );
+    const candidate = state.candidate;
+    state.candidate = undefined;
+    if (!candidate) return;
+    await removeAnchoredCursor({ root: state.trackerRoot, cursor: candidate.cursor, hooks: state.testHooks });
 }
 
-function clearCandidate(state: FeedState): void {
-    state.candidatePath = undefined;
-    state.candidateToken = undefined;
+function addEvents(state: FeedState, events: readonly WorkspaceChangeEvent[]): void {
+    for (const event of events) {
+        const path = normalizeEventPath(state.workspaceRoot, event.path);
+        if (!path) {
+            setGap(state, "unsafe-path");
+            return;
+        }
+        if (state.callbackPaths.has(path)) continue;
+        if (state.callbackPaths.size >= state.callbackPathCapacity) {
+            setGap(state, "query-failed");
+            return;
+        }
+        state.callbackPaths.add(path);
+    }
 }
 
 function normalizeEventPath(workspaceRoot: string, eventPath: string): string | undefined {
@@ -327,48 +397,12 @@ function comparePathBytes(left: string, right: string): number {
     return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-async function isRegularFile(path: string): Promise<boolean> {
-    try {
-        const stat = await lstat(path);
-        return stat.isFile() && !stat.isSymbolicLink();
-    } catch (error) {
-        if (isCode(error, "ENOENT")) return false;
-        throw error;
-    }
+function setGap(state: FeedState, reason: "query-failed" | "unsafe-path"): void {
+    if (state.gapReason !== "unsafe-path") state.gapReason = reason;
 }
 
-async function syncDirectory(path: string): Promise<void> {
-    let handle;
-    try {
-        handle = await open(path, "r");
-    } catch (error) {
-        if (isUnsupportedDirectorySync(error)) return;
-        throw error;
-    }
-    try {
-        await handle.sync();
-    } catch (error) {
-        if (!isUnsupportedDirectorySync(error)) throw error;
-    } finally {
-        await handle.close();
-    }
-}
-
-function isUnsupportedDirectorySync(error: unknown): boolean {
-    return (
-        isCode(error, "EINVAL") ||
-        isCode(error, "ENOTSUP") ||
-        isCode(error, "EISDIR") ||
-        (process.platform === "win32" && isCode(error, "EPERM"))
-    );
-}
-
-function ignoreMissing(error: unknown): void {
-    if (!isCode(error, "ENOENT")) throw error;
-}
-
-function isCode(error: unknown, code: string): boolean {
-    return error instanceof Error && "code" in error && error.code === code;
+function gap(state: FeedState): WorkspaceChangeRead {
+    return { status: "gap", reason: state.gapReason ?? "query-failed" };
 }
 
 function getState(feed: ParcelWorkspaceChangeFeed): FeedState {

@@ -185,6 +185,23 @@ changes = []
 
 它仍然写入一个轻量 available checkpoint，但不重新构建整个 workspace。
 
+### Reconcile continuity lifecycle
+
+每次 cold start 或 gap fallback 的顺序固定为：
+
+```text
+prepare watcher subscription + pre-reconcile cursor
+  -> full reconcile
+  -> post-reconcile cursor + historical query from pre cursor
+  -> publish trusted baseline
+```
+
+不能采用“full reconcile → initialize watcher cursor”。该顺序在 reconcile 返回与 cursor 初始化之间存在
+uncovered interval；这段时间的修改可能既不在 full baseline 中，也不在后续 watcher history 中。prepare 必须
+先建立 subscription 和 durable pre cursor；initialize 必须把 pre/post cursor 之间的历史结果与 callback hints
+取并集。重复/乱序调用、subscription/query failure、callback overflow、unsafe path、dispose race 都保持 gap，
+不得发布 baseline。Task 6 的所有 full reconcile fallback 都必须通过同一 lifecycle。
+
 ### Immutable version 与结构共享
 
 每个版本在逻辑上仍代表完整 workspace，物理上只创建变化路径及其祖先的新对象：
@@ -224,6 +241,11 @@ tracker 必须记录 watcher/journal generation，并把以下状态视为 incre
 
 存在 gap 时不能提交增量 available checkpoint。tracker 必须先执行 full reconcile；
 reconcile 失败则由 checkpoint manager 写 unavailable 状态。
+
+cursor/candidate storage 也是 consistency boundary：目录和 entry mutation 必须 cwd-inode anchored、no-follow，
+candidate commit 必须验证生成时的 exact identity 与内容 hash，并拒绝 inode/content replacement、hardlink、
+非 regular、非 private、stale/foreign candidate 和目录 exchange。callback dirty hints 使用有界去重集合；
+容量溢出转为 gap。Windows 在 owner-only ACL 支持完成前不启用该 private storage。
 
 ### Full reconcile 的角色
 

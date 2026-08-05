@@ -140,6 +140,7 @@ git commit -m "refactor(agent): isolate checkpoint snapshot source"
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Create: `packages/coding-agent/workspace-rewind/workspace-change-feed.ts`
+- Create: `packages/coding-agent/workspace-rewind/workspace-change-feed-storage.ts`
 - Create: `packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts`
 - Create: `packages/coding-agent/workspace-rewind/workspace-change-feed.integration.test.ts`
 
@@ -172,6 +173,10 @@ expect(await failedQueryFeed.readChanges()).toEqual({ status: "gap", reason: "qu
 
 还要覆盖：absolute path 转为 UTF-8 relative path、workspace 外 path 触发 `gap`、重复/coalesced event 去重、`.git/index` 与任意 `.gitignore` 进入 `scopeInvalidated: true`、callback error 原子地把 feed 标为 gap。
 
+reconcile 生命周期还要覆盖：必须先 `prepareForReconcile()`，再执行外部 full reconcile，最后调用
+`initializeAfterReconcile()`；full reconcile 返回后、initialize 开始前发生的变更仍然必须出现在下一次
+`readChanges()` 中。重复 prepare、未 prepare 的 initialize、任一阶段失败和 dispose race 都必须 fail closed。
+
 - [ ] **Step 3: 运行 contract tests 并确认失败**
 
 Run:
@@ -197,6 +202,7 @@ export type WorkspaceChangeRead =
     | { status: "gap"; reason: "cold-start" | "cursor-missing" | "query-failed" | "unsafe-path" };
 
 export interface WorkspaceChangeFeed {
+    prepareForReconcile(): Promise<void>;
     initializeAfterReconcile(): Promise<void>;
     readChanges(): Promise<WorkspaceChangeRead>;
     commitCursor(candidateCursor: string): Promise<void>;
@@ -205,7 +211,18 @@ export interface WorkspaceChangeFeed {
 }
 ```
 
-`ParcelWorkspaceChangeFeed` 把 cursor 文件写到 `<storeRoot>/tracker/change-cursor` 的 private sibling temp，再用原子 rename 发布。`readChanges()` 必须先基于已提交 cursor 调用 `getEventsSince()`，再写 candidate cursor；只有 tracker 完成 path capture 和二次验证后才允许 `commitCursor()`。subscription callback 只把 path 放入内存 dirty set；query 结果与 dirty set 取并集。
+安全的 baseline 顺序固定为 `prepareForReconcile()` → 外部 full reconcile →
+`initializeAfterReconcile()`。prepare 在 reconcile 前建立 subscription 和 pre-reconcile cursor；initialize 写
+post-reconcile cursor，并查询两者之间的历史事件。旧的“先 full reconcile，再初始化 cursor”顺序存在一个
+无法观测的窗口：full reconcile 返回后、cursor 建立前的修改既不属于 baseline，也不一定进入后续历史查询，
+因此明确禁止。
+
+`ParcelWorkspaceChangeFeed` 把 cursor 写入 private staging，再通过 cwd-inode anchored、no-follow 的原子操作发布到
+`<storeRoot>/tracker`。candidate 必须绑定生成时的 entry identity 和内容 hash；commit 拒绝 inode/content
+替换、hardlink、非 regular、非 private、stale/foreign candidate 以及 tracker directory exchange。
+subscription callback 使用有上限的去重 set；溢出必须进入 gap。`readChanges()` 把历史 query 与 callback hints
+取并集，只有 tracker 完成 path capture 和二次验证后才允许 `commitCursor()`。Windows 在 owner-only ACL
+实现前硬禁用 private cursor storage，不允许把 mode bit 当作 ACL 等价物。
 
 - [ ] **Step 5: 添加真实 filesystem integration tests**
 
@@ -229,12 +246,13 @@ Run:
 npx vitest run packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.integration.test.ts
 ```
 
-Expected: PASS on macOS/Linux/Windows CI；平台 backend 无法读取历史 cursor 时，测试只接受显式 `gap`，不接受错误的空数组。
+Expected: 支持原生 FSEvents/backend 的平台严格 PASS，并断言完整 path 集合；明确检测为不支持的平台只接受显式
+`gap`/error，不接受错误的空数组。Windows 在 owner-only ACL 实现前必须显式 hard block。
 
 - [ ] **Step 7: 提交**
 
 ```bash
-git add package.json package-lock.json packages/coding-agent/workspace-rewind/workspace-change-feed.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.integration.test.ts
+git add package.json package-lock.json packages/coding-agent/workspace-rewind/workspace-change-feed.ts packages/coding-agent/workspace-rewind/workspace-change-feed-storage.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.integration.test.ts
 git commit -m "feat(agent): add durable workspace change feed"
 ```
 
@@ -575,14 +593,18 @@ export interface StoredWorkspaceTrackerStateV1 {
 tracker 实现 `WorkspaceCheckpointSnapshotSource`，内部 capture 流程固定为：
 
 ```text
-no trusted current -> full reconcile -> initialize feed cursor -> current
-read changes -> gap/scope invalidated -> full reconcile
+no trusted current -> prepare feed -> full reconcile -> initialize feed cursor -> current
+read changes -> gap/scope invalidated -> prepare feed -> full reconcile -> initialize feed cursor
 read changes -> empty -> reuse current
 capture dirty paths -> write candidate cursor -> read/validate changes since previous cursor
 new evidence -> merge dirty set and retry once
 stable -> commitIncrementalSnapshot -> commit cursor -> current = new ref
 still unstable -> full reconcile
 ```
+
+所有 fallback reconcile 都必须复用同一生命周期；禁止先 reconcile 后 prepare。prepare 或 initialize
+失败时保持 gap，不能发布可信 current。reconcile 本身失败时也不得调用 initialize；tracker 只向 checkpoint
+manager 传播 unavailable 错误。
 
 同一 tracker 的 capture 使用一个 promise queue 串行化，Agent 整个 turn 不持锁。启动时先加载 durable state；验证通过则不做 full reconcile，验证失败才建立新 baseline。`diff()` 直接委托 store。
 
