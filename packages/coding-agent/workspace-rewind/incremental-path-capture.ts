@@ -42,7 +42,7 @@ export interface IncrementalPathCaptureOptions {
 }
 
 export interface BasePathKindReader {
-    readNodeKind(path: string): Promise<"absent" | "leaf" | "tree">;
+    readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree">;
 }
 
 export interface IncrementalCapturedBatch {
@@ -79,6 +79,7 @@ export class IncrementalPathCapture {
     readonly pendingBatches = new Set<IncrementalCapturedBatch>();
     readonly pendingResults = new Map<IncrementalCapturedBatch, object>();
     readonly consumedBatches = new Set<IncrementalCapturedBatch>();
+    readonly batchOperations = new Map<IncrementalCapturedBatch, Promise<void>>();
     readonly stagingRoots = new Set<string>();
     readonly inFlightCaptures = new Set<{ controller: AbortController; promise: Promise<unknown> }>();
     lifecycle: "active" | "disposing" | "disposed" = "active";
@@ -121,11 +122,16 @@ export class IncrementalPathCapture {
         const deadlineError = new AnchoredReaderError("timeout", "Incremental path capture timed out");
         const timer = setTimeout(() => controller.abort(deadlineError), this.timeoutMs);
         const tracked = { controller, promise: Promise.resolve() as Promise<unknown> };
-        const promise = this.captureActive([...paths], controller.signal, deadline).finally(() => {
-            clearTimeout(timer);
-            signal?.removeEventListener("abort", onAbort);
-            this.inFlightCaptures.delete(tracked);
-        });
+        const promise = this.captureActive([...paths], controller.signal, deadline)
+            .catch((error) => {
+                if (controller.signal.reason === deadlineError) throw deadlineError;
+                throw error;
+            })
+            .finally(() => {
+                clearTimeout(timer);
+                signal?.removeEventListener("abort", onAbort);
+                this.inFlightCaptures.delete(tracked);
+            });
         tracked.promise = promise;
         this.inFlightCaptures.add(tracked);
         return promise;
@@ -158,7 +164,7 @@ export class IncrementalPathCapture {
         if (scope.status === "reconcile") return scope;
         try {
             for (const current of scope.pathKinds) {
-                const base = await raceWithCaptureAbort(this.base.readNodeKind(current.path), signal);
+                const base = await this.base.readNodeKind(current.path, signal);
                 if ((current.kind === "tree" && base === "leaf") || (current.kind === "leaf" && base === "tree")) {
                     return { status: "reconcile", reason: "unsafe-evidence" };
                 }
@@ -265,33 +271,44 @@ export class IncrementalPathCapture {
         if (this.consumedBatches.has(batch)) {
             throw new Error("Incremental capture result was already consumed");
         }
-        this.consumedBatches.add(batch);
-        let value: T | undefined;
-        let consumerFailure: unknown;
+        const release = this.reserveBatchOperation(batch);
         try {
-            value = await consumer(batch);
-        } catch (error) {
-            consumerFailure = error;
+            this.consumedBatches.add(batch);
+            let value: T | undefined;
+            let consumerFailure: unknown;
+            try {
+                value = await consumer(batch);
+            } catch (error) {
+                consumerFailure = error;
+            }
+            let cleanupFailure: unknown;
+            try {
+                await this.cleanupPendingBatch(batch);
+            } catch (error) {
+                cleanupFailure = error;
+            }
+            if (consumerFailure && cleanupFailure) {
+                throw new AggregateError(
+                    [consumerFailure, cleanupFailure],
+                    "Incremental capture consumer and cleanup failed"
+                );
+            }
+            if (consumerFailure) throw consumerFailure;
+            if (cleanupFailure) throw cleanupFailure;
+            return value!;
+        } finally {
+            release();
         }
-        let cleanupFailure: unknown;
-        try {
-            await this.cleanupPendingBatch(batch);
-        } catch (error) {
-            cleanupFailure = error;
-        }
-        if (consumerFailure && cleanupFailure) {
-            throw new AggregateError(
-                [consumerFailure, cleanupFailure],
-                "Incremental capture consumer and cleanup failed"
-            );
-        }
-        if (consumerFailure) throw consumerFailure;
-        if (cleanupFailure) throw cleanupFailure;
-        return value!;
     }
 
     async discardCaptured(result: IncrementalPathCaptureResult): Promise<void> {
-        await this.cleanupPendingBatch(this.getPendingCapture(result));
+        const batch = this.getPendingCapture(result);
+        const release = this.reserveBatchOperation(batch);
+        try {
+            await this.cleanupPendingBatch(batch);
+        } finally {
+            release();
+        }
     }
 
     async dispose(): Promise<void> {
@@ -308,6 +325,7 @@ export class IncrementalPathCapture {
 
     async disposeActive(): Promise<void> {
         await Promise.allSettled([...this.inFlightCaptures].map((capture) => capture.promise));
+        await Promise.allSettled([...this.batchOperations.values()]);
         const batches = [...this.pendingBatches];
         const roots = [...this.stagingRoots];
         const results = await Promise.allSettled([
@@ -350,6 +368,27 @@ export class IncrementalPathCapture {
         return batch;
     }
 
+    reserveBatchOperation(batch: IncrementalCapturedBatch): () => void {
+        if (this.batchOperations.has(batch)) {
+            throw new Error("Incremental capture batch operation is already active");
+        }
+        if (this.lifecycle !== "active") {
+            throw new Error("Incremental path capture is disposed");
+        }
+        let settle!: () => void;
+        const settled = new Promise<void>((resolve) => {
+            settle = resolve;
+        });
+        this.batchOperations.set(batch, settled);
+        return () => {
+            if (this.batchOperations.get(batch) !== settled) {
+                throw new Error("Incremental capture batch operation ownership changed");
+            }
+            this.batchOperations.delete(batch);
+            settle();
+        };
+    }
+
     async cleanupPendingBatch(batch: IncrementalCapturedBatch): Promise<void> {
         const result = this.pendingResults.get(batch);
         if (!result || !this.pendingBatches.has(batch)) {
@@ -385,16 +424,6 @@ export class IncrementalPathCapture {
         }
         return oids;
     }
-}
-
-async function raceWithCaptureAbort<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-    if (signal.aborted) throw signal.reason ?? new AnchoredReaderError("aborted", "Incremental path capture aborted");
-    return await new Promise<T>((resolve, reject) => {
-        const onAbort = () =>
-            reject(signal.reason ?? new AnchoredReaderError("aborted", "Incremental path capture aborted"));
-        signal.addEventListener("abort", onAbort, { once: true });
-        operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-    });
 }
 
 function remainingCaptureMs(deadline: number, signal: AbortSignal): number {

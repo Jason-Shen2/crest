@@ -591,12 +591,18 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    readNodeKind(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<"absent" | "leaf" | "tree"> {
+    readNodeKind(
+        snapshot: WorkspaceSnapshotRefV1,
+        path: string,
+        signal?: AbortSignal
+    ): Promise<"absent" | "leaf" | "tree"> {
         return this.withWorkspaceLock(async () => {
             validateRelativePath(path);
             try {
-                return await (await this.#readStoredManifest(snapshot)).readNodeKind(path);
+                if (signal?.aborted) throw signal.reason;
+                return await (await this.#readStoredManifest(snapshot, signal)).readNodeKind(path);
             } catch (cause) {
+                if (signal?.aborted) throw signal.reason ?? cause;
                 throw asCorruptSnapshot(cause);
             }
         });
@@ -606,11 +612,12 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(() => this.#readBlobUnlocked(oid));
     }
 
-    async #readBlobUnlocked(oid: string): Promise<Buffer> {
+    async #readBlobUnlocked(oid: string, signal?: AbortSignal): Promise<Buffer> {
         validateOid(oid);
         const result = await this.git.run(["cat-file", "blob", oid], {
             gitDir: this.storeRoot,
             timeoutMs: StoreGitTimeoutMs,
+            signal,
         });
         return result.stdout;
     }
@@ -659,11 +666,13 @@ export class WorkspaceSnapshotStore {
     }
 
     async #readSnapshotDescriptor(
-        snapshot: WorkspaceSnapshotRefV1
+        snapshot: WorkspaceSnapshotRefV1,
+        signal?: AbortSignal
     ): Promise<Map<string, { mode: string; oid: string }>> {
         const descriptor = await this.git.run(["cat-file", "tree", snapshot.id], {
             gitDir: this.storeRoot,
             timeoutMs: StoreGitTimeoutMs,
+            signal,
         });
         const entries = parseRawTreeEntries(descriptor.stdout, snapshot.id.length / 2);
         if (
@@ -1373,11 +1382,11 @@ export class WorkspaceSnapshotStore {
         return parseOid(owner.stdout);
     }
 
-    async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
+    async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<StoredManifestReader> {
         try {
             this.assertSnapshotIdentity(snapshot);
-            const descriptor = await this.#readSnapshotDescriptor(snapshot);
-            const manifest = await this.#readStoredManifestBlob(snapshot);
+            const descriptor = await this.#readSnapshotDescriptor(snapshot, signal);
+            const manifest = await this.#readStoredManifestBlob(snapshot, signal);
             if (manifest.manifest.schemaversion === 1) {
                 if (descriptor.size !== 2 || descriptor.has("state")) {
                     throw new Error("Snapshot v1 descriptor has unexpected entries");
@@ -1393,12 +1402,16 @@ export class WorkspaceSnapshotStore {
             }
             return manifest;
         } catch (cause) {
+            if (signal?.aborted) throw signal.reason ?? cause;
             throw asCorruptSnapshot(cause);
         }
     }
 
-    async #readStoredManifestBlob(snapshot: WorkspaceSnapshotRefV1): Promise<StoredManifestReader> {
-        return await StoredManifestReader.open({ snapshot, objects: this.#storedManifestObjects() });
+    async #readStoredManifestBlob(
+        snapshot: WorkspaceSnapshotRefV1,
+        signal?: AbortSignal
+    ): Promise<StoredManifestReader> {
+        return await StoredManifestReader.open({ snapshot, objects: this.#storedManifestObjects(signal) });
     }
 
     async verifyWorkspaceTree(snapshot: WorkspaceSnapshotRefV1, manifest: StoredManifestReader): Promise<void> {
@@ -1439,22 +1452,26 @@ export class WorkspaceSnapshotStore {
         await ensureDurableGitObjects(this.storeRoot, objectIds, new Set(objectIds));
     }
 
-    #storedManifestObjects(): StoredManifestObjectReader {
+    #storedManifestObjects(signal?: AbortSignal): StoredManifestObjectReader {
         return {
-            readBlob: (oid) => this.#readBlobUnlocked(oid),
-            readBlobs: (oids) => this.#readStoredPathStateBlobs(oids),
+            readBlob: (oid) => this.#readBlobUnlocked(oid, signal),
+            readBlobs: (oids) => this.#readStoredPathStateBlobs(oids, signal),
             readTree: async (oid) => {
                 validateOid(oid);
                 const result = await this.git.run(["cat-file", "tree", oid], {
                     gitDir: this.storeRoot,
                     timeoutMs: StoreGitTimeoutMs,
+                    signal,
                 });
                 return result.stdout;
             },
         };
     }
 
-    async #readStoredPathStateBlobs(oids: readonly string[]): Promise<ReadonlyMap<string, Buffer>> {
+    async #readStoredPathStateBlobs(
+        oids: readonly string[],
+        signal?: AbortSignal
+    ): Promise<ReadonlyMap<string, Buffer>> {
         if (oids.length === 0 || oids.length > StoredManifestBlobBatchSize || new Set(oids).size !== oids.length) {
             throw new Error("Invalid stored path state blob batch");
         }
@@ -1464,6 +1481,7 @@ export class WorkspaceSnapshotStore {
             stdin: Buffer.from(`${oids.join("\n")}\n`),
             timeoutMs: StoreGitTimeoutMs,
             maxStdoutBytes: StoredPathStateBatchOutputBytes,
+            signal,
         });
         return parseBatchBlobs(result.stdout, oids, StoredPathStateMaxBytes);
     }

@@ -1018,8 +1018,10 @@ git commit -m "docs(agent): finalize incremental rewind snapshots"
 
 - [x] Windows staging 在没有 owner-only ACL 证明前 fail closed；
 - [x] capture/dispose 使用进程内可重试状态机，保留 cleanup ownership，不增加 journal/recovery；
+- [x] pending batch 使用单一 terminal-operation reservation，dispose 等待 active consumer/discard；
 - [x] consumer 与 cleanup 同时失败时保留两个错误；
 - [x] scope/index、base reader、anchored reader 和 hash 共用单次 capture deadline；
+- [x] 内部 Git abort 映射为 timeout，调用者 abort 保持原语义，base/store Git read 可取消且会 drain；
 - [x] direct reader batch 使用总 deadline，不按 worker 重置 timeout；
 - [x] stable Git index warm path 只验证 metadata，racy/unreliable evidence 才读取和 hash；
 - [x] split-index 与 sparse-index 使用 capability-gated integration tests；

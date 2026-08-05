@@ -1075,7 +1075,7 @@ describe("workspace snapshots", () => {
             maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
             maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
             timeoutMs: 10_000,
-            base: { readNodeKind: (path) => fixture.store.readNodeKind(base, path) },
+            base: { readNodeKind: (path, signal) => fixture.store.readNodeKind(base, path, signal) },
         });
         await writeFile(join(fixture.workspace, "README.md"), "after");
         const result = await pathCapture.capture(["README.md"]);
@@ -1103,6 +1103,47 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
     });
 
+    test("propagates base node cancellation through manifest Git reads and drains before settling", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "content");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const originalRun = fixture.git.run.bind(fixture.git);
+        const started = makeDeferred();
+        let activeGitReads = 0;
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "cat-file") {
+                activeGitReads += 1;
+                started.resolve();
+                try {
+                    await new Promise<void>((resolve, reject) => {
+                        const timer = setTimeout(resolve, 150);
+                        options.signal?.addEventListener(
+                            "abort",
+                            () => {
+                                clearTimeout(timer);
+                                reject(options.signal!.reason);
+                            },
+                            { once: true }
+                        );
+                    });
+                } finally {
+                    activeGitReads -= 1;
+                }
+            }
+            return await originalRun(args, options);
+        });
+        const controller = new AbortController();
+        const abortReason = new Error("caller cancelled base read");
+        const pending = fixture.store.readNodeKind(base, "README.md", controller.signal);
+        await started.promise;
+
+        controller.abort(abortReason);
+
+        await expect(pending).rejects.toBe(abortReason);
+        expect(activeGitReads).toBe(0);
+    });
+
     test("rejects captured batch semantic tampering before quota, object, or ref work", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "a.txt"), "before");
@@ -1124,7 +1165,7 @@ describe("workspace snapshots", () => {
             maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
             maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
             timeoutMs: 10_000,
-            base: { readNodeKind: (path) => fixture.store.readNodeKind(base, path) },
+            base: { readNodeKind: (path, signal) => fixture.store.readNodeKind(base, path, signal) },
         });
         await writeFile(join(fixture.workspace, "a.txt"), "after");
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);

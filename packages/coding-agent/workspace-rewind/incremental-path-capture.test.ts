@@ -94,6 +94,93 @@ describe("IncrementalPathCapture", () => {
         await expect(fixture.capture.discardCaptured(second)).resolves.toBeUndefined();
     });
 
+    test("waits for an active consumer before dispose can clean its staging", async () => {
+        await writeFile(join(workspace, "README.md"), "content");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        const result = await fixture.capture.capture(["README.md"]);
+        let releaseConsumer!: () => void;
+        let consumerStarted!: () => void;
+        const consumerGate = new Promise<void>((resolve) => {
+            releaseConsumer = resolve;
+        });
+        const started = new Promise<void>((resolve) => {
+            consumerStarted = resolve;
+        });
+        const consuming = fixture.capture.consumeCaptured(result, async (batch) => {
+            consumerStarted();
+            await consumerGate;
+            await materializeIncrementalCapturedBatch(batch, {
+                storeRoot: fixture.store.storeRoot,
+                writeBlob: async (bytes) => gitBlobOid(bytes),
+            });
+        });
+        await started;
+        let disposeSettled = false;
+        const disposing = fixture.capture.dispose().finally(() => {
+            disposeSettled = true;
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        const settledBeforeConsumer = disposeSettled;
+
+        releaseConsumer();
+        const outcomes = await Promise.allSettled([consuming, disposing]);
+
+        expect(settledBeforeConsumer).toBe(false);
+        expect(outcomes).toEqual([
+            expect.objectContaining({ status: "fulfilled" }),
+            expect.objectContaining({ status: "fulfilled" }),
+        ]);
+    });
+
+    test("rejects discard while the batch consumer owns the terminal operation", async () => {
+        await writeFile(join(workspace, "README.md"), "content");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        const result = await fixture.capture.capture(["README.md"]);
+        let releaseConsumer!: () => void;
+        let consumerStarted!: () => void;
+        const consumerGate = new Promise<void>((resolve) => {
+            releaseConsumer = resolve;
+        });
+        const started = new Promise<void>((resolve) => {
+            consumerStarted = resolve;
+        });
+        const consuming = fixture.capture.consumeCaptured(result, async () => {
+            consumerStarted();
+            await consumerGate;
+        });
+        await started;
+
+        const discardOutcome = await fixture.capture.discardCaptured(result).then(
+            () => ({ status: "fulfilled" as const }),
+            (error) => ({ status: "rejected" as const, error })
+        );
+        releaseConsumer();
+        await consuming.catch(() => undefined);
+
+        expect(discardOutcome.status).toBe("rejected");
+        if (discardOutcome.status === "rejected") {
+            expect(discardOutcome.error).toMatchObject({ message: expect.stringMatching(/operation.*active/i) });
+        }
+    });
+
+    test("allows only one concurrent discard to own a captured batch", async () => {
+        await writeFile(join(workspace, "README.md"), "content");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        const result = await fixture.capture.capture(["README.md"]);
+
+        const outcomes = await Promise.allSettled([
+            fixture.capture.discardCaptured(result),
+            fixture.capture.discardCaptured(result),
+        ]);
+
+        expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+        expect(outcomes.filter((outcome) => outcome.status === "rejected")).toEqual([
+            expect.objectContaining({
+                reason: expect.objectContaining({ message: expect.stringMatching(/operation.*active/i) }),
+            }),
+        ]);
+    });
+
     test("disposes every abandoned pending capture and invalidates its result", async () => {
         await writeFile(join(workspace, "one.txt"), "one");
         await writeFile(join(workspace, "two.txt"), "two");
@@ -686,6 +773,34 @@ describe("IncrementalPathCapture", () => {
         if (outcome.status === "rejected") expect(outcome.error).toMatchObject({ code: "timeout" });
     });
 
+    test("maps an internal deadline through a real Git scope abort while preserving caller aborts", async () => {
+        const repository = join(root, "repository");
+        await mkdir(repository);
+        await execFileAsync("git", ["init"], { cwd: repository });
+        await writeFile(join(repository, "README.md"), "content");
+        const fixture = await makeCaptureFixture(root, repository, git);
+        const blockingGit = join(root, "blocking-git");
+        await writeFile(
+            blockingGit,
+            `#!/usr/bin/env node
+setTimeout(() => process.stdout.write("true\\n"), 500);
+`
+        );
+        await chmod(blockingGit, 0o755);
+        const runner = new WorkspaceGitRunner(blockingGit);
+        const timed = new IncrementalPathCapture({ ...fixture.options, git: runner, timeoutMs: 30 });
+
+        await expect(timed.capture(["README.md"])).rejects.toMatchObject({ code: "timeout" });
+
+        const caller = new AbortController();
+        const aborted = new IncrementalPathCapture({ ...fixture.options, git: runner, timeoutMs: 1_000 });
+        const pending = aborted.capture(["README.md"], caller.signal);
+        caller.abort();
+
+        await expect(pending).rejects.toMatchObject({ code: "aborted" });
+        await Promise.all([timed.dispose(), aborted.dispose()]);
+    });
+
     test("applies the same capture deadline to base-kind work", async () => {
         const fixture = await makeCaptureFixture(root, workspace, git);
         vi.doMock("./workspace-scope", async (importOriginal) => {
@@ -709,14 +824,32 @@ describe("IncrementalPathCapture", () => {
         vi.resetModules();
         const isolated = await import("./incremental-path-capture");
         const isolatedGit = new (await import("./git-runner")).WorkspaceGitRunner();
+        let activeBaseReads = 0;
+        let receivedSignal: AbortSignal | undefined;
         const capture = new isolated.IncrementalPathCapture({
             ...fixture.options,
             git: isolatedGit,
             timeoutMs: 30,
             base: {
-                readNodeKind: async () => {
-                    await new Promise((resolve) => setTimeout(resolve, 150));
-                    return "absent" as const;
+                readNodeKind: async (_path: string, signal?: AbortSignal) => {
+                    activeBaseReads += 1;
+                    receivedSignal = signal;
+                    try {
+                        await new Promise<void>((resolve, reject) => {
+                            const timer = setTimeout(resolve, 150);
+                            signal?.addEventListener(
+                                "abort",
+                                () => {
+                                    clearTimeout(timer);
+                                    reject(signal.reason);
+                                },
+                                { once: true }
+                            );
+                        });
+                        return "absent" as const;
+                    } finally {
+                        activeBaseReads -= 1;
+                    }
                 },
             },
         });
@@ -724,9 +857,13 @@ describe("IncrementalPathCapture", () => {
             (result) => ({ status: "resolved" as const, result }),
             (error) => ({ status: "rejected" as const, error })
         );
+        const activeAtSettlement = activeBaseReads;
         if (outcome.status === "resolved") await capture.discardCaptured(outcome.result);
+        await vi.waitFor(() => expect(activeBaseReads).toBe(0));
 
         expect(outcome.status).toBe("rejected");
+        expect(receivedSignal).toBeInstanceOf(AbortSignal);
+        expect(activeAtSettlement).toBe(0);
         if (outcome.status === "rejected") expect(outcome.error).toMatchObject({ code: "timeout" });
     });
 
@@ -975,4 +1112,11 @@ async function makeCaptureFixture(
     const capture = new IncrementalPathCapture(options);
     capturesForCleanup.push(capture);
     return { capture, identity, options, store };
+}
+
+function gitBlobOid(bytes: Buffer): string {
+    return createHash("sha1")
+        .update(Buffer.from(`blob ${bytes.length}\0`))
+        .update(bytes)
+        .digest("hex");
 }

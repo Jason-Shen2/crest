@@ -404,11 +404,17 @@ journal、持久化 recovery 或新的用户可见状态：
 - capture 实例使用 `active -> disposing -> disposed` 状态机。`dispose()` 先拒绝新捕获，
   abort 并等待在途捕获，再清理仍归实例所有的 batch/staging root；清理失败保留 ownership，
   后续 `dispose()` 或 `discardCaptured()` 可以重试；
+- 每个 pending batch 同时只允许一个 terminal operation reservation。consume、discard 和 dispose
+  不得并发清理同一个 staging root；dispose 必须等待已获得 reservation 的操作结束。consumer
+  已执行但 cleanup 失败时，只允许重试 cleanup，不能再次执行 consumer；
 - consumer 失败与 staging cleanup 失败必须同时保留在 `AggregateError` 中，不能用清理错误
   覆盖原始业务错误；
 - 一次 capture 只有一个总 deadline。scope/index 验证、base-kind 读取、anchored reader、
   hash-object 和最终注册都消费同一预算；reader batch 也使用总 deadline，而不是给每个 worker
   重新分配完整 timeout；
+- 内部 deadline 引发的 Git abort 必须重新映射为 capture timeout；调用者主动 abort 保留原语义。
+  base-kind reader 接收同一个 `AbortSignal`，并把它传到 snapshot manifest 的 Git 读取；capture
+  结束时不能遗留仍在执行的 base read；
 - Git index 在 warm stable 路径先验证 canonical path、parent identity 和完整 entry metadata。
   只有 identity 不可靠或仍处于 anchored-reader 的 racy window 时才重新读取并 hash 内容；
   split-index 和 sparse-index 必须通过 capability-gated 集成测试；
