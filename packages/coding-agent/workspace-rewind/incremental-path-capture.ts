@@ -142,6 +142,7 @@ export class IncrementalPathCapture {
         signal: AbortSignal,
         deadline: number
     ): Promise<IncrementalPathCaptureResult> {
+        assertCaptureDeadline(deadline, signal);
         if (paths.length === 0) {
             const result: IncrementalPathCaptureResult = {
                 status: "captured",
@@ -271,7 +272,7 @@ export class IncrementalPathCapture {
         if (this.consumedBatches.has(batch)) {
             throw new Error("Incremental capture result was already consumed");
         }
-        const release = this.reserveBatchOperation(batch);
+        const release = this.reserveBatchOperation(batch, "consume");
         try {
             this.consumedBatches.add(batch);
             let value: T | undefined;
@@ -303,7 +304,7 @@ export class IncrementalPathCapture {
 
     async discardCaptured(result: IncrementalPathCaptureResult): Promise<void> {
         const batch = this.getPendingCapture(result);
-        const release = this.reserveBatchOperation(batch);
+        const release = this.reserveBatchOperation(batch, "discard");
         try {
             await this.cleanupPendingBatch(batch);
         } finally {
@@ -368,11 +369,13 @@ export class IncrementalPathCapture {
         return batch;
     }
 
-    reserveBatchOperation(batch: IncrementalCapturedBatch): () => void {
+    reserveBatchOperation(batch: IncrementalCapturedBatch, kind: "consume" | "discard"): () => void {
         if (this.batchOperations.has(batch)) {
             throw new Error("Incremental capture batch operation is already active");
         }
-        if (this.lifecycle !== "active") {
+        const retryingFailedDisposeCleanup =
+            kind === "discard" && this.lifecycle === "disposing" && this.disposePromise == null;
+        if (this.lifecycle !== "active" && !retryingFailedDisposeCleanup) {
             throw new Error("Incremental path capture is disposed");
         }
         let settle!: () => void;

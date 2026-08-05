@@ -407,6 +407,8 @@ journal、持久化 recovery 或新的用户可见状态：
 - 每个 pending batch 同时只允许一个 terminal operation reservation。consume、discard 和 dispose
   不得并发清理同一个 staging root；dispose 必须等待已获得 reservation 的操作结束。consumer
   已执行但 cleanup 失败时，只允许重试 cleanup，不能再次执行 consumer；
+- dispose cleanup 失败后，实例保持关闭，但允许对仍由实例持有的 batch 显式执行 discard-only
+  cleanup 重试；该入口不能恢复 capture 或 consumer；
 - consumer 失败与 staging cleanup 失败必须同时保留在 `AggregateError` 中，不能用清理错误
   覆盖原始业务错误；
 - 一次 capture 只有一个总 deadline。scope/index 验证、base-kind 读取、anchored reader、
@@ -415,6 +417,9 @@ journal、持久化 recovery 或新的用户可见状态：
 - 内部 deadline 引发的 Git abort 必须重新映射为 capture timeout；调用者主动 abort 保留原语义。
   base-kind reader 接收同一个 `AbortSignal`，并把它传到 snapshot manifest 的 Git 读取；capture
   结束时不能遗留仍在执行的 base read；
+- 空 dirty-path capture 在注册 empty batch 前同样检查 abort/deadline。base node-kind 只按已拥有的
+  immutable snapshot OID 读取 descriptor、manifest 和 state tree，不进入 workspace mutation lock，
+  避免并发 Session 的 commit/maintenance 阻塞 capture deadline；
 - Git index 在 warm stable 路径先验证 canonical path、parent identity 和完整 entry metadata。
   只有 identity 不可靠或仍处于 anchored-reader 的 racy window 时才重新读取并 hash 内容；
   split-index 和 sparse-index 必须通过 capability-gated 集成测试；

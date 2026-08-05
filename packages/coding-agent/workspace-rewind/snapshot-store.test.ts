@@ -1103,11 +1103,35 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.verifyOwnedSnapshot(committed.ref)).resolves.toBeUndefined();
     });
 
-    test("propagates base node cancellation through manifest Git reads and drains before settling", async () => {
+    test("reads immutable snapshot node kinds without waiting for the mutation lock", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "README.md"), "content");
         const captured = await fixture.store.capture({ profile: "terminal" });
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const releaseLock = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => releaseLock.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
+
+        const pending = fixture.store.readNodeKind(base, "README.md");
+        const whileHeld = await Promise.race([
+            pending,
+            new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 100)),
+        ]);
+        releaseLock.resolve();
+        await held;
+        await pending;
+
+        expect(whileHeld).toBe("leaf");
+    });
+
+    test("propagates base node cancellation through lock-free manifest Git reads and drains", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "content");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const releaseLock = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => releaseLock.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
         const originalRun = fixture.git.run.bind(fixture.git);
         const started = makeDeferred();
         let activeGitReads = 0;
@@ -1135,12 +1159,22 @@ describe("workspace snapshots", () => {
         });
         const controller = new AbortController();
         const abortReason = new Error("caller cancelled base read");
-        const pending = fixture.store.readNodeKind(base, "README.md", controller.signal);
-        await started.promise;
+        const pending = fixture.store.readNodeKind(base, "README.md", controller.signal).then(
+            (value) => ({ status: "fulfilled" as const, value }),
+            (error) => ({ status: "rejected" as const, error })
+        );
+        const startedWhileHeld = await Promise.race([
+            started.promise.then(() => true),
+            new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
+        ]);
 
         controller.abort(abortReason);
+        releaseLock.resolve();
+        await held;
+        const outcome = await pending;
 
-        await expect(pending).rejects.toBe(abortReason);
+        expect(startedWhileHeld).toBe(true);
+        expect(outcome).toEqual({ status: "rejected", error: abortReason });
         expect(activeGitReads).toBe(0);
     });
 

@@ -591,21 +591,19 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    readNodeKind(
+    async readNodeKind(
         snapshot: WorkspaceSnapshotRefV1,
         path: string,
         signal?: AbortSignal
     ): Promise<"absent" | "leaf" | "tree"> {
-        return this.withWorkspaceLock(async () => {
-            validateRelativePath(path);
-            try {
-                if (signal?.aborted) throw signal.reason;
-                return await (await this.#readStoredManifest(snapshot, signal)).readNodeKind(path);
-            } catch (cause) {
-                if (signal?.aborted) throw signal.reason ?? cause;
-                throw asCorruptSnapshot(cause);
-            }
-        });
+        validateRelativePath(path);
+        try {
+            if (signal?.aborted) throw signal.reason;
+            return await (await this.#readStoredManifest(snapshot, signal)).readNodeKind(path);
+        } catch (cause) {
+            if (signal?.aborted) throw signal.reason ?? cause;
+            throw asCorruptSnapshot(cause);
+        }
     }
 
     readBlob(oid: string): Promise<Buffer> {
