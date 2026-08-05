@@ -143,6 +143,28 @@ describe("WorkspaceSnapshotTracker", () => {
         expect(failure).toMatchObject({ code: "capture_timeout", cause });
     });
 
+    test("maps an internal timeout that wins before a later caller abort is observed", async () => {
+        const fixture = makeFixture();
+        await fixture.tracker.capture({ profile: "pre-turn" });
+        fixture.feed.readChanges.mockResolvedValueOnce(complete(["a.txt"], "candidate-1"));
+        const controller = new AbortController();
+        const internalTimeout = new AnchoredReaderError("timeout", "Incremental path capture timed out");
+        const callerReason = new Error("caller aborted after the internal deadline");
+        fixture.pathCapture.capture.mockImplementationOnce(() => {
+            const rejected = Promise.reject(internalTimeout);
+            controller.abort(callerReason);
+            return rejected;
+        });
+
+        const failure = await fixture.tracker
+            .capture({ profile: "terminal", signal: controller.signal })
+            .catch((error: unknown) => error);
+
+        expect(controller.signal.reason).toBe(callerReason);
+        expect(failure).toBeInstanceOf(WorkspaceSnapshotStoreError);
+        expect(failure).toMatchObject({ code: "capture_timeout", cause: internalTimeout });
+    });
+
     test("preserves a caller-driven abort reason from incremental capture", async () => {
         const fixture = makeFixture();
         await fixture.tracker.capture({ profile: "pre-turn" });

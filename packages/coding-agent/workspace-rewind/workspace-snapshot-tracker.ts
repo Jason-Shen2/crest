@@ -310,7 +310,11 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
             try {
                 result = await this.pathCapture!.capture(paths, options.signal, timeoutMs);
             } catch (error) {
-                if (!options.signal?.aborted && error instanceof AnchoredReaderError && error.code === "timeout") {
+                if (
+                    error !== options.signal?.reason &&
+                    error instanceof AnchoredReaderError &&
+                    error.code === "timeout"
+                ) {
                     throw new WorkspaceSnapshotStoreError("capture_timeout", "Workspace snapshot capture timed out", {
                         cause: error,
                     });
