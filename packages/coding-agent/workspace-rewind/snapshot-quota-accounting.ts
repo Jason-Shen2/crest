@@ -7,6 +7,7 @@ import { encodeDurableJson } from "./durability";
 import {
     type AnchoredJournalDirectoryIdentity,
     type AnchoredJournalEntry,
+    inspectAnchoredJournalEntry,
     readAnchoredJournalEntry,
     writeAnchoredJournalEntry,
 } from "./journal-directory";
@@ -49,6 +50,7 @@ export class SnapshotQuotaReservation {
     readonly accounting: SnapshotQuotaAccounting;
     readonly reservedBytes: number;
     status: "active" | "resolved" = "active";
+    needsExactSettlement = false;
 
     constructor(accounting: SnapshotQuotaAccounting, reservedBytes: number) {
         this.accounting = accounting;
@@ -77,6 +79,8 @@ export class SnapshotQuotaAccounting {
     rootIdentity!: AnchoredJournalDirectoryIdentity;
     stateEntry?: AnchoredJournalEntry;
     measuredBytes = 0;
+    activeReservedBytes = 0;
+    activeReservations = new Set<SnapshotQuotaReservation>();
     needsReconcile = false;
     serialized: Promise<void> = Promise.resolve();
 
@@ -130,7 +134,12 @@ export class SnapshotQuotaAccounting {
         try {
             loaded = await this.readStoredState();
         } catch (error) {
-            if (!isRecoverableStateReadError(error)) throw error;
+            if (!isRecoverableStateReadError(error)) {
+                const oversized = await this.inspectHardOversizedState();
+                if (!oversized) throw error;
+                this.rootIdentity = oversized.identity;
+                this.stateEntry = oversized.entry;
+            }
         }
         if (loaded && loaded.state.generation === this.generation) {
             this.rootIdentity = loaded.rootIdentity;
@@ -141,7 +150,7 @@ export class SnapshotQuotaAccounting {
         if (loaded) {
             this.rootIdentity = loaded.rootIdentity;
             this.stateEntry = loaded.entry;
-        } else {
+        } else if (!this.stateEntry) {
             const raw = await this.readRawStateForReplacement();
             if (raw) {
                 this.rootIdentity = raw.identity;
@@ -166,7 +175,10 @@ export class SnapshotQuotaAccounting {
                 });
             }
             await this.publishMeasuredBytes(this.measuredBytes + reservedBytes);
-            return new SnapshotQuotaReservation(this, reservedBytes);
+            const reservation = new SnapshotQuotaReservation(this, reservedBytes);
+            this.activeReservations.add(reservation);
+            this.activeReservedBytes = checkedAdd(this.activeReservedBytes, reservedBytes, "active quota reservations");
+            return reservation;
         });
     }
 
@@ -198,7 +210,10 @@ export class SnapshotQuotaAccounting {
     replaceExactUsage(measuredBytes: number): Promise<void> {
         validateBytes(measuredBytes, "exact snapshot usage");
         return this.runSerialized(async () => {
-            await this.publishMeasuredBytes(measuredBytes);
+            this.markActiveReservationsForExactSettlement();
+            await this.publishMeasuredBytes(
+                checkedAdd(measuredBytes, this.activeReservedBytes, "snapshot usage with active reservations")
+            );
             this.needsReconcile = false;
         });
     }
@@ -211,8 +226,12 @@ export class SnapshotQuotaAccounting {
         validateBytes(actualNewLooseBytes, "new loose object usage");
         return this.runSerialized(async () => {
             if (reservation.status === "resolved") return;
-            reservation.status = "resolved";
-            if (this.needsReconcile || actualNewLooseBytes > reservation.reservedBytes) {
+            if (
+                this.needsReconcile ||
+                reservation.needsExactSettlement ||
+                actualNewLooseBytes > reservation.reservedBytes
+            ) {
+                this.resolveReservation(reservation);
                 this.needsReconcile = true;
                 const measuredBytes = await this.reconcileExactUsageUnlocked();
                 if (actualNewLooseBytes > reservation.reservedBytes || measuredBytes > this.maxBytes) {
@@ -227,7 +246,9 @@ export class SnapshotQuotaAccounting {
             const next = this.measuredBytes - reservation.reservedBytes + actualNewLooseBytes;
             try {
                 await this.publishMeasuredBytes(next);
+                this.resolveReservation(reservation);
             } catch (error) {
+                this.resolveReservation(reservation);
                 this.needsReconcile = true;
                 throw error;
             }
@@ -237,14 +258,16 @@ export class SnapshotQuotaAccounting {
     releaseReservation(reservation: SnapshotQuotaReservation): Promise<void> {
         return this.runSerialized(async () => {
             if (reservation.status === "resolved") return;
-            reservation.status = "resolved";
-            if (this.needsReconcile) {
+            if (this.needsReconcile || reservation.needsExactSettlement) {
+                this.resolveReservation(reservation);
                 await this.reconcileExactUsageUnlocked();
                 return;
             }
             try {
                 await this.publishMeasuredBytes(this.measuredBytes - reservation.reservedBytes);
+                this.resolveReservation(reservation);
             } catch (error) {
+                this.resolveReservation(reservation);
                 this.needsReconcile = true;
                 throw error;
             }
@@ -254,26 +277,28 @@ export class SnapshotQuotaAccounting {
     invalidateReservation(reservation: SnapshotQuotaReservation): Promise<void> {
         return this.runSerialized(async () => {
             if (reservation.status === "resolved") return;
-            reservation.status = "resolved";
+            this.resolveReservation(reservation);
             this.needsReconcile = true;
         });
     }
 
     async reconcileExactUsageUnlocked(): Promise<number> {
-        const current = await readAnchoredJournalEntry({
-            root: join(this.storeRoot, "tracker"),
-            name: QuotaStateName,
-            maximumEntryBytes: MaximumQuotaStateReadBytes,
-        });
+        const current = await this.readCurrentStateForReconciliation();
         if (!current || !sameDirectoryIdentity(current.identity, this.rootIdentity)) {
             throw new Error("Snapshot quota tracker root anchor changed");
         }
         this.stateEntry = current.entry;
+        this.markActiveReservationsForExactSettlement();
         const measuredBytes = await this.measureExactUsage();
         validateBytes(measuredBytes, "exact snapshot usage");
-        await this.publishMeasuredBytes(measuredBytes);
+        const measuredWithReservations = checkedAdd(
+            measuredBytes,
+            this.activeReservedBytes,
+            "snapshot usage with active reservations"
+        );
+        await this.publishMeasuredBytes(measuredWithReservations);
         this.needsReconcile = false;
-        return measuredBytes;
+        return measuredWithReservations;
     }
 
     async publishMeasuredBytes(measuredBytes: number): Promise<void> {
@@ -337,6 +362,50 @@ export class SnapshotQuotaAccounting {
         });
         if (!stored?.entry) return undefined;
         return { identity: stored.identity, entry: stored.entry };
+    }
+
+    async inspectHardOversizedState(): Promise<
+        { identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry } | undefined
+    > {
+        const inspected = await inspectAnchoredJournalEntry({
+            root: join(this.storeRoot, "tracker"),
+            name: QuotaStateName,
+        });
+        if (!inspected?.entry || BigInt(inspected.entry.identity.size) <= BigInt(MaximumQuotaStateReadBytes)) {
+            return undefined;
+        }
+        return {
+            identity: inspected.identity,
+            entry: { ...inspected.entry, bytes: Buffer.alloc(0) },
+        };
+    }
+
+    async readCurrentStateForReconciliation(): Promise<
+        { identity: AnchoredJournalDirectoryIdentity; entry: AnchoredJournalEntry | undefined } | undefined
+    > {
+        try {
+            return await readAnchoredJournalEntry({
+                root: join(this.storeRoot, "tracker"),
+                name: QuotaStateName,
+                maximumEntryBytes: MaximumQuotaStateReadBytes,
+            });
+        } catch (error) {
+            const oversized = await this.inspectHardOversizedState();
+            if (!oversized) throw error;
+            return oversized;
+        }
+    }
+
+    markActiveReservationsForExactSettlement(): void {
+        for (const reservation of this.activeReservations) reservation.needsExactSettlement = true;
+    }
+
+    resolveReservation(reservation: SnapshotQuotaReservation): void {
+        if (!this.activeReservations.delete(reservation)) {
+            throw new Error("Snapshot quota reservation is not active");
+        }
+        this.activeReservedBytes -= reservation.reservedBytes;
+        reservation.status = "resolved";
     }
 
     runSerialized<T>(operation: () => Promise<T>): Promise<T> {

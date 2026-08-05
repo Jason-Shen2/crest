@@ -578,16 +578,16 @@ export class WorkspaceSnapshotStore {
                     error = new AggregateError([caught, quotaError], "Incremental snapshot quota settlement failed");
                 }
             }
-            if (error instanceof AggregateError) {
-                throw error;
+            if (caught instanceof SnapshotQuotaExceededError) {
+                throw new WorkspaceSnapshotStoreError("quota_exceeded", caught.message, { cause: error });
             }
-            if (error instanceof SnapshotQuotaExceededError) {
-                throw new WorkspaceSnapshotStoreError("quota_exceeded", error.message, { cause: error });
-            }
-            if (isNoSpaceError(error)) {
+            if (isNoSpaceError(caught)) {
                 throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
                     cause: error,
                 });
+            }
+            if (error instanceof AggregateError) {
+                throw error;
             }
             if (controller.signal.aborted) {
                 throw new WorkspaceSnapshotStoreError(

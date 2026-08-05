@@ -65,6 +65,26 @@ describe("snapshot quota accounting", () => {
         expect(accounting.measuredBytes).toBe(125);
     });
 
+    test("preserves active reservations across exact reconciliation and settles them exactly", async () => {
+        const fixture = await makeFixture();
+        const accounting = await openAccounting(fixture, { exactBytes: 200, maxBytes: 1_000 });
+        const first = await accounting.reserve({ contentBytes: 400, metadataBytes: 0 });
+        const second = await accounting.reserve({ contentBytes: 400, metadataBytes: 0 });
+
+        await accounting.reconcileExactUsage();
+
+        expect(accounting.measuredBytes).toBe(1_000);
+        await expect(accounting.reserve({ contentBytes: 700, metadataBytes: 0 })).rejects.toMatchObject({
+            code: "quota_exceeded",
+        });
+
+        fixture.exactBytes = 300;
+        await first.commit({ actualNewLooseBytes: 100 });
+        expect(accounting.measuredBytes).toBe(700);
+        await second.release();
+        expect(accounting.measuredBytes).toBe(300);
+    });
+
     test("reuses one accounting instance for the same store and generation", async () => {
         const fixture = await makeFixture();
         const first = await openAccounting(fixture);
@@ -180,7 +200,7 @@ describe("snapshot quota accounting", () => {
         await expect(accounting.reserve({ contentBytes: 1, metadataBytes: 0 })).rejects.toThrow(/anchor|changed/i);
     });
 
-    test("fails closed for a symlinked tracker directory and a hard-oversized state", async () => {
+    test("fails closed for a symlinked tracker directory", async () => {
         const fixture = await makeFixture();
         const external = join(fixture.root, "external");
         await mkdir(external, { mode: 0o700 });
@@ -188,11 +208,19 @@ describe("snapshot quota accounting", () => {
         await symlink(external, fixture.trackerRoot);
         resetSnapshotQuotaAccountingRegistryForTest();
         await expect(openAccounting(fixture)).rejects.toThrow(/unsafe|directory/i);
+    });
 
-        await rm(fixture.trackerRoot);
+    test("reconciles exact usage without reading a hard-oversized cached state", async () => {
+        const fixture = await makeFixture();
         await mkdir(fixture.trackerRoot, { mode: 0o700 });
         await writeFile(fixture.statePath, Buffer.alloc(2 * 1024 * 1024), { mode: 0o600 });
-        await expect(openAccounting(fixture)).rejects.toThrow(/unsafe|limit|worker/i);
+        fixture.exactBytes = 321;
+
+        const accounting = await openAccounting(fixture);
+
+        expect(accounting.measuredBytes).toBe(321);
+        expect(fixture.exactScans).toBe(1);
+        expect((await readFile(fixture.statePath)).length).toBeLessThan(1024);
     });
 });
 

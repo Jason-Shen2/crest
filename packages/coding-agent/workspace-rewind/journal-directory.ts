@@ -114,6 +114,42 @@ export async function readAnchoredJournalEntry(input: {
     };
 }
 
+export async function inspectAnchoredJournalEntry(input: { root: string; name: string }): Promise<
+    | {
+          identity: AnchoredJournalDirectoryIdentity;
+          entry: Pick<AnchoredJournalEntry, "name" | "identity"> | undefined;
+      }
+    | undefined
+> {
+    let state;
+    try {
+        state = await lstat(input.root, { bigint: true });
+    } catch (error) {
+        if (isNodeError(error) && error.code === "ENOENT") return undefined;
+        throw error;
+    }
+    if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
+        throw new Error("Workspace recovery journal directory is unsafe");
+    }
+    const identity = directoryIdentity(state);
+    const result = await runWorker(input.root, {
+        type: "inspect-entry",
+        rootIdentity: identity,
+        name: input.name,
+    });
+    const after = await lstat(input.root, { bigint: true });
+    if (!after.isDirectory() || after.isSymbolicLink() || !sameIdentity(after, identity)) {
+        throw new Error("Workspace recovery journal directory changed while inspecting entry");
+    }
+    if (!isNamedEntryInspectionResult(result, input.name)) {
+        throw new Error("Workspace recovery journal entry inspector returned invalid output");
+    }
+    return {
+        identity,
+        entry: result.entry == null ? undefined : result.entry,
+    };
+}
+
 export async function readAnchoredJournalPublication(input: {
     root: string;
     destinationName: string;
@@ -393,6 +429,19 @@ function isNamedReadResult(
     return bytes.toString("base64") === value.entry.bytesBase64 && bytes.length <= input.maximumEntryBytes;
 }
 
+function isNamedEntryInspectionResult(
+    value: unknown,
+    name: string
+): value is { entry: Pick<AnchoredJournalEntry, "name" | "identity"> | null } {
+    return (
+        isRecord(value) &&
+        Object.keys(value).length === 1 &&
+        "entry" in value &&
+        (value.entry === null ||
+            (isRecord(value.entry) && value.entry.name === name && isEntryIdentity(value.entry.identity)))
+    );
+}
+
 function isEntryIdentity(value: unknown): value is AnchoredJournalEntry["identity"] {
     if (!isRecord(value)) {
         return false;
@@ -526,6 +575,21 @@ async function readOptionalEntry(name, maximumEntryBytes) {
         throw error;
     }
     return readEntryWithState(name, maximumEntryBytes, before);
+}
+
+async function inspectOptionalEntry(name) {
+    if (!validName(name)) throw new Error("invalid journal entry name");
+    let state;
+    try {
+        state = await fsp.lstat(name, { bigint: true });
+    } catch (error) {
+        if (error.code === "ENOENT") return null;
+        throw error;
+    }
+    if (!state.isFile() || state.isSymbolicLink() || state.nlink !== 1n || (state.mode & 63n) !== 0n) {
+        throw new Error("unsafe journal entry: " + name);
+    }
+    return { name, identity: entryIdentity(state) };
 }
 
 async function lstatOptional(name) {
@@ -706,6 +770,11 @@ async function main() {
     }
     if (input.type === "read-entry") {
         const entry = await readOptionalEntry(input.name, input.maximumEntryBytes);
+        await assertRoot(input.rootIdentity);
+        return { entry };
+    }
+    if (input.type === "inspect-entry") {
+        const entry = await inspectOptionalEntry(input.name);
         await assertRoot(input.rootIdentity);
         return { entry };
     }
