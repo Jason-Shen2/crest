@@ -2,16 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
-import type { Session } from "@crest/agent/harness/types";
+import type { AgentHarness, AgentHarnessEvent, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { SessionMutationBarrier } from "../session-mutation-barrier";
+import { registerWorkspaceCheckpointManager, type WorkspaceCheckpointManager } from "./checkpoint-manager";
 import { RewindConfirmationRegistry } from "./confirmation-token";
 import { applyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
+import { decodeWorkspaceCheckpointEntry } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -133,6 +136,31 @@ async function preview(value: Awaited<ReturnType<typeof makeFixture>>, item: Awa
     });
 }
 
+function makeEventHarness() {
+    const listeners = new Set<(event: AgentHarnessEvent) => void | Promise<void>>();
+    return {
+        harness: {
+            subscribe(listener: (event: AgentHarnessEvent) => void | Promise<void>) {
+                listeners.add(listener);
+                return () => listeners.delete(listener);
+            },
+        } as unknown as AgentHarness,
+        async emit(event: AgentHarnessEvent) {
+            for (const listener of listeners) await listener(event);
+        },
+    };
+}
+
+function findAvailableCheckpoint(entries: readonly SessionTreeEntry[], sessionId: string) {
+    for (const entry of entries) {
+        const checkpoint = decodeWorkspaceCheckpointEntry(entry);
+        if (checkpoint?.status === "available" && checkpoint.originSessionId === sessionId) {
+            return { entry, checkpoint };
+        }
+    }
+    throw new Error(`Missing available checkpoint for ${sessionId}`);
+}
+
 describe("workspace rewind across sessions", () => {
     it("shares one tracker baseline across interleaved Session boundaries without weakening live drift checks", async () => {
         const value = await makeFixture();
@@ -147,66 +175,95 @@ describe("workspace rewind across sessions", () => {
             processOwner: value.store.processOwner,
         };
         const [leaseA, leaseB] = await Promise.all([registry.acquire(input), registry.acquire(input)]);
+        const harnessA = makeEventHarness();
+        const harnessB = makeEventHarness();
+        let managerA: WorkspaceCheckpointManager | undefined;
+        let managerB: WorkspaceCheckpointManager | undefined;
 
         try {
-            const beforeA = await leaseA.tracker.capture({ profile: "pre-turn" });
+            expect(leaseB.tracker).toBe(leaseA.tracker);
+            managerA = registerWorkspaceCheckpointManager({
+                harness: harnessA.harness,
+                session: value.sessions.a,
+                sessionId: "session-a",
+                workspaceRoot: value.workspaceRoot,
+                store: value.store,
+                snapshotSource: leaseA.tracker,
+                mutationBarrier: new SessionMutationBarrier(),
+                hasRunningHostedCommands: () => false,
+                processOwner: value.store.processOwner,
+                onCheckpointCommitted: async () => undefined,
+            });
+            managerB = registerWorkspaceCheckpointManager({
+                harness: harnessB.harness,
+                session: value.sessions.b,
+                sessionId: "session-b",
+                workspaceRoot: value.workspaceRoot,
+                store: value.store,
+                snapshotSource: leaseB.tracker,
+                mutationBarrier: new SessionMutationBarrier(),
+                hasRunningHostedCommands: () => false,
+                processOwner: value.store.processOwner,
+                onCheckpointCommitted: async () => undefined,
+            });
+
+            await harnessA.emit({
+                type: "session_before_user_turn",
+                boundaryToken: "boundary-a",
+                userMessage: { role: "user", content: "session A overlaps session B" },
+            } as AgentHarnessEvent);
             const turnA = await value.sessions.a.appendMessage({
                 role: "user",
                 content: "session A overlaps session B",
                 timestamp: Date.now(),
             } as never);
-            const beforeB = await leaseB.tracker.capture({ profile: "pre-turn" });
+            await harnessA.emit({
+                type: "session_user_turn_committed",
+                boundaryToken: "boundary-a",
+                userEntryId: turnA,
+            } as AgentHarnessEvent);
+            await harnessB.emit({
+                type: "session_before_user_turn",
+                boundaryToken: "boundary-b",
+                userMessage: { role: "user", content: "session B writes shared path" },
+            } as AgentHarnessEvent);
             const turnB = await value.sessions.b.appendMessage({
                 role: "user",
                 content: "session B writes shared path",
                 timestamp: Date.now(),
             } as never);
+            await harnessB.emit({
+                type: "session_user_turn_committed",
+                boundaryToken: "boundary-b",
+                userEntryId: turnB,
+            } as AgentHarnessEvent);
 
             await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-during-overlap");
-            const afterB = await leaseB.tracker.capture({ profile: "terminal" });
-            const afterA = await leaseA.tracker.capture({ profile: "terminal" });
-            const checkpointB: WorkspaceCheckpointV1 = {
-                schemaVersion: 1,
-                status: "available",
-                originSessionId: "session-b",
-                turnId: turnB,
-                workspaceIdentity: value.identity.workspaceIdentity,
-                workspaceIncarnation: value.identity.workspaceIncarnation,
-                before: beforeB.ref,
-                after: afterB.ref,
-                changes: await value.store.diff(beforeB.ref, afterB.ref),
-                coverage: afterB.coverage,
-            };
-            const checkpointA: WorkspaceCheckpointV1 = {
-                schemaVersion: 1,
-                status: "available",
-                originSessionId: "session-a",
-                turnId: turnA,
-                workspaceIdentity: value.identity.workspaceIdentity,
-                workspaceIncarnation: value.identity.workspaceIncarnation,
-                before: beforeA.ref,
-                after: afterA.ref,
-                changes: await value.store.diff(beforeA.ref, afterA.ref),
-                coverage: afterA.coverage,
-            };
-            await value.sessions.b.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpointB);
-            const checkpointAId = await value.sessions.a.appendCustomEntry(
-                WorkspaceControlCustomTypes.checkpoint,
-                checkpointA
-            );
+            await harnessB.emit({
+                type: "session_user_turn_terminal",
+                boundaryToken: "boundary-b",
+                reason: "agent_end",
+            } as AgentHarnessEvent);
+            await harnessA.emit({
+                type: "session_user_turn_terminal",
+                boundaryToken: "boundary-a",
+                reason: "agent_end",
+            } as AgentHarnessEvent);
+            const checkpointAItem = findAvailableCheckpoint(await value.sessions.a.getEntries(), "session-a");
+            const checkpointBItem = findAvailableCheckpoint(await value.sessions.b.getEntries(), "session-b");
 
             expect(openStore).toHaveBeenCalledTimes(1);
             expect(fullReconcile).toHaveBeenCalledTimes(1);
-            expect(checkpointA.originSessionId).toBe("session-a");
-            expect(checkpointB.originSessionId).toBe("session-b");
-            expect(checkpointA.after).toEqual(checkpointB.after);
+            expect(checkpointAItem.checkpoint.originSessionId).toBe("session-a");
+            expect(checkpointBItem.checkpoint.originSessionId).toBe("session-b");
+            expect(checkpointAItem.checkpoint.after).toEqual(checkpointBItem.checkpoint.after);
 
             await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-after-boundaries");
             const planned = await value.engine.previewRewind({
                 session: value.sessions.a,
                 sessionId: "session-a",
                 workspace: value.identity,
-                semanticLeafId: checkpointAId,
+                semanticLeafId: checkpointAItem.entry.id,
                 targetTurnId: turnA,
             });
             expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
@@ -218,7 +275,7 @@ describe("workspace rewind across sessions", () => {
                     session: value.sessions.a,
                     sessionId: "session-a",
                     workspace: value.identity,
-                    semanticLeafId: checkpointAId,
+                    semanticLeafId: checkpointAItem.entry.id,
                     targetTurnId: turnA,
                     mode: "normal",
                     confirmation: value.confirmations.take(planned.confirmationToken!),
@@ -226,7 +283,11 @@ describe("workspace rewind across sessions", () => {
             ).rejects.toThrow(/force/i);
             expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b-after-boundaries");
         } finally {
-            await Promise.all([leaseA.release(), leaseB.release()]);
+            try {
+                await Promise.all([managerA?.dispose(), managerB?.dispose()]);
+            } finally {
+                await Promise.all([leaseA.release(), leaseB.release()]);
+            }
         }
     }, 30_000);
 
