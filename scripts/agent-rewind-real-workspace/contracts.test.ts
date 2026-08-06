@@ -241,4 +241,24 @@ describe("validateResultDocument", () => {
         expect(validation.valid).toBe(false);
         expect(validation.errors).toContain("sourceintegrity is required");
     });
+
+    test("rejects an unknown failure code", () => {
+        const result = makeResult() as unknown as Record<string, unknown>;
+        result.failure = { code: "capture_panic", message: "unexpected code" };
+
+        const validation = validateResultDocument(result);
+
+        expect(validation.valid).toBe(false);
+        expect(validation.errors).toContain("failure.code is invalid");
+    });
+
+    test("rejects an explicit null failure", () => {
+        const result = makeResult() as unknown as Record<string, unknown>;
+        result.failure = null;
+
+        const validation = validateResultDocument(result);
+
+        expect(validation.valid).toBe(false);
+        expect(validation.errors).toContain("failure must be an object");
+    });
 });

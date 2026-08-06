@@ -94,6 +94,15 @@ export interface ResultValidation {
 
 const ScenarioStatuses = new Set<ScenarioStatus>(["completed", "failed", "baseline-unavailable", "skipped"]);
 const RepositorySupports = new Set<RepositorySupport>(["unsupported", "baseline-only", "end-to-end-supported"]);
+const FailureCodes = new Set<ResultFailure["code"]>([
+    "capture_timeout",
+    "capture_budget",
+    "unstable_file",
+    "enospc",
+    "quota_exceeded",
+    "corrupt_snapshot",
+    "unexpected",
+]);
 
 export function classifyRepositorySupport(evidence: RepositorySupportEvidence): RepositorySupport {
     const endToEndSupported =
@@ -198,12 +207,15 @@ export function validateResultDocument(document: unknown): ResultValidation {
         errors.push("support is invalid");
     }
 
-    const failure = Object.hasOwn(document, "failure") ? document.failure : undefined;
-    if (failure != null) {
+    const hasFailure = Object.hasOwn(document, "failure");
+    const failure = hasFailure ? document.failure : undefined;
+    if (hasFailure) {
         if (!isRecord(failure)) {
             errors.push("failure must be an object");
         } else {
-            requireString(failure, "code", "failure.code", errors);
+            if (typeof failure.code !== "string" || !FailureCodes.has(failure.code as ResultFailure["code"])) {
+                errors.push("failure.code is invalid");
+            }
             requireString(failure, "message", "failure.message", errors);
         }
     }
