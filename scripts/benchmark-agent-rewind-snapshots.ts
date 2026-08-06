@@ -102,11 +102,36 @@ const DefaultBenchmarkDependencies: BenchmarkDependencies = {
     now: () => performance.now(),
     acquireLeases: (fixture, count) =>
         Promise.all(Array.from({ length: count }, () => fixture.registry.acquire(fixture.registryInput))),
-    cleanupFixture: async (fixture) => {
-        await fixture.keeperLease.release();
-        await rm(fixture.root, { recursive: true, force: true });
-    },
+    cleanupFixture: cleanupBenchmarkFixture,
 };
+
+export async function cleanupBenchmarkFixture(
+    fixture: Pick<BenchmarkFixture, "root" | "keeperLease">,
+    removeRoot: (root: string) => Promise<void> = (root) => rm(root, { recursive: true, force: true })
+): Promise<void> {
+    let releaseFailed = false;
+    let releaseFailure: unknown;
+    let removeFailed = false;
+    let removeFailure: unknown;
+    try {
+        await fixture.keeperLease.release();
+    } catch (error) {
+        releaseFailed = true;
+        releaseFailure = error;
+    } finally {
+        try {
+            await removeRoot(fixture.root);
+        } catch (error) {
+            removeFailed = true;
+            removeFailure = error;
+        }
+    }
+    if (releaseFailed && removeFailed) {
+        throw new AggregateError([releaseFailure, removeFailure], "Benchmark fixture release and removal failed");
+    }
+    if (releaseFailed) throw releaseFailure;
+    if (removeFailed) throw removeFailure;
+}
 
 export async function runAgentRewindSnapshotBenchmark(
     options: BenchmarkOptions,
@@ -244,6 +269,14 @@ async function measureWarmRow(
             );
             const settled = await Promise.allSettled(captures);
             durations.push(dependencies.now() - started);
+            const completed = settled.filter(
+                (result): result is Extract<(typeof settled)[number], { status: "fulfilled" }> =>
+                    result.status === "fulfilled"
+            );
+            fixture.metrics.newlyHashedBytes += completed.reduce(
+                (total, capture) => total + capture.value.coverage.newlyHashedBytes,
+                0
+            );
             const unexpected = settled.find(
                 (result): result is PromiseRejectedResult =>
                     result.status === "rejected" && !isCaptureTimeout(result.reason)
@@ -259,14 +292,6 @@ async function measureWarmRow(
                     newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
                 });
             }
-            const completed = settled.filter(
-                (result): result is Extract<(typeof settled)[number], { status: "fulfilled" }> =>
-                    result.status === "fulfilled"
-            );
-            fixture.metrics.newlyHashedBytes += completed.reduce(
-                (total, capture) => total + capture.value.coverage.newlyHashedBytes,
-                0
-            );
         }
         return makeRow(fixture, {
             mode: "warm-incremental",

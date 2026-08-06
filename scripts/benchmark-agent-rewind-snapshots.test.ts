@@ -149,6 +149,7 @@ describe("agent rewind snapshot benchmark", () => {
     test("drains queued captures before releasing leases or starting the next row", async () => {
         const captureTimeout = new WorkspaceSnapshotStoreError("capture_timeout", "timed out");
         const queued = Array.from({ length: 3 }, () => makeDeferred<{ coverage: { newlyHashedBytes: number } }>());
+        const emitted: Array<Record<string, unknown>> = [];
         const allQueuedStarted = makeDeferred<void>();
         let queuedStarted = 0;
         let representativeState:
@@ -222,7 +223,7 @@ describe("agent rewind snapshot benchmark", () => {
             onRow: (row: Record<string, unknown>) => void,
             dependencies: Record<string, unknown>
         ) => Promise<Array<Record<string, unknown>>>;
-        const pending = run({ entryCounts: [10], iterations: 1 }, () => undefined, {
+        const pending = run({ entryCounts: [10], iterations: 1 }, (row) => emitted.push(row), {
             makeFixture,
             countLooseObjects: async () => 0,
             mutatePaths: async (workspaceRoot: string) => {
@@ -254,16 +255,62 @@ describe("agent rewind snapshot benchmark", () => {
             cleaned: false,
         });
 
-        const unexpected = new Error("queued capture failed");
-        queued[0]!.resolve({ coverage: { newlyHashedBytes: 0 } });
-        queued[1]!.reject(unexpected);
-        queued[2]!.resolve({ coverage: { newlyHashedBytes: 0 } });
-        await expect(pending).rejects.toBe(unexpected);
+        queued[0]!.resolve({ coverage: { newlyHashedBytes: 3 } });
+        queued[1]!.resolve({ coverage: { newlyHashedBytes: 5 } });
+        queued[2]!.resolve({ coverage: { newlyHashedBytes: 7 } });
+        await expect(pending).resolves.toHaveLength(22);
+        expect(
+            emitted.find(
+                (row) =>
+                    row.shape === "deep" &&
+                    row.mode === "warm-incremental" &&
+                    row.dirtyCount === 0 &&
+                    row.sessionCount === 4
+            )
+        ).toMatchObject({ outcome: "capture-timeout", newlyHashedBytes: 15 });
         expect(representativeState).toMatchObject({
-            acquired: [1, 2, 4],
-            released: 7,
+            acquired: [1, 2, 4, 1, 2, 4, 1, 2, 4],
+            released: 21,
             cleaned: true,
         });
+    });
+
+    test("removes fixture roots after keeper release failures and aggregates dual failures", async () => {
+        const module =
+            (await import("./benchmark-agent-rewind-snapshots")) as typeof import("./benchmark-agent-rewind-snapshots") & {
+                cleanupBenchmarkFixture(
+                    fixture: { root: string; keeperLease: { release(): Promise<void> } },
+                    removeRoot: (root: string) => Promise<void>
+                ): Promise<void>;
+            };
+        expect(typeof module.cleanupBenchmarkFixture).toBe("function");
+        const releaseFailure = new Error("keeper release failed");
+        let removed = 0;
+        await expect(
+            module.cleanupBenchmarkFixture(
+                {
+                    root: "/fixture",
+                    keeperLease: { release: async () => Promise.reject(releaseFailure) },
+                },
+                async () => {
+                    removed++;
+                }
+            )
+        ).rejects.toBe(releaseFailure);
+        expect(removed).toBe(1);
+
+        const removeFailure = new Error("fixture removal failed");
+        const outcome = await module
+            .cleanupBenchmarkFixture(
+                {
+                    root: "/fixture",
+                    keeperLease: { release: async () => Promise.reject(releaseFailure) },
+                },
+                async () => Promise.reject(removeFailure)
+            )
+            .catch((error) => error);
+        expect(outcome).toBeInstanceOf(AggregateError);
+        expect(outcome).toMatchObject({ errors: [releaseFailure, removeFailure] });
     });
 });
 
