@@ -126,6 +126,7 @@ import {
     archiveAgentSessionForIpc,
     cloneAgentSessionForIpc,
     deleteAgentSessionForIpc,
+    ensureAgentRuntime,
     forkAgentSessionForIpc,
     getAgentSessionStateForIpc,
     listAgentCommandsForIpc,
@@ -1316,6 +1317,87 @@ describe("agent-ipc command helpers", () => {
             }
         }
     );
+
+    it("preserves post-runtime construction and cleanup failures", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-post-runtime-cleanup-failure-"));
+        const { metadata } = await createPaneSession(cwd);
+        const constructionFailure = new Error("observability attachment failed");
+        const cleanupFailure = new Error("runtime cleanup failed");
+        const host = makeHarnessHostMock();
+        host.harness.subscribe
+            .mockImplementationOnce(() => () => {})
+            .mockImplementationOnce(() => {
+                throw constructionFailure;
+            });
+        host.harness.abort.mockRejectedValueOnce(cleanupFailure);
+        vi.mocked(buildAgentHarnessHost).mockReturnValueOnce(host as never);
+        vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
+            state: "unavailable",
+            message: "test unavailable",
+        });
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+
+        const failure = await ensureAgentRuntime(
+            metadata,
+            {
+                sessionMetadata: metadata,
+                context: {
+                    workspaceId: "workspace-test",
+                    workspaceDir: await fs.realpath(cwd),
+                    sessionPath: metadata.path,
+                    environment: {},
+                },
+                text: "first",
+                provider: "p",
+                model: "m",
+            },
+            "workspace-test"
+        ).catch((error) => error);
+
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual([constructionFailure, cleanupFailure]);
+        expect((failure as AggregateError).cause).toBe(constructionFailure);
+        expect((failure as AggregateError).message).toBe(
+            `Agent runtime construction cleanup failed for ${metadata.path}`
+        );
+    });
+
+    it("preserves a post-runtime construction failure when cleanup succeeds", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-post-runtime-cleanup-success-"));
+        const { metadata } = await createPaneSession(cwd);
+        const constructionFailure = new Error("observability attachment failed");
+        const host = makeHarnessHostMock();
+        host.harness.subscribe
+            .mockImplementationOnce(() => () => {})
+            .mockImplementationOnce(() => {
+                throw constructionFailure;
+            });
+        vi.mocked(buildAgentHarnessHost).mockReturnValueOnce(host as never);
+        vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
+            state: "unavailable",
+            message: "test unavailable",
+        });
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+
+        await expect(
+            ensureAgentRuntime(
+                metadata,
+                {
+                    sessionMetadata: metadata,
+                    context: {
+                        workspaceId: "workspace-test",
+                        workspaceDir: await fs.realpath(cwd),
+                        sessionPath: metadata.path,
+                        environment: {},
+                    },
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                },
+                "workspace-test"
+            )
+        ).rejects.toBe(constructionFailure);
+    });
 
     it.each([
         { channel: "agent:archive-session", operation: "archive", senderId: 81 },

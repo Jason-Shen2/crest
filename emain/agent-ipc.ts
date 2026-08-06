@@ -1201,7 +1201,15 @@ async function createAgentRuntimeFromSession(
         return runtime;
     } catch (error) {
         if (runtime) {
-            await runtime.dispose();
+            try {
+                await runtime.dispose();
+            } catch (cleanupError) {
+                throw new AggregateError(
+                    [error, cleanupError],
+                    `Agent runtime construction cleanup failed for ${metadata.path}`,
+                    { cause: error }
+                );
+            }
             throw error;
         }
         const checkpointCleanup = checkpointManager
@@ -1270,7 +1278,7 @@ export function releaseTrackerAfterCheckpointManager(
     };
 }
 
-async function ensureAgentRuntime(
+export async function ensureAgentRuntime(
     metadata: JsonlSessionMetadata,
     opts: SendOptions,
     workspaceId?: string
