@@ -1120,8 +1120,10 @@ same-size rewrites, and capture races. Real 1/2/4-Session tests share one tracke
 without sharing checkpoint identity. The 2026-08-06 macOS/APFS 10k-entry run
 measured healthy warm no-change capture at 0.00-0.07 ms with zero enumeration;
 unique-content cold 10k full reconcile exceeded its 30-second deadline and
-dirty-path latency remains material. The 50k/200k matrix and Linux measurements
-remain outstanding. Windows stays unsupported pending owner-only ACL and
+dirty-path latency remains material. The macOS 50k/200k matrix was measured,
+but neither scale produced a usable representative baseline within production
+capture limits, so its warm path remains unproven. Linux measurements remain
+outstanding. Windows stays unsupported pending owner-only ACL and
 reparse-safe storage/apply support. No larger timeout is treated as a pass.
 
 ### Git runner
@@ -1244,30 +1246,27 @@ reparse-safe storage/apply support. No larger timeout is treated as a pass.
 
 ## Rollout
 
-The implementation is gated by the exact internal environment value
-`CREST_AGENT_WORKSPACE_REWIND=1`; every other value is disabled. The default
-remains off until the Linux and macOS supported-platform matrix is consistently
-green. Windows remains explicitly unavailable for the first release; setting
-the flag does not bypass its store or filesystem capability hard-blocks. The store
-path is
+Workspace Rewind initializes by default on supported macOS and Linux systems;
+there is no environment-variable or configuration rollout gate. Real platform,
+storage, and filesystem capability failures remain explicit and fail closed.
+Windows remains unavailable for the first release. The store path is
 `<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`
 and its 5 GiB soft quota, owner cleanup, confirmed trashed-session purge,
 recovery freeze, no-Force recovery, and one-step Redo behavior are part of the
 rollout contract—not operational suggestions.
 
-1. Land the shadow-store, manifest, checkpoint journal, and restore engine
-   behind the internal feature flag.
+1. Land the shadow-store, manifest, checkpoint journal, and restore engine.
 2. Integrate lifecycle capture and validate checkpoint generation without
    exposing restore.
 3. Add backend preview/apply/redo APIs and failure-injection tests.
 4. Add the message-side Revert action, shared file preview, conflict/Force
    Revert states, persistent Redo dock, `/rewind`, and `/redo` together so every
    entry point ships with identical safety behavior.
-5. Enable by default on Linux and macOS after storage growth, crash recovery,
-   and multi-session stress tests pass. Keep Windows unavailable until
-   owner-only store ACLs, reparse-safe inspection/apply, case-only rename,
-   atomic replace, and directory-fsync durability have production
-   implementations and a complete supported-platform gate.
+5. Keep the feature enabled by default on supported Linux and macOS systems,
+   while reporting real capability failures explicitly. Keep Windows
+   unavailable until owner-only store ACLs, reparse-safe inspection/apply,
+   case-only rename, atomic replace, and directory-fsync durability have
+   production implementations and a complete supported-platform gate.
 
 ## Alternatives Rejected
 

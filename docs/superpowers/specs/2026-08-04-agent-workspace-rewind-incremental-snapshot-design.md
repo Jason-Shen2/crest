@@ -353,7 +353,7 @@ drift 检查避免覆盖边界之后检测到的其他修改。
 6. workspace lock 只保护版本提交、reconcile 和必须原子化的 capture 阶段，不允许把
    Agent 整个 turn 串行化；
 7. pre-turn 和 terminal latency、不同 workspace 规模、目录数量、dirty path 数量以及
-   1/2/4 个并发 Session 必须进入 benchmark matrix，benchmark 结果是 rollout gate，
+   1/2/4 个并发 Session 必须进入 benchmark matrix，benchmark 结果必须作为发布证据，
    不能只依靠 5 秒/30 秒 timeout 判定可用。
 
 ## 故障行为
@@ -550,10 +550,78 @@ timeout row 分别在 38,284.07 ms 和 32,287.12 ms 返回，包括 timeout 后�
 objects，full capture/object durability 仍是 rollout limitation。64-bucket baseline 仅用于建立
 真实 tracker 以测 warm matrix，不能替代或粉饰 unique-content cold latency。
 
-50k/200k 和 Linux/Windows 尚未在本机实测。macOS/APFS 的 10k healthy warm/no-change 已满足
-“成本不随 workspace 总 entries 线性增长”的算法证据；不能据此宣称其他平台或 cold full capture
-已经优化完成。Linux/Windows 尤其需要分别验证 Parcel 历史查询、filesystem watcher continuity、
-owner-only staging 和 warm latency 后才能解除平台限制。
+同一台 macOS/APFS 机器随后按生产 capture budget 和 timeout 原样执行了 50k、200k 矩阵：
+
+```bash
+npm run benchmark:agent-rewind-snapshots -- --entries=50000 --iterations=10
+npm run benchmark:agent-rewind-snapshots -- --entries=200000 --iterations=10
+```
+
+没有提高生产 timeout、input budget，也没有缩减 fixture。以下两张表完整保留每个规模的 22 个
+row 及 benchmark JSON 字段。`baseline-unavailable` row 中的 `0` 是“代表性 baseline 未建立，
+未执行 warm capture”的哨兵值，不是 0 ms 性能结果。
+
+### 50k entries（deep 16 directories，wide 8 directories）
+
+| shape | mode | outcome | cardinality | entries | dirs | dirty | sessions | p50 ms | p95 ms | full | enumerated | worker | objects | hashed bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep | full-baseline | capture-timeout | 49,984 | 50,000 | 16 | 0 | 1 | 35,534.80 | 35,534.80 | 1 | 50,000 | 1 | 0 | 0 |
+| deep | full-baseline | capture-timeout | 64 | 50,000 | 16 | 0 | 1 | 35,453.33 | 35,453.33 | 1 | 50,000 | 1 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 1 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 1 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 100 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 100 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 50,000 | 16 | 100 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | full-baseline | capture-timeout | 49,992 | 50,000 | 8 | 0 | 1 | 30,627.35 | 30,627.35 | 1 | 50,000 | 1 | 18,989 | 0 |
+| wide | full-baseline | capture-timeout | 64 | 50,000 | 8 | 0 | 1 | 30,616.95 | 30,616.95 | 1 | 50,000 | 1 | 40 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 1 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 1 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 100 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 100 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 50,000 | 8 | 100 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### 200k entries（deep 18 directories，wide 8 directories）
+
+| shape | mode | outcome | cardinality | entries | dirs | dirty | sessions | p50 ms | p95 ms | full | enumerated | worker | objects | hashed bytes |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep | full-baseline | capture-budget | 199,982 | 200,000 | 18 | 0 | 1 | 6,070.57 | 6,070.57 | 1 | 200,000 | 1 | 0 | 0 |
+| deep | full-baseline | capture-budget | 64 | 200,000 | 18 | 0 | 1 | 6,180.04 | 6,180.04 | 1 | 200,000 | 1 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 1 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 1 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 100 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 100 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm-incremental | baseline-unavailable | 64 | 200,000 | 18 | 100 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | full-baseline | capture-timeout | 199,992 | 200,000 | 8 | 0 | 1 | 33,090.16 | 33,090.16 | 1 | 200,000 | 1 | 11,090 | 0 |
+| wide | full-baseline | capture-timeout | 64 | 200,000 | 8 | 0 | 1 | 30,154.10 | 30,154.10 | 1 | 200,000 | 1 | 8 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 0 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 0 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 1 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 1 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 1 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 100 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 100 | 2 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm-incremental | baseline-unavailable | 64 | 200,000 | 8 | 100 | 4 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+50k 的 unique 和 64-bucket baseline 都达到生产 timeout；200k deep 在 anchored reader
+input budget 上 fail closed，wide 则达到生产 timeout。两种规模都没有可用的代表性 baseline，
+因此 warm matrix 没有取得 registry lease 或执行 capture。当前证据只证明 10k healthy
+warm/no-change 的增量算法不会随 workspace 总 entries 线性增长，不能宣称 macOS 50k/200k
+warm path 或 cold full capture 已经优化完成。Linux 尚未实测；Windows 仍不支持。Linux/Windows
+尤其需要分别验证 Parcel 历史查询、filesystem watcher continuity、owner-only staging 和 warm
+latency 后才能解除平台限制。
 
 ## 决策结论
 

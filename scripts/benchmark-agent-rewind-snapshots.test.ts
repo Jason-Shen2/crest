@@ -106,6 +106,54 @@ describe("agent rewind snapshot benchmark", () => {
         expect(cleaned).toHaveLength(4);
     });
 
+    test("records capture budgets as unavailable baselines instead of aborting the matrix", async () => {
+        const captureBudget = new WorkspaceSnapshotStoreError("capture_budget", "input budget exceeded");
+        let cleaned = 0;
+        const run = runAgentRewindSnapshotBenchmark as unknown as (
+            options: { entryCounts: number[]; iterations: number },
+            onRow: (row: Record<string, unknown>) => void,
+            dependencies: Record<string, unknown>
+        ) => Promise<Array<Record<string, unknown>>>;
+
+        const rows = await run({ entryCounts: [10], iterations: 1 }, () => undefined, {
+            makeFixture: async (_entryCount: number, shape: "deep" | "wide", contentCardinality: number) => ({
+                root: `${shape}:${contentCardinality}`,
+                shape,
+                workspaceRoot: "/fixture",
+                directoryCount: 0,
+                contentCardinality,
+                paths: Array.from({ length: 10 }, (_, index) => `file-${index}`),
+                store: {},
+                tracker: { capture: async () => Promise.reject(captureBudget) },
+                feed: { record: () => undefined },
+                metrics: {
+                    fullReconcileCount: 1,
+                    enumeratedEntries: 10,
+                    workerActive: 0,
+                    workerPeak: 1,
+                    newlyHashedBytes: 0,
+                    hooks: {},
+                    reset() {
+                        this.fullReconcileCount = 1;
+                        this.enumeratedEntries = 10;
+                        this.workerActive = 0;
+                        this.workerPeak = 1;
+                        this.newlyHashedBytes = 0;
+                    },
+                },
+            }),
+            countLooseObjects: async () => 0,
+            cleanupFixture: async () => {
+                cleaned++;
+            },
+        });
+
+        expect(rows).toHaveLength(22);
+        expect(rows.filter((row) => row.outcome === "capture-budget")).toHaveLength(4);
+        expect(rows.filter((row) => row.outcome === "baseline-unavailable")).toHaveLength(18);
+        expect(cleaned).toBe(4);
+    });
+
     test("keeps unexpected failures nonzero while cleaning the fixture", async () => {
         const failure = new Error("unexpected capture failure");
         let cleaned = 0;

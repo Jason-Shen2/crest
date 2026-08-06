@@ -2,9 +2,7 @@
 
 ## 背景
 
-当前 Workspace Rewind 只有在 Electron 主进程环境变量 `CREST_AGENT_WORKSPACE_REWIND` 精确等于 `1` 时才启用。关闭时，界面仍可触发 `/rewind`，但 IPC 会在进入 rewind service 前返回 `Workspace rewind is unavailable`。
-
-该环境开关是开发阶段的 rollout gate。产品现阶段不再需要这个 gate，rewind 应在具备平台与存储能力时直接可用。
+早期开发版本曾使用内部环境 gate 控制 Workspace Rewind。该 gate 已被删除；当前产品在具备平台与存储能力时直接启用 rewind，不提供环境变量或配置项开关。
 
 ## 决策
 

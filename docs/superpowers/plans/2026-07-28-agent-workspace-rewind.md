@@ -22,7 +22,7 @@
 - `semanticLeafId` 是唯一 session CAS token；`displayLeafId` 只用于展示。任何 renderer 代码都不得从可见树反推语义 leaf。
 - 文件写入成功但 session CAS 未提交时，必须依靠 durable recovery journal 做 classifier-safe 回滚；未知第三方状态绝不自动覆盖。
 - 第一版 Redo 只有一步，且没有 Force Redo。
-- 功能先由 `CREST_AGENT_WORKSPACE_REWIND=1` 内部开关启用；默认开启必须等最后一项平台、配额和故障注入门禁通过。
+- 支持的平台默认初始化功能，不提供环境变量或配置项开关；真实的平台、配额和基础设施能力失败必须明确返回 unavailable。
 
 ## 目标文件结构
 
@@ -1184,10 +1184,9 @@ pre-turn capture 固定使用 `{ profile: "pre-turn" }`，terminal capture 固�
 7. manager `recover()`；
 8. 最后把同一个 `AgentPtyHost` 传给 `new AgentSessionRuntime()` 并订阅 harness。
 
-session attach 可做 best-effort warm capture，但不能创建 turn checkpoint。功能关闭时
-注册 no-op manager，并向 session state 暴露 disabled 状态。
-`agent-rewind-feature.ts` 只在 `CREST_AGENT_WORKSPACE_REWIND=1` 时启用，防止
-checkpoint storage 在 rollout 门禁完成前默认运行。
+session attach 可做 best-effort warm capture，但不能创建 turn checkpoint。
+`agent-rewind-feature.ts` 在支持的平台默认初始化；只有真实能力检查失败时才注册
+no-op manager，并向 session state 暴露明确的 unavailable 状态。
 
 用 `let owner: AgentSessionRuntime | undefined` closure 实现
 `onCheckpointCommitted`；runtime 构造完成后每次 terminal append 都 await
@@ -1971,7 +1970,7 @@ git add packages/coding-agent/workspace-rewind/rewind-engine.ts packages/coding-
 git commit -m "feat(agent): coordinate workspace rewind and redo"
 ```
 
-### Task 13: 接通 authoritative session/tree state、feature gate 和 Electron API
+### Task 13: 接通 authoritative session/tree state、默认初始化和 Electron API
 
 **Files:**
 - Modify: `packages/coding-agent/workspace-rewind/api-types.ts`
@@ -2133,10 +2132,10 @@ builder。不得让同步 renderer state 根据“SQLite entry 存在”猜 snap
 bytes 超过 5 GiB 时 `status:"referenced-over-quota"`，新 capture 继续 unavailable，
 但绝不能让 state builder 或 cleanup 删除 referenced snapshot。
 
-- [ ] **Step 6: 实现 feature gate 和统一 frozen write gate**
+- [ ] **Step 6: 实现默认初始化和统一 frozen write gate**
 
-`agent-rewind-feature.ts` 只认精确 `CREST_AGENT_WORKSPACE_REWIND=1`。关闭时 capture
-manager 是 no-op、session state `enabled:false`、四个 rewind API 返回明确 unavailable。
+`agent-rewind-feature.ts` 在支持的平台默认初始化。真实能力检查失败时 capture manager
+是 no-op、session state `enabled:false`，四个 rewind API 返回具体 unavailable 原因。
 
 创建 process-wide `AgentWorkspaceRecoveryGate`：
 
@@ -2835,7 +2834,7 @@ fsync；平台不支持的能力必须形成 explicit hard-blocker/capability te
 - exact warning `files changed on disk since the agent last wrote them`；
 - snapshot store 路径、5 GiB soft quota、owner-aware cleanup；
 - recovery 操作和没有 Force Recovery/Force Redo；
-- internal flag 与默认启用条件。
+- 支持平台的默认初始化与明确的 unavailable 能力错误。
 
 把旧文档中任何“`:rewind` 由遗留 filebackup 恢复”或“tool patch 是权威数据”的描述
 标记为 superseded。

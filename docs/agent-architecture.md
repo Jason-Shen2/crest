@@ -367,9 +367,11 @@ separate worktrees or another write-isolation mechanism.
 The 2026-08-06 macOS/APFS 10k-entry benchmark measured healthy warm no-change
 boundaries at 0.00-0.07 ms with zero enumeration for 1/2/4 Sessions. Dirty-path
 latency is path-local but remains high, and unique-content cold 10k full
-reconciliation exceeded the 30-second production deadline. The 50k/200k matrix
-and Linux results are not yet measured; Windows remains unsupported. These are
-recorded limits, not timeout-adjusted passes.
+reconciliation exceeded the 30-second production deadline. The macOS 50k/200k
+matrix was measured, but neither scale established a usable representative
+baseline within production capture limits, so warm performance remains
+unproven. Linux results are not yet measured; Windows remains unsupported.
+These are recorded limits, not timeout-adjusted passes.
 
 Revert restores only paths in the selected active-branch suffix. Normal mode
 does no mutation on drift. `Force revert` may overwrite only previewed red

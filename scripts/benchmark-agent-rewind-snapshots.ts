@@ -40,7 +40,7 @@ export interface BenchmarkOptions {
 export interface BenchmarkRow {
     shape: FixtureShape;
     mode: BenchmarkMode;
-    outcome: "completed" | "capture-timeout" | "baseline-unavailable";
+    outcome: "completed" | "capture-timeout" | "capture-budget" | "baseline-unavailable";
     contentCardinality: number;
     entryCount: number;
     directoryCount: number;
@@ -192,10 +192,11 @@ async function measureFullBaseline(
             newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
         });
     } catch (error) {
-        if (!isCaptureTimeout(error)) throw error;
+        const outcome = captureFailureOutcome(error);
+        if (!outcome) throw error;
         return makeRow(fixture, {
             mode: "full-baseline",
-            outcome: "capture-timeout",
+            outcome,
             dirtyCount: 0,
             sessionCount: 1,
             durations: [dependencies.now() - started],
@@ -228,12 +229,13 @@ async function measureUniqueContentColdProbe(
                 newObjects: objectsAfter - objectsBefore,
             });
         } catch (error) {
-            if (!isCaptureTimeout(error)) throw error;
+            const outcome = captureFailureOutcome(error);
+            if (!outcome) throw error;
             const elapsed = dependencies.now() - started;
             const objectsAfter = await dependencies.countLooseObjects(fixture.store);
             return makeRow(fixture, {
                 mode: "full-baseline",
-                outcome: "capture-timeout",
+                outcome,
                 dirtyCount: 0,
                 sessionCount: 1,
                 durations: [elapsed],
@@ -279,13 +281,14 @@ async function measureWarmRow(
             );
             const unexpected = settled.find(
                 (result): result is PromiseRejectedResult =>
-                    result.status === "rejected" && !isCaptureTimeout(result.reason)
+                    result.status === "rejected" && captureFailureOutcome(result.reason) == null
             );
             if (unexpected) throw unexpected.reason;
-            if (settled.some((result) => result.status === "rejected")) {
+            const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+            if (rejected) {
                 return makeRow(fixture, {
                     mode: "warm-incremental",
-                    outcome: "capture-timeout",
+                    outcome: captureFailureOutcome(rejected.reason)!,
                     dirtyCount: input.dirtyCount,
                     sessionCount: input.sessionCount,
                     durations,
@@ -350,8 +353,10 @@ function makeUnavailableWarmRow(
     });
 }
 
-function isCaptureTimeout(error: unknown): boolean {
-    return error instanceof WorkspaceSnapshotStoreError && error.code === "capture_timeout";
+function captureFailureOutcome(error: unknown): "capture-timeout" | "capture-budget" | undefined {
+    if (!(error instanceof WorkspaceSnapshotStoreError)) return undefined;
+    if (error.code === "capture_timeout") return "capture-timeout";
+    return error.code === "capture_budget" ? "capture-budget" : undefined;
 }
 
 async function makeFixture(
