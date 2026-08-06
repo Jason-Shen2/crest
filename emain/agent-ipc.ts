@@ -1224,25 +1224,35 @@ async function createAgentRuntimeFromSession(
     }
 }
 
-function releaseTrackerAfterCheckpointManager(
+export function releaseTrackerAfterCheckpointManager(
     manager: WorkspaceCheckpointManager,
     release: () => Promise<void>
 ): WorkspaceCheckpointManager {
-    let disposePromise: Promise<void> | undefined;
+    let managerDisposeAttempted = false;
+    let managerDisposeFailed = false;
+    let managerDisposeFailure: unknown;
+    let released = false;
+    let currentAttempt: Promise<void> | undefined;
     return {
         isBusy: () => manager.isBusy(),
         recover: () => manager.recover(),
         dispose: () => {
-            if (disposePromise) return disposePromise;
-            disposePromise = (async () => {
+            if (currentAttempt) return currentAttempt;
+            const attempt = (async () => {
                 const failures: unknown[] = [];
-                try {
-                    await manager.dispose();
-                } catch (error) {
-                    failures.push(error);
+                if (!managerDisposeAttempted) {
+                    managerDisposeAttempted = true;
+                    try {
+                        await manager.dispose();
+                    } catch (error) {
+                        managerDisposeFailed = true;
+                        managerDisposeFailure = error;
+                    }
                 }
+                if (managerDisposeFailed) failures.push(managerDisposeFailure);
                 try {
                     await release();
+                    released = true;
                 } catch (error) {
                     failures.push(error);
                 }
@@ -1250,8 +1260,12 @@ function releaseTrackerAfterCheckpointManager(
                 if (failures.length > 1) {
                     throw new AggregateError(failures, "Agent rewind checkpoint and tracker cleanup failed");
                 }
-            })();
-            return disposePromise;
+            })().catch((error) => {
+                if (!released && currentAttempt === attempt) currentAttempt = undefined;
+                throw error;
+            });
+            currentAttempt = attempt;
+            return attempt;
         },
     };
 }

@@ -1428,6 +1428,44 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         expect(checkpointManager.dispose).toHaveBeenCalledOnce();
     });
 
+    it("propagates checkpoint cleanup failure after closing the owned session", async () => {
+        const fake = makeFakeHarness();
+        const checkpointFailure = new Error("checkpoint cleanup failed");
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            recover: vi.fn(),
+            dispose: vi.fn(async () => Promise.reject(checkpointFailure)),
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { checkpointManager });
+
+        await expect(owner.dispose()).rejects.toBe(checkpointFailure);
+
+        expect(checkpointManager.dispose).toHaveBeenCalledOnce();
+        expect(fake.session.close).toHaveBeenCalledOnce();
+    });
+
+    it("preserves PTY and checkpoint cleanup failures after closing the owned session", async () => {
+        const fake = makeFakeHarness();
+        const ptyFailure = new Error("PTY cleanup failed");
+        const checkpointFailure = new Error("checkpoint cleanup failed");
+        const { host } = makeHost();
+        vi.mocked(host.dispose).mockRejectedValueOnce(ptyFailure);
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            recover: vi.fn(),
+            dispose: vi.fn(async () => Promise.reject(checkpointFailure)),
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], { ptyHost: host, checkpointManager });
+
+        const failure = await owner.dispose().catch((error) => error);
+
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual(expect.arrayContaining([ptyFailure, checkpointFailure]));
+        expect(host.dispose).toHaveBeenCalledOnce();
+        expect(checkpointManager.dispose).toHaveBeenCalledOnce();
+        expect(fake.session.close).toHaveBeenCalledOnce();
+    });
+
     it("keeps the checkpoint manager subscribed until abort terminal finalization settles", async () => {
         const fake = makeFakeHarness();
         let releaseAbort!: () => void;

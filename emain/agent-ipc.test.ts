@@ -133,6 +133,8 @@ import {
     listAgentTreeForIpc,
     navigateAgentTreeForIpc,
     registerAgentIpcHandlers as registerAgentIpcHandlersImpl,
+    releaseTrackerAfterCheckpointManager,
+    renameAgentSessionForIpc,
     runAgentCommandForIpc,
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
@@ -1088,6 +1090,114 @@ describe("agent-ipc command helpers", () => {
             expect(managerDispose).toHaveBeenCalledOnce();
             expect(release).toHaveBeenCalledOnce();
         } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it("shares a disposal attempt and retries only a failed tracker release", async () => {
+        const managerGate = deferred<void>();
+        const releaseFailure = new Error("tracker release failed");
+        const managerDispose = vi.fn(() => managerGate.promise);
+        const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
+        const owned = releaseTrackerAfterCheckpointManager(
+            { isBusy: () => false, recover: vi.fn(), dispose: managerDispose },
+            release
+        );
+
+        const first = owned.dispose();
+        const concurrent = owned.dispose();
+        expect(concurrent).toBe(first);
+        expect(managerDispose).toHaveBeenCalledOnce();
+        expect(release).not.toHaveBeenCalled();
+
+        managerGate.resolve();
+        await expect(first).rejects.toBe(releaseFailure);
+        await expect(owned.dispose()).resolves.toBeUndefined();
+
+        expect(managerDispose).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledTimes(2);
+    });
+
+    it("preserves a manager failure across release retry and aggregates both first-attempt errors", async () => {
+        const managerFailure = new Error("manager dispose failed");
+        const releaseFailure = new Error("tracker release failed");
+        const managerDispose = vi.fn(async () => Promise.reject(managerFailure));
+        const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
+        const owned = releaseTrackerAfterCheckpointManager(
+            { isBusy: () => false, recover: vi.fn(), dispose: managerDispose },
+            release
+        );
+
+        const firstFailure = await owned.dispose().catch((error) => error);
+        expect(firstFailure).toBeInstanceOf(AggregateError);
+        expect((firstFailure as AggregateError).errors).toEqual([managerFailure, releaseFailure]);
+
+        const retry = owned.dispose();
+        await expect(retry).rejects.toBe(managerFailure);
+        expect(owned.dispose()).toBe(retry);
+        expect(managerDispose).toHaveBeenCalledOnce();
+        expect(release).toHaveBeenCalledTimes(2);
+    });
+
+    it("quarantines a live runtime after tracker release failure and retries cleanup before mutation", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-live-release-retry-"));
+        const { metadata } = await createPaneSession(cwd);
+        const releaseFailure = new Error("live tracker release failed");
+        const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
+        const managerDispose = vi.fn(async () => undefined);
+        vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
+            state: "enabled",
+            processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
+            store: {
+                identity: {
+                    canonicalRoot: await fs.realpath(cwd),
+                    workspaceIdentity: "workspace-a",
+                    workspaceIncarnation: "incarnation-a",
+                },
+            },
+            tracker: {},
+            release,
+        } as never);
+        vi.mocked(registerWorkspaceCheckpointManager).mockReturnValueOnce({
+            isBusy: () => false,
+            recover: vi.fn(),
+            dispose: managerDispose,
+        });
+        vi.mocked(buildAgentHarnessHost).mockImplementationOnce((options) => {
+            const host = makeHarnessHostMock();
+            host.session = options.session as never;
+            return host as never;
+        });
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+        const renameSpy = vi.spyOn(SqliteSessionRepo.prototype, "rename");
+
+        registerAgentIpcHandlers();
+        const handlers = registeredHandlers();
+        const sendInput = {
+            sessionMetadata: metadata,
+            blockId: "block-1",
+            cwd: metadata.cwd,
+            text: "first",
+            provider: "p",
+            model: "m",
+        };
+
+        try {
+            await handlers.get("agent:send")?.({}, sendInput);
+
+            await expect(renameAgentSessionForIpc(metadata, "first name")).rejects.toBe(releaseFailure);
+            expect(renameSpy).not.toHaveBeenCalled();
+            await expect(handlers.get("agent:send")?.({}, sendInput)).rejects.toThrow(/cleanup failed/i);
+
+            await expect(renameAgentSessionForIpc(metadata, "second name")).resolves.toBeUndefined();
+            expect(managerDispose).toHaveBeenCalledOnce();
+            expect(release).toHaveBeenCalledTimes(2);
+            expect(renameSpy).toHaveBeenCalledOnce();
+        } finally {
+            renameSpy.mockRestore();
             sendConfiguredSpy.mockRestore();
         }
     });

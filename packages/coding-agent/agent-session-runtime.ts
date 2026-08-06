@@ -620,11 +620,32 @@ export class AgentSessionRuntime {
         // never arrive.
         this.rejectPendingSends(new Error("session disposed before the user message was committed"));
         this.ignoredCommittedEntryIds.clear();
+        const failures: unknown[] = [];
+        let abort: Promise<unknown> | undefined;
         try {
-            await Promise.allSettled([this.host.harness.abort()]);
-            await Promise.allSettled([this.ptyHost.dispose(), this.checkpointManager?.dispose()]);
-        } finally {
+            abort = Promise.resolve(this.host.harness.abort());
+        } catch (error) {
+            failures.push(error);
+        }
+        if (abort) {
+            const [abortResult] = await Promise.allSettled([abort]);
+            if (abortResult.status === "rejected") failures.push(abortResult.reason);
+        }
+        const resourceResults = await Promise.allSettled([
+            Promise.resolve().then(() => this.ptyHost.dispose()),
+            Promise.resolve().then(() => this.checkpointManager?.dispose()),
+        ]);
+        for (const result of resourceResults) {
+            if (result.status === "rejected") failures.push(result.reason);
+        }
+        try {
             this.host.session.close();
+        } catch (error) {
+            failures.push(error);
+        }
+        if (failures.length === 1) throw failures[0];
+        if (failures.length > 1) {
+            throw new AggregateError(failures, `Agent session cleanup failed for ${this.path}`);
         }
     }
 
