@@ -71,9 +71,26 @@ vi.mock("../frontend/app/store/wshclientapi", () => ({
     },
 }));
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
-vi.mock("./agent-rewind-feature", () => ({
-    openAgentRewindFeature: vi.fn(async () => ({ state: "unavailable", message: "test unavailable" })),
-}));
+vi.mock("./agent-rewind-feature", () => {
+    const openAgentRewindFeature = vi.fn(async (_input: unknown) => ({
+        state: "unavailable",
+        message: "test unavailable",
+    }));
+    return {
+        openAgentRewindFeature,
+        acquireAgentRewindFeature: vi.fn(async (input: unknown) => {
+            const feature = (await openAgentRewindFeature(input)) as
+                | { state: "unavailable"; message: string }
+                | { state: "enabled"; store: unknown };
+            if (feature.state !== "enabled") return feature;
+            return {
+                ...feature,
+                tracker: feature.store,
+                release: async () => undefined,
+            };
+        }),
+    };
+});
 vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
     makeDisabledWorkspaceCheckpointManager: vi.fn(() => ({
         isBusy: () => false,
@@ -120,7 +137,7 @@ import {
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
 } from "./agent-ipc";
-import { openAgentRewindFeature } from "./agent-rewind-feature";
+import { acquireAgentRewindFeature, openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
 import {
     _resetAgentWorkspaceRecoveryGateForTests,
@@ -1007,6 +1024,117 @@ describe("agent-ipc command helpers", () => {
             );
         } finally {
             sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it("uses the live tracker for checkpoints and releases its lease after manager disposal exactly once", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-rewind-live-tracker");
+        const order: string[] = [];
+        const processOwner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
+        const store = {
+            identity: {
+                canonicalRoot: "/tmp/agent-ipc-rewind-live-tracker",
+                workspaceIdentity: "workspace-a",
+                workspaceIncarnation: "incarnation-a",
+            },
+        };
+        const tracker = { capture: vi.fn(), diff: vi.fn() };
+        const release = vi.fn(async () => {
+            order.push("release");
+        });
+        vi.mocked(acquireAgentRewindFeature).mockClear();
+        vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
+            state: "enabled",
+            processOwner,
+            store,
+            tracker,
+            release,
+        } as never);
+        const managerDispose = vi.fn(async () => {
+            order.push("manager");
+        });
+        vi.mocked(registerWorkspaceCheckpointManager).mockReturnValueOnce({
+            isBusy: () => false,
+            recover: vi.fn(),
+            dispose: managerDispose,
+        });
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-1");
+
+        registerAgentIpcHandlers();
+        try {
+            await registeredHandlers().get("agent:send")?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "first",
+                    provider: "p",
+                    model: "m",
+                }
+            );
+
+            expect(acquireAgentRewindFeature).toHaveBeenCalledOnce();
+            expect(registerWorkspaceCheckpointManager).toHaveBeenCalledWith(
+                expect.objectContaining({ store, snapshotSource: tracker })
+            );
+            await _resetAgentIpcForTests();
+            await _resetAgentIpcForTests();
+            expect(order).toEqual(["manager", "release"]);
+            expect(managerDispose).toHaveBeenCalledOnce();
+            expect(release).toHaveBeenCalledOnce();
+        } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it("releases the live tracker lease when checkpoint manager registration fails", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-rewind-register-failure");
+        const failure = new Error("checkpoint registration failed");
+        const release = vi.fn(async () => undefined);
+        vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
+            state: "enabled",
+            processOwner: { pid: 42, processStartToken: "start-a", nonce: "nonce-a" },
+            store: {
+                identity: {
+                    canonicalRoot: metadata.cwd,
+                    workspaceIdentity: "workspace-a",
+                    workspaceIncarnation: "incarnation-a",
+                },
+            },
+            tracker: {},
+            release,
+        } as never);
+        vi.mocked(registerWorkspaceCheckpointManager).mockImplementationOnce(() => {
+            throw failure;
+        });
+        vi.mocked(getModel).mockReturnValue({ provider: "p", id: "m", api: "openai" } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const ptyDispose = vi.spyOn(AgentPtyHost.prototype, "dispose").mockResolvedValue(undefined);
+
+        registerAgentIpcHandlers();
+        try {
+            await expect(
+                registeredHandlers().get("agent:send")?.(
+                    {},
+                    {
+                        sessionMetadata: metadata,
+                        blockId: "block-1",
+                        cwd: metadata.cwd,
+                        text: "first",
+                        provider: "p",
+                        model: "m",
+                    }
+                )
+            ).rejects.toThrow(failure.message);
+            expect(release).toHaveBeenCalledOnce();
+            expect(ptyDispose).toHaveBeenCalledOnce();
+        } finally {
+            ptyDispose.mockRestore();
         }
     });
 

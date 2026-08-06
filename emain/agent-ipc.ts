@@ -155,6 +155,7 @@ import type {
 import {
     makeDisabledWorkspaceCheckpointManager,
     registerWorkspaceCheckpointManager,
+    type WorkspaceCheckpointManager,
 } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
 import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
 import { removeDurableFile } from "@crest/coding-agent/workspace-rewind/durability";
@@ -171,7 +172,7 @@ import {
 import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
+import { acquireAgentRewindFeature, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
 import { AgentSessionStateBroadcaster } from "./agent-session-state-broadcaster";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
@@ -1080,31 +1081,38 @@ async function createAgentRuntimeFromSession(
     getRuntimeCwd = () => host.getCwd();
     const ptyHost = new AgentPtyHost();
     const { getWaveDataDir } = await import("./emain-platform");
-    const rewindFeature = await openAgentRewindFeature({
+    const rewindFeature = await acquireAgentRewindFeature({
         workspaceRoot: opts.context.workspaceDir,
         dataRoot: getWaveDataDir(),
     });
     const mutationBarrier = new RegistrySessionMutationBarrier(metadata.path);
-    const checkpointManager =
-        rewindFeature.state === "enabled"
-            ? registerWorkspaceCheckpointManager({
-                  harness: host.harness,
-                  session: piSession,
-                  sessionId: metadata.id,
-                  workspaceRoot: rewindFeature.store.identity.canonicalRoot,
-                  store: rewindFeature.store,
-                  mutationBarrier,
-                  hasRunningHostedCommands: () => ptyHost.hasRunningCommands(),
-                  processOwner: rewindFeature.processOwner,
-                  onCheckpointCommitted: async () => {
-                      await owner?.refreshFromPersistedBranch();
-                  },
-              })
-            : makeDisabledWorkspaceCheckpointManager();
+    let checkpointManager: WorkspaceCheckpointManager | undefined;
     let runtime: AgentSessionRuntime | undefined;
     try {
+        const registeredCheckpointManager =
+            rewindFeature.state === "enabled"
+                ? registerWorkspaceCheckpointManager({
+                      harness: host.harness,
+                      session: piSession,
+                      sessionId: metadata.id,
+                      workspaceRoot: rewindFeature.store.identity.canonicalRoot,
+                      store: rewindFeature.store,
+                      snapshotSource: rewindFeature.tracker,
+                      mutationBarrier,
+                      hasRunningHostedCommands: () => ptyHost.hasRunningCommands(),
+                      processOwner: rewindFeature.processOwner,
+                      onCheckpointCommitted: async () => {
+                          await owner?.refreshFromPersistedBranch();
+                      },
+                  })
+                : makeDisabledWorkspaceCheckpointManager();
+        const ownedCheckpointManager =
+            rewindFeature.state === "enabled"
+                ? releaseTrackerAfterCheckpointManager(registeredCheckpointManager, rewindFeature.release)
+                : registeredCheckpointManager;
+        checkpointManager = ownedCheckpointManager;
         if (rewindFeature.state === "enabled") {
-            await checkpointManager.recover();
+            await ownedCheckpointManager.recover();
         }
         const seed = await piSession.buildContext();
         const initialEntries = await piSession.getBranch();
@@ -1118,7 +1126,7 @@ async function createAgentRuntimeFromSession(
             if (rewindFeature.state !== "enabled") {
                 return await buildAgentRewindSessionStateView(entries, metadata.id, {
                     enabled: false,
-                    busy: checkpointManager.isBusy(),
+                    busy: ownedCheckpointManager.isBusy(),
                     frozen: rewindFeature.state === "unavailable",
                     verifySnapshot: async () => {},
                     readBlob: async () => {
@@ -1134,7 +1142,7 @@ async function createAgentRuntimeFromSession(
             }
             return await buildAgentRewindSessionStateView(entries, metadata.id, {
                 enabled: true,
-                busy: checkpointManager.isBusy(),
+                busy: ownedCheckpointManager.isBusy(),
                 frozen: recoveryView != null,
                 verifySnapshot: (snapshot) => rewindFeature.store.verifyOwnedSnapshot(snapshot),
                 readBlob: (oid) => rewindFeature.store.readBlob(oid),
@@ -1178,7 +1186,7 @@ async function createAgentRuntimeFromSession(
             onTurnFinished,
             initialContextEntries: initialEntries,
             ptyHost,
-            checkpointManager,
+            checkpointManager: ownedCheckpointManager,
             initialRewindState,
             buildRewindState,
             workspaceRewind:
@@ -1196,7 +1204,12 @@ async function createAgentRuntimeFromSession(
             await runtime.dispose();
             throw error;
         }
-        const cleanup = await Promise.allSettled([checkpointManager.dispose(), ptyHost.dispose()]);
+        const checkpointCleanup = checkpointManager
+            ? checkpointManager.dispose()
+            : rewindFeature.state === "enabled"
+              ? rewindFeature.release()
+              : Promise.resolve();
+        const cleanup = await Promise.allSettled([checkpointCleanup, ptyHost.dispose()]);
         const cleanupErrors = cleanup
             .filter((result): result is PromiseRejectedResult => result.status === "rejected")
             .map((result) => result.reason);
@@ -1209,6 +1222,38 @@ async function createAgentRuntimeFromSession(
         }
         throw error;
     }
+}
+
+function releaseTrackerAfterCheckpointManager(
+    manager: WorkspaceCheckpointManager,
+    release: () => Promise<void>
+): WorkspaceCheckpointManager {
+    let disposePromise: Promise<void> | undefined;
+    return {
+        isBusy: () => manager.isBusy(),
+        recover: () => manager.recover(),
+        dispose: () => {
+            if (disposePromise) return disposePromise;
+            disposePromise = (async () => {
+                const failures: unknown[] = [];
+                try {
+                    await manager.dispose();
+                } catch (error) {
+                    failures.push(error);
+                }
+                try {
+                    await release();
+                } catch (error) {
+                    failures.push(error);
+                }
+                if (failures.length === 1) throw failures[0];
+                if (failures.length > 1) {
+                    throw new AggregateError(failures, "Agent rewind checkpoint and tracker cleanup failed");
+                }
+            })();
+            return disposePromise;
+        },
+    };
 }
 
 async function ensureAgentRuntime(

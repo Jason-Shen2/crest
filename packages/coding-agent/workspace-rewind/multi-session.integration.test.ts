@@ -16,6 +16,7 @@ import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery } from "./workspace-recovery";
+import { WorkspaceTrackerRegistry } from "./workspace-tracker-registry";
 
 const cleanupRoots: string[] = [];
 
@@ -133,6 +134,102 @@ async function preview(value: Awaited<ReturnType<typeof makeFixture>>, item: Awa
 }
 
 describe("workspace rewind across sessions", () => {
+    it("shares one tracker baseline across interleaved Session boundaries without weakening live drift checks", async () => {
+        const value = await makeFixture();
+        await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
+        const openStore = vi.fn(async () => value.store);
+        const fullReconcile = vi.spyOn(value.store, "captureFullReconcile");
+        const registry = new WorkspaceTrackerRegistry({ openStore });
+        const input = {
+            dataRoot: join(value.root, "data"),
+            identity: value.identity,
+            git: value.store.git,
+            processOwner: value.store.processOwner,
+        };
+        const [leaseA, leaseB] = await Promise.all([registry.acquire(input), registry.acquire(input)]);
+
+        try {
+            const beforeA = await leaseA.tracker.capture({ profile: "pre-turn" });
+            const turnA = await value.sessions.a.appendMessage({
+                role: "user",
+                content: "session A overlaps session B",
+                timestamp: Date.now(),
+            } as never);
+            const beforeB = await leaseB.tracker.capture({ profile: "pre-turn" });
+            const turnB = await value.sessions.b.appendMessage({
+                role: "user",
+                content: "session B writes shared path",
+                timestamp: Date.now(),
+            } as never);
+
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-during-overlap");
+            const afterB = await leaseB.tracker.capture({ profile: "terminal" });
+            const afterA = await leaseA.tracker.capture({ profile: "terminal" });
+            const checkpointB: WorkspaceCheckpointV1 = {
+                schemaVersion: 1,
+                status: "available",
+                originSessionId: "session-b",
+                turnId: turnB,
+                workspaceIdentity: value.identity.workspaceIdentity,
+                workspaceIncarnation: value.identity.workspaceIncarnation,
+                before: beforeB.ref,
+                after: afterB.ref,
+                changes: await value.store.diff(beforeB.ref, afterB.ref),
+                coverage: afterB.coverage,
+            };
+            const checkpointA: WorkspaceCheckpointV1 = {
+                schemaVersion: 1,
+                status: "available",
+                originSessionId: "session-a",
+                turnId: turnA,
+                workspaceIdentity: value.identity.workspaceIdentity,
+                workspaceIncarnation: value.identity.workspaceIncarnation,
+                before: beforeA.ref,
+                after: afterA.ref,
+                changes: await value.store.diff(beforeA.ref, afterA.ref),
+                coverage: afterA.coverage,
+            };
+            await value.sessions.b.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpointB);
+            const checkpointAId = await value.sessions.a.appendCustomEntry(
+                WorkspaceControlCustomTypes.checkpoint,
+                checkpointA
+            );
+
+            expect(openStore).toHaveBeenCalledTimes(1);
+            expect(fullReconcile).toHaveBeenCalledTimes(1);
+            expect(checkpointA.originSessionId).toBe("session-a");
+            expect(checkpointB.originSessionId).toBe("session-b");
+            expect(checkpointA.after).toEqual(checkpointB.after);
+
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-after-boundaries");
+            const planned = await value.engine.previewRewind({
+                session: value.sessions.a,
+                sessionId: "session-a",
+                workspace: value.identity,
+                semanticLeafId: checkpointAId,
+                targetTurnId: turnA,
+            });
+            expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
+            expect(planned.files).toEqual([
+                expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" }),
+            ]);
+            await expect(
+                value.engine.applyRewind({
+                    session: value.sessions.a,
+                    sessionId: "session-a",
+                    workspace: value.identity,
+                    semanticLeafId: checkpointAId,
+                    targetTurnId: turnA,
+                    mode: "normal",
+                    confirmation: value.confirmations.take(planned.confirmationToken!),
+                })
+            ).rejects.toThrow(/force/i);
+            expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b-after-boundaries");
+        } finally {
+            await Promise.all([leaseA.release(), leaseB.release()]);
+        }
+    }, 30_000);
+
     it("turn Undo in session A restores only A's disjoint path and leaves session B bytes intact", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "a.txt"), "base-a");
