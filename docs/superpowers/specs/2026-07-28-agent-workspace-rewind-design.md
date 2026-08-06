@@ -1,6 +1,6 @@
 # Agent Workspace Rewind Design
 
-**Status:** Implemented behind an internal rollout gate
+**Status:** Implemented on supported platforms
 
 **Date:** 2026-07-28
 
@@ -10,10 +10,11 @@
 
 **Crest-owned hardening:** multi-session ownership checks, drift detection, durable refs, crash journal, and workspace locking
 
-**Performance addendum:** The implemented full-capture path is the correctness
-baseline, not the long-term monorepo hot path. The approved incremental
-snapshot direction, root-cause analysis, preserved invariants, and rollout
-constraints are recorded in
+**Performance addendum:** Logical per-turn checkpoints now consume physical
+snapshots from a canonical-workspace incremental tracker. Full capture remains
+the correctness fallback for cold start and continuity gaps. The root-cause
+analysis, implementation, preserved invariants, benchmark, and remaining
+limits are recorded in
 [`2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`](./2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md).
 
 ## Purpose
@@ -397,16 +398,23 @@ Restore reads raw blobs with `cat-file` and applies them through containment-
 checked filesystem operations. This avoids `.gitattributes` clean/smudge,
 `text`, `eol`, and `working-tree-encoding` transformations.
 
-Capture does not re-read every unchanged file on every prompt. Each descriptor
-manifest stores a per-path filesystem fingerprint (file identity, size,
-nanosecond mtime/ctime where supported, kind, and executable state). A blob OID
-may be reused only when the current fingerprint exactly matches the preceding
-snapshot in the same workspace incarnation and the path remains in scope.
-Changed candidates are stat-checked before and after raw hashing; an unstable
-candidate is retried once and then makes the boundary unavailable. The first
-capture, a missing cache, or a platform/filesystem without a reliable
-fingerprint falls back to raw hashing within the capture budget. The cache is
-only an optimization: tree/manifest OIDs remain the authority.
+Logical checkpoint creation and physical snapshot construction are decoupled.
+Every durable user turn still receives exactly one available or unavailable
+checkpoint. One process-wide tracker is shared only by Sessions with the same
+canonical workspace identity and incarnation. A healthy warm no-change boundary
+reuses the current immutable ref; a dirty boundary validates and hashes only
+dirty paths, then copy-on-write updates their path-state ancestors. The tracker
+and its caches are physical shared state. Checkpoint ownership, semantic leaf,
+restore authority, and conflict decisions remain Session-local.
+
+The watcher callback is a bounded dirty hint, not evidence that the snapshot is
+complete. A persistent cursor detects a history gap. Anchored readers validate
+the exact filesystem identity, bytes, symlink/type, executable bit, and Git
+index evidence used by the candidate. Full reconcile establishes the initial
+baseline and recovers from restart, overflow, cursor gap, invalid tracker state,
+scope change, or unsafe evidence. If it cannot restore trust, checkpoint
+finalization fails closed as unavailable; it never publishes an available
+empty diff from uncertain evidence.
 
 When the workspace is inside a user Git repository, scope discovery is
 read-only. An environment-isolated `rev-parse` locates the repository and
@@ -421,9 +429,13 @@ requiring a repository.
 
 The private store never writes the user's `.git` directory. Captured tree
 objects are anchored under `refs/crest/snapshots/<snapshot-id>`. A snapshot ID
-is the OID of a descriptor tree whose entries reference both the workspace tree
-and its scope-manifest blob; the ref therefore keeps both reachable. Session
-checkpoint/state entries are the logical owners of those snapshot IDs.
+is the OID of a descriptor tree. Manifest v1 descriptors contain the workspace
+tree and flat scope-manifest blob. New captures write manifest v2, whose
+descriptor also owns the content-addressed `state` tree referenced by the
+manifest. Readers support both formats, while writers emit only v2. The public
+`WorkspaceSnapshotRefV1`, checkpoint, IPC, preview, and restore contracts are
+unchanged. The ref therefore keeps the complete selected format reachable.
+Session checkpoint/state entries are the logical owners of those snapshot IDs.
 In-progress restore objects are separately anchored by an operation descriptor
 under `refs/crest/ops/<operation-id>` before any workspace write. That
 descriptor references the safety snapshot and any pending result snapshot.
@@ -447,12 +459,12 @@ mutable path. Unreferenced refs receive a grace period and a second
 reconciliation before Git GC; the production grace is fixed at seven days and
 cannot be shortened by renderer or IPC input. Reachable snapshots are never
 pruned merely because they are old. The first release retains all checkpoints
-while any session entry references them, and default enablement is gated on
-storage-growth/quota testing.
+while any session entry references them.
 
-Capture has hard resource bounds. Session attach performs a best-effort warm
-capture that creates no turn checkpoint. The synchronous pre-turn path has a
-5-second deadline; terminal/background capture has a 30-second deadline. Both
+Capture has hard resource bounds. The first live boundary establishes a cold
+baseline through full reconcile; later trusted boundaries use the shared
+tracker. The synchronous pre-turn path has a 5-second deadline;
+terminal/background capture has a 30-second deadline. Both
 allow 200,000 eligible entries and at most 1 GiB of newly hashed input per
 boundary, require at least the greater of 1 GiB or 5% free space, and share a
 5 GiB soft quota per canonical workspace store. A boundary that exceeds a
@@ -512,7 +524,11 @@ interface WorkspaceSnapshotRefV1 {
 The snapshot ref names both the raw Git tree and an immutable scope manifest;
 loading it verifies that both match the descriptor identified by `id`.
 The scope manifest is required to query whether an arbitrary missing path was
-covered-and-absent or excluded at that boundary.
+covered-and-absent or excluded at that boundary. Manifest v2 stores coverage
+and scope metadata plus the root OID of a content-addressed path-state tree;
+unchanged subtrees are shared between immutable versions. Existing v1 flat
+manifests remain readable for old checkpoints but are reconciled to v2 before
+incremental mutation.
 
 Each `WorkspacePathChangeV1` contains a UTF-8 project-relative path and
 explicit before/after states:
@@ -1097,6 +1113,16 @@ first-release platform: owner-only store ACLs, reparse-safe inspection/apply,
 case-only replacement, and durable directory fsync must all gain production
 support before its full gate can be enabled. An unknown capability fails closed
 rather than weakening a restore assertion.
+
+The incremental gate additionally proves full/incremental state and diff
+equivalence, restart cursor continuity, watcher gaps, scope invalidation,
+same-size rewrites, and capture races. Real 1/2/4-Session tests share one tracker
+without sharing checkpoint identity. The 2026-08-06 macOS/APFS 10k-entry run
+measured healthy warm no-change capture at 0.00-0.07 ms with zero enumeration;
+unique-content cold 10k full reconcile exceeded its 30-second deadline and
+dirty-path latency remains material. The 50k/200k matrix and Linux measurements
+remain outstanding. Windows stays unsupported pending owner-only ACL and
+reparse-safe storage/apply support. No larger timeout is treated as a pass.
 
 ### Git runner
 

@@ -1,6 +1,6 @@
 # Agent Workspace Rewind Incremental Snapshot Design
 
-**状态：** 设计方向已确认，增量基础设施实现中
+**状态：** 已实现；保留 cold/dirty 性能与未测平台限制
 
 **日期：** 2026-08-04
 
@@ -22,7 +22,15 @@
 架构。本文只改变 snapshot 的生成方式，不改变 Rewind、Redo、checkpoint 或 session
 tree 的产品语义。
 
-## 当前实现与问题根因
+## 从原始实现到当前实现
+
+优化过程保持了一个简单边界：先确认逻辑 checkpoint 不能减少，再把重复的物理全量扫描
+从 checkpoint manager 中抽离。实现顺序是 manifest v2 结构共享、watcher continuity、增量
+path capture、full fallback、quota 增量计费、canonical tracker registry、多 Session 接线，最后
+用等价性、E2E 和 benchmark 收口。没有增加第二套恢复 journal、环境开关、IPC schema 或 UI
+状态。
+
+## 原始实现与问题根因
 
 ### 当前 turn 热路径
 
@@ -374,8 +382,9 @@ drift 检查避免覆盖边界之后检测到的其他修改。
 - drift/force/confirmation token
 - Rewind/Redo IPC 和 UI
 
-现有 full capture 保留为 reconcile backend。在增量 tracker 通过 correctness、crash、
-watcher-gap、monorepo benchmark 和多 Session 测试前，不删除旧路径。
+现有 full capture 保留为 reconcile backend。增量 tracker 已通过 correctness、crash、
+watcher-gap、等价性和多 Session 测试；未完成的 benchmark 平台/规模明确保留为限制，
+不通过提高 timeout 或隐藏结构化 timeout row 来宣称完成。
 
 ## 验证范围
 

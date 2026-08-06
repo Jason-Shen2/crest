@@ -330,24 +330,46 @@ timelineAtom = atom((get) => {
 > present or authoritative. Tool write/edit callbacks cannot see bash, hosted
 > PTY, CLI-subagent, or future-tool mutations.
 
-The current Electron/TypeScript Agent captures the whole supported workspace
-scope at durable user-turn boundaries. It stores raw file bytes in a private
-bare object store at
+The current Electron/TypeScript Agent records one logical checkpoint for every
+durable user turn. The checkpoint stores immutable `before`/`after` snapshot
+refs, exact changed paths, coverage, and workspace/session identity. Physical
+snapshot generation is separate: one process-wide tracker per canonical
+workspace identity and incarnation serves every live Agent Session. A healthy
+warm boundary with no changes reuses the same snapshot ref; dirty boundaries
+copy only changed path-state nodes and their ancestors.
+
+Raw file bytes live in a private bare object store at
 `<wave-data>/agent-checkpoints/workspaces/<workspace-identity>-<incarnation>/repo.git`
 without touching user Git HEAD/index/stash, and works identically in non-Git
-workspaces. Session entries own before/after descriptors and an exact
-changed-path manifest. The 5 GiB per-workspace soft quota cleans only unowned
-objects; referenced trashed-session data requires an owner-specific confirmed
-purge.
+workspaces. New snapshots write manifest v2: the descriptor owns a
+content-addressed path-state tree, so unchanged state is structurally shared.
+Readers retain manifest v1 support for existing snapshots; checkpoint, IPC,
+preview, and restore schemas did not change. The 5 GiB per-workspace soft quota
+cleans only unowned objects; referenced trashed-session data requires an
+owner-specific confirmed purge.
 
-This per-boundary full capture is the current correctness baseline, but it is
-not the intended monorepo hot path. The approved follow-up keeps the same
-per-turn checkpoint contract while moving physical snapshot generation to one
-canonical-workspace incremental tracker shared by Agent Sessions. Watcher
-events remain hints rather than authority; startup, event gaps, overflow, or
-failed consistency checks fall back to full reconciliation or an explicit
-unavailable checkpoint. The root-cause analysis and target constraints are in
+The watcher callback only adds bounded dirty-path hints. Its persistent cursor
+detects event-history continuity; anchored validation proves the exact bytes,
+path type, identity, and Git-index evidence used for a snapshot. Full
+reconciliation remains the cold-start, gap/overflow, invalid-state, and unsafe-
+evidence fallback. A gap is never interpreted as an empty turn: if full
+reconciliation cannot restore trust, the turn receives an explicit
+`unavailable` checkpoint. The root-cause analysis and implementation details
+are in
 [`2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`](superpowers/specs/2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md).
+
+Sharing a tracker removes duplicate workspace scans; it does not establish
+which Session authored a write. A checkpoint still describes changes observed
+between that Session's boundaries. Normal Revert protects later writes through
+expected-current/live drift checks, but strict cross-Session authorship needs
+separate worktrees or another write-isolation mechanism.
+
+The 2026-08-06 macOS/APFS 10k-entry benchmark measured healthy warm no-change
+boundaries at 0.00-0.07 ms with zero enumeration for 1/2/4 Sessions. Dirty-path
+latency is path-local but remains high, and unique-content cold 10k full
+reconciliation exceeded the 30-second production deadline. The 50k/200k matrix
+and Linux results are not yet measured; Windows remains unsupported. These are
+recorded limits, not timeout-adjusted passes.
 
 Revert restores only paths in the selected active-branch suffix. Normal mode
 does no mutation on drift. `Force revert` may overwrite only previewed red

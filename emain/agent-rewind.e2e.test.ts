@@ -313,11 +313,13 @@ function installPromptHarness(mutate: () => Promise<void>) {
         contextWindow: 1_000,
         maxTokens: 1_000,
     };
-    let resolveSettled!: () => void;
-    const settled = new Promise<void>((resolve) => {
-        resolveSettled = resolve;
-    });
-    const observed = { events: [] as string[], settled };
+    let settledCount = 0;
+    const settledWaiters = new Set<{ count: number; resolve: () => void }>();
+    const waitForSettled = (count: number) => {
+        if (settledCount >= count) return Promise.resolve();
+        return new Promise<void>((resolve) => settledWaiters.add({ count, resolve }));
+    };
+    const observed = { events: [] as string[], settled: waitForSettled(1), waitForSettled };
     registerApiProvider({
         api: model.api,
         stream: () => new AssistantMessageEventStream(),
@@ -361,7 +363,12 @@ function installPromptHarness(mutate: () => Promise<void>) {
         harness.subscribe((event) => {
             observed.events.push(event.type);
             if (event.type === "agent_end") {
-                resolveSettled();
+                settledCount++;
+                for (const waiter of settledWaiters) {
+                    if (settledCount < waiter.count) continue;
+                    settledWaiters.delete(waiter);
+                    waiter.resolve();
+                }
             }
         });
         return {
@@ -982,6 +989,119 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         expect(state.turnChanges).toEqual([]);
         expect(screen.queryByLabelText("Turn file changes")).toBeNull();
         expect(summaryRead).not.toHaveBeenCalled();
+        value.session.close();
+    }, 30_000);
+
+    it("reuses the live incremental boundary across no-change turns and preserves restore operations", async () => {
+        const value = await makeFixture();
+        const file = join(value.workspaceRoot, "incremental-boundary.txt");
+        await writeFile(file, "before\n");
+        await value.manager.dispose();
+        let mutationIndex = 0;
+        const promptHarness = installPromptHarness(async () => {
+            mutationIndex++;
+            if (mutationIndex === 3) await writeFile(file, "after\n");
+        });
+        const fullReconcile = vi.spyOn(WorkspaceSnapshotStore.prototype, "captureFullReconcile");
+        const running = value.makeService();
+        const { client } = value.register(running.service);
+        const send = async (text: string, settledCount: number) => {
+            const result = await client.send({
+                sessionMetadata: value.metadata,
+                context: {
+                    workspaceId: RequestIdentity.workspaceId,
+                    workspaceDir: value.workspaceRoot,
+                    sessionPath: value.metadata.path,
+                    environment: {},
+                },
+                text,
+                provider: "p",
+                model: "m",
+            });
+            await promptHarness.waitForSettled(settledCount);
+            return result.turnId;
+        };
+
+        const firstTurnId = await send("cold boundary", 1);
+        const secondTurnId = await send("no workspace changes", 2);
+        const thirdTurnId = await send("shell changes a file", 3);
+        const checkpoints = (await value.session.getEntries())
+            .map(decodeWorkspaceCheckpointEntry)
+            .filter(
+                (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
+                    checkpoint?.status === "available"
+            );
+        const first = checkpoints.find((checkpoint) => checkpoint.turnId === firstTurnId)!;
+        const second = checkpoints.find((checkpoint) => checkpoint.turnId === secondTurnId)!;
+        const third = checkpoints.find((checkpoint) => checkpoint.turnId === thirdTurnId)!;
+
+        expect(fullReconcile).toHaveBeenCalledTimes(1);
+        expect(first.before).toEqual(first.after);
+        expect(second).toMatchObject({ before: first.after, after: first.after, changes: [] });
+        expect(third.before).toEqual(first.after);
+        expect(third.after).not.toEqual(third.before);
+        expect(third.changes).toEqual([expect.objectContaining({ path: "incremental-boundary.txt" })]);
+        expect(JSON.parse((await value.store.readBlob(third.after.scopeManifest)).toString("utf8"))).toMatchObject({
+            schemaversion: 2,
+            statetree: expect.any(String),
+        });
+
+        const state = (await client.getSessionState(value.metadata)).rewindState!;
+        const rewindPreview = await client.previewRewind({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: state.semanticLeafId,
+            target: { kind: "rewind", targetTurnId: thirdTurnId },
+        });
+        expect(rewindPreview).toMatchObject({
+            fileCount: 1,
+            hardBlocked: false,
+            forceRequired: false,
+            files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
+        });
+        await client.rewindTree({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: state.semanticLeafId,
+            targetTurnId: thirdTurnId,
+            mode: "normal",
+            confirmationToken: rewindPreview.confirmationToken!,
+        });
+        expect(await readFile(file, "utf8")).toBe("before\n");
+
+        const reverted = await value.rewindState();
+        expect(reverted.redo).toMatchObject({ fileCount: 1 });
+        const redoPreview = await client.previewRewind({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: reverted.semanticLeafId,
+            target: { kind: "redo" },
+        });
+        expect(redoPreview).toMatchObject({
+            fileCount: 1,
+            hardBlocked: false,
+            forceRequired: false,
+            files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
+        });
+        await client.redoRewind({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: reverted.semanticLeafId,
+            confirmationToken: redoPreview.confirmationToken!,
+        });
+        expect(await readFile(file, "utf8")).toBe("after\n");
+
+        const redone = await value.rewindState();
+        const undoPreview = await client.previewTurnUndo({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: redone.semanticLeafId,
+            turnId: thirdTurnId,
+        });
+        expect(undoPreview.files).toEqual(rewindPreview.files);
+        await client.applyTurnUndo({
+            sessionMetadata: value.metadata,
+            expectedSemanticLeafId: redone.semanticLeafId,
+            turnId: thirdTurnId,
+            mode: "normal",
+            confirmationToken: undoPreview.confirmationToken!,
+        });
+        expect(await readFile(file, "utf8")).toBe("before\n");
         value.session.close();
     }, 30_000);
 
