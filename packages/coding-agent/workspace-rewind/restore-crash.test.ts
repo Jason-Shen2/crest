@@ -52,6 +52,11 @@ const BoundaryMatrix = [
 const ExecutedBoundaries = BoundaryMatrix.filter((item) => item.implemented);
 const OperationKinds = ["conversation-rewind", "conversation-redo", "turn-undo", "turn-redo"] as const;
 const CleanupRoots: string[] = [];
+const RecoveryProcessOwner = {
+    pid: process.pid,
+    processStartToken: "restore-crash-test",
+    nonce: "4".repeat(64),
+};
 
 interface CrashFixtureMetadata {
     identity: CanonicalWorkspaceIdentity;
@@ -241,11 +246,7 @@ async function recover(metadata: CrashFixtureMetadata) {
         dataRoot: metadata.dataRoot,
         identity: metadata.identity,
         git: new WorkspaceGitRunner(),
-        processOwner: {
-            pid: process.pid,
-            processStartToken: "restore-crash-test",
-            nonce: "4".repeat(64),
-        },
+        processOwner: RecoveryProcessOwner,
     });
     const session = new Session(SqliteSessionStorage.open(metadata.sessionPath));
     const pendingStore = new PendingWorkspaceRestoreStore(store);
@@ -278,7 +279,7 @@ async function readPending(metadata: CrashFixtureMetadata) {
         dataRoot: metadata.dataRoot,
         identity: metadata.identity,
         git: new WorkspaceGitRunner(),
-        processOwner: { pid: process.pid, processStartToken: "restore-crash-read", nonce: "5".repeat(64) },
+        processOwner: RecoveryProcessOwner,
     });
     return new PendingWorkspaceRestoreStore(store).readCandidate();
 }
