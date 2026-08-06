@@ -116,6 +116,42 @@ describe("snapshot quota accounting", () => {
         });
     });
 
+    test("recovers a stale actor reservation once and rechecks the hard limit", async () => {
+        const fixture = await makeFixture();
+        const actorA = await openAccounting(fixture, { exactBytes: 100, maxBytes: 1_000 });
+        resetSnapshotQuotaAccountingRegistryForTest();
+        await openAccounting(fixture, { exactBytes: 800, generation: GenerationB, maxBytes: 1_000 });
+
+        await expect(actorA.reserve({ contentBytes: 300, metadataBytes: 0 })).rejects.toMatchObject({
+            code: "quota_exceeded",
+        });
+        const resumed = await actorA.reserve({ contentBytes: 100, metadataBytes: 0 });
+
+        expect(actorA.measuredBytes).toBe(900);
+        expect(JSON.parse(await readFile(fixture.statePath, "utf8"))).toMatchObject({
+            generation: GenerationA,
+            measuredbytes: 900,
+        });
+        await resumed.release();
+    });
+
+    test("recovers a stale actor exact replacement once with a fresh measurement", async () => {
+        const fixture = await makeFixture();
+        const actorA = await openAccounting(fixture, { exactBytes: 100 });
+        resetSnapshotQuotaAccountingRegistryForTest();
+        await openAccounting(fixture, { exactBytes: 250, generation: GenerationB });
+        fixture.exactBytes = 400;
+
+        await actorA.replaceExactUsage(300);
+
+        expect(actorA.measuredBytes).toBe(400);
+        expect(fixture.exactScans).toBe(3);
+        expect(JSON.parse(await readFile(fixture.statePath, "utf8"))).toMatchObject({
+            generation: GenerationA,
+            measuredbytes: 400,
+        });
+    });
+
     test.each([
         ["corrupt", Buffer.from("{broken")],
         ["truncated", Buffer.from('{"generation":"a"')],
@@ -198,6 +234,18 @@ describe("snapshot quota accounting", () => {
         });
 
         await expect(accounting.reserve({ contentBytes: 1, metadataBytes: 0 })).rejects.toThrow(/anchor|changed/i);
+    });
+
+    test("fails closed when the live store root is replaced by a symlink to the pinned directory", async () => {
+        const fixture = await makeFixture();
+        const accounting = await openAccounting(fixture);
+        const heldStoreRoot = join(fixture.root, "held-repo.git");
+        await rename(fixture.storeRoot, heldStoreRoot);
+        await symlink(heldStoreRoot, fixture.storeRoot);
+
+        await expect(accounting.reserve({ contentBytes: 1, metadataBytes: 0 })).rejects.toThrow(
+            /store root|unsafe|changed/i
+        );
     });
 
     test("fails closed for a symlinked tracker directory", async () => {

@@ -443,7 +443,6 @@ export class WorkspaceSnapshotStore {
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             SnapshotFingerprints.set(this, captured.fingerprints);
             markSnapshotTrusted(this, ref);
-            await this.quotaAccounting.reconcileExactUsage();
             return {
                 ref,
                 coverage: {

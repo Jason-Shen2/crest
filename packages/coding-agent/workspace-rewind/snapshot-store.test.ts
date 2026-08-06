@@ -1042,6 +1042,7 @@ describe("workspace snapshots", () => {
         const updatedOid = await writeTestBlob(fixture, Buffer.from("after"));
         const baseSrc = await readChildTreeOid(fixture, base.tree, "src");
         const baseAssets = await readChildTreeOid(fixture, base.tree, "assets");
+        await fixture.store.getQuotaStatus();
         fixture.git.calls.length = 0;
 
         const committed = await fixture.store.commitIncrementalSnapshot({
@@ -1370,6 +1371,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        await fixture.store.getQuotaStatus();
         const measuredBefore = fixture.store.quotaAccounting.measuredBytes;
         const originalRun = fixture.git.run.bind(fixture.git);
         vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
@@ -1390,6 +1392,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        await fixture.store.getQuotaStatus();
         const measuredBefore = fixture.store.quotaAccounting.measuredBytes;
         vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
             if (args[0] === "mktree") {
@@ -2156,6 +2159,29 @@ describe("workspace snapshots", () => {
         ]);
         const refs = await fixture.git.run(["show-ref"], { gitDir: fixture.storeRoot, timeoutMs: 5_000 });
         expect(refs.stdout.toString()).toContain(ref.id);
+    });
+
+    test("defers full capture quota reconciliation until the next incremental reservation", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "base.txt"), "base");
+        fixture.git.calls.length = 0;
+
+        const captured = await fixture.store.capture({ profile: "terminal" });
+
+        expect(fixture.git.calls.filter((args) => args[0] === "count-objects")).toHaveLength(1);
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        await fixture.store.anchorSnapshot(base);
+        const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
+        fixture.git.calls.length = 0;
+
+        await fixture.store.commitIncrementalSnapshot({ ...input, mutations: [] });
+
+        const exactIndex = fixture.git.calls.findIndex((args) => args[0] === "count-objects");
+        const firstObjectWriteIndex = fixture.git.calls.findIndex(
+            (args) => args[0] === "hash-object" || args[0] === "mktree"
+        );
+        expect(exactIndex).toBeGreaterThanOrEqual(0);
+        expect(firstObjectWriteIndex).toBeGreaterThan(exactIndex);
     });
 
     test("captures 10k unique files with a bounded number of Git processes", async () => {
