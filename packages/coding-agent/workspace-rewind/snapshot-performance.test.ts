@@ -31,7 +31,7 @@ describe("incremental snapshot performance contracts", () => {
     test("keeps a warm no-change boundary off every workspace-scale path", async () => {
         const value = await makeFixture("warm-empty");
         const metrics = makeMetrics();
-        const tracker = makeTracker(value, metrics);
+        const tracker = makeTracker({ store: value.store, feed: value.feed }, metrics);
         const fullReconcile = vi.spyOn(value.store, "captureFullReconcile");
         const exactQuotaScan = vi.spyOn(value.store.quotaAccounting, "reconcileExactUsage");
         try {
@@ -62,7 +62,7 @@ describe("incremental snapshot performance contracts", () => {
     test("bounds one dirty path by its path-local evidence", async () => {
         const value = await makeFixture("one-dirty");
         const metrics = makeMetrics();
-        const tracker = makeTracker(value, metrics);
+        const tracker = makeTracker({ store: value.store, feed: value.feed }, metrics);
         const readNodeKinds = vi.spyOn(value.store, "readNodeKinds");
         try {
             await tracker.capture({ profile: "terminal" });
@@ -119,42 +119,46 @@ describe("incremental snapshot performance contracts", () => {
         expect(metrics.workerPeak).toBe(IncrementalReaderConcurrency);
     });
 
-    test.each([1, 2, 4])("shares one registry tracker across %i sessions", async (sessionCount) => {
-        const identity = makeStaticIdentity(`sessions-${sessionCount}`);
-        const store = {
-            identity,
-            storeRoot: "/store",
-            git: new WorkspaceGitRunner(),
-        } as WorkspaceSnapshotStore;
-        const tracker = {
-            dispose: vi.fn(async () => undefined),
-        } as unknown as WorkspaceSnapshotTracker;
-        const openStore = vi.fn(async () => store);
-        const makeTracker = vi.fn(() => tracker);
+    test.each([1, 2, 4])("shares one real cold baseline across %i sessions", async (sessionCount) => {
+        const value = await makeWorkspaceFixture(`sessions-${sessionCount}`);
+        const metrics = makeMetrics();
+        const openStore = vi.fn((input: Parameters<typeof WorkspaceSnapshotStore.open>[0]) =>
+            WorkspaceSnapshotStore.open(input)
+        );
+        const createTracker = vi.fn((input: { store: WorkspaceSnapshotStore; feed: WorkspaceChangeFeed }) =>
+            makeTracker(input, metrics)
+        );
         const registry = new WorkspaceTrackerRegistry({
             openStore,
             makeFeed: () => new DeterministicChangeFeed(),
-            makeTracker,
+            makeTracker: createTracker,
         });
         const input = {
-            dataRoot: "/data",
-            identity,
-            git: store.git,
-            processOwner: {
-                pid: process.pid,
-                processStartToken: `performance-sessions-${sessionCount}`,
-                nonce: "8".repeat(64),
-            },
+            dataRoot: value.dataRoot,
+            identity: value.identity,
+            git: value.git,
+            processOwner: value.processOwner,
         };
         const leases = await Promise.all(Array.from({ length: sessionCount }, () => registry.acquire(input)));
+        const fullReconcile = vi.spyOn(leases[0]!.store, "captureFullReconcile");
         try {
+            const captures = await Promise.all(leases.map((lease) => lease.tracker.capture({ profile: "terminal" })));
             expect(new Set(leases.map((lease) => lease.tracker)).size).toBe(1);
+            expect(new Set(captures.map((capture) => capture.ref.id)).size).toBe(1);
             expect(openStore).toHaveBeenCalledTimes(1);
-            expect(makeTracker).toHaveBeenCalledTimes(1);
+            expect(createTracker).toHaveBeenCalledTimes(1);
+            expect({
+                captureFullReconcileCount: fullReconcile.mock.calls.length,
+                enumeratedEntryCount: metrics.enumeratedEntryCount,
+                anchoredWorkerCount: metrics.workerCount,
+            }).toEqual({
+                captureFullReconcileCount: 1,
+                enumeratedEntryCount: 0,
+                anchoredWorkerCount: 0,
+            });
         } finally {
             await Promise.all(leases.map((lease) => lease.release()));
         }
-        expect(tracker.dispose).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -180,16 +184,6 @@ function makeReaderEntries(count: number): AnchoredReaderBatchEntry[] {
             ctimeNs: "1",
         },
     }));
-}
-
-function makeStaticIdentity(label: string): CanonicalWorkspaceIdentity {
-    return {
-        canonicalRoot: "/workspace",
-        workspaceIdentity: Buffer.from(`performance-${label}`).toString("hex").padEnd(64, "0").slice(0, 64),
-        workspaceIncarnation: Buffer.from(`incarnation-${label}`).toString("hex").padEnd(64, "0").slice(0, 64),
-        storeKey: `performance-${label}`,
-        ancestorIdentityChain: [{ absolutePath: "/", dev: "1", ino: "1", birthtimeNs: "1" }],
-    };
 }
 
 interface PerformanceMetrics {
@@ -230,7 +224,7 @@ function makeMetrics(): PerformanceMetrics {
     return metrics;
 }
 
-function makeTracker(value: Awaited<ReturnType<typeof makeFixture>>, metrics: PerformanceMetrics) {
+function makeTracker(value: { store: WorkspaceSnapshotStore; feed: WorkspaceChangeFeed }, metrics: PerformanceMetrics) {
     return new WorkspaceSnapshotTracker({
         store: value.store,
         feed: value.feed,
@@ -240,7 +234,7 @@ function makeTracker(value: Awaited<ReturnType<typeof makeFixture>>, metrics: Pe
         },
         makePathCapture: (input) =>
             new IncrementalPathCapture({
-                identity: value.identity,
+                identity: value.store.identity,
                 git: value.store.git,
                 storeRoot: value.store.storeRoot,
                 scope: input.scope,
@@ -255,6 +249,18 @@ function makeTracker(value: Awaited<ReturnType<typeof makeFixture>>, metrics: Pe
 }
 
 async function makeFixture(label: string) {
+    const value = await makeWorkspaceFixture(label);
+    const store = await WorkspaceSnapshotStore.open({
+        dataRoot: value.dataRoot,
+        identity: value.identity,
+        git: value.git,
+        processOwner: value.processOwner,
+    });
+    const feed = new DeterministicChangeFeed();
+    return { ...value, store, feed };
+}
+
+async function makeWorkspaceFixture(label: string) {
     const root = await mkdtemp(join(tmpdir(), `crest-snapshot-performance-${label}-`));
     cleanupRoots.push(root);
     const workspaceRoot = await realpath(await mkdir(join(root, "workspace"), { recursive: true }));
@@ -265,7 +271,9 @@ async function makeFixture(label: string) {
         storeKey: `performance-${label}`,
         ancestorIdentityChain: await ancestorIdentityChain(workspaceRoot),
     };
-    const store = await WorkspaceSnapshotStore.open({
+    return {
+        root,
+        workspaceRoot,
         dataRoot: join(root, "data"),
         identity,
         git: new WorkspaceGitRunner(),
@@ -274,9 +282,7 @@ async function makeFixture(label: string) {
             processStartToken: `performance-${label}`,
             nonce: "8".repeat(64),
         },
-    });
-    const feed = new DeterministicChangeFeed();
-    return { root, workspaceRoot, identity, store, feed };
+    };
 }
 
 async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceIdentity["ancestorIdentityChain"]> {

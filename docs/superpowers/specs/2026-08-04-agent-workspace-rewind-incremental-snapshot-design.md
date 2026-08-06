@@ -438,8 +438,11 @@ Task 10 把性能验证分成两个层次：
 1. 默认 CI 运行不依赖 wall-clock 的 algorithmic contract。warm 和单 dirty path 使用最小的真实
    `WorkspaceSnapshotStore`、`WorkspaceSnapshotTracker` 与 `IncrementalPathCapture`；100 parent
    并发上限直接运行生产 `runAnchoredReaderBatch`，但注入无磁盘 I/O 的可控 group reader；
-   1/2/4 Session 只验证 `WorkspaceTrackerRegistry` 的实例共享。这样保留真实决策点，又不会在
-   默认 CI 中重复执行 100 次 Git COW 和 child process。
+   1/2/4 Session 则通过真实 `WorkspaceTrackerRegistry` 取得同一个真实 store/tracker，并发调用
+   `capture()`，验证只产生一个 cold full baseline 且返回同一个 snapshot ref。这样保留真实决策点，
+   又不会在默认 CI 中重复执行 100 次 Git COW 和 child process。
+   该 gate 同时断言 `openStore=1`、`makeTracker=1`、`captureFullReconcile=1`，以及 cold capture 的
+   incremental enumeration 和 anchored worker 均为 0；不是仅凭对象 identity 推断 baseline 共享。
 2. opt-in benchmark 才记录本机 p50/p95。脚本默认覆盖 10k/50k/200k entries、deep/wide、
    dirty 0/1/100 和 Session 1/2/4，也允许用 `--entries`、`--iterations` 跑小矩阵。
 
@@ -465,7 +468,7 @@ worker instrumentation 紧贴生产 batch scheduler 的 group start/settle，默
 | warm、无改动 | 0 | 0 | 0 | 0 | `after.ref === before.ref` |
 | 1 dirty path | 0 | 1 | 1 | 仅与增量提交相关，不进入 no-change gate | path-local |
 | 100 dirty paths / 100 parents | 不适用 | 100 个调度 group | 8 | 不适用 | 生产 scheduler bounded |
-| 1/2/4 Session lease | 1 个 store 实例 | 不适用 | 不适用 | 不适用 | 同一个 tracker |
+| 1/2/4 Session 并发 cold capture | 1 | 0 | 0 | 仅 cold baseline 正常计费 | 同一个真实 tracker、同一个 ref |
 
 计数测试不设置毫秒阈值，因此机器负载变化不会让默认 CI 变成 flaky performance test。
 
