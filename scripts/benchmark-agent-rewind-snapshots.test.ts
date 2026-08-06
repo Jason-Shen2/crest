@@ -145,4 +145,134 @@ describe("agent rewind snapshot benchmark", () => {
         ).rejects.toBe(failure);
         expect(cleaned).toBe(1);
     });
+
+    test("drains queued captures before releasing leases or starting the next row", async () => {
+        const captureTimeout = new WorkspaceSnapshotStoreError("capture_timeout", "timed out");
+        const queued = Array.from({ length: 3 }, () => makeDeferred<{ coverage: { newlyHashedBytes: number } }>());
+        const allQueuedStarted = makeDeferred<void>();
+        let queuedStarted = 0;
+        let representativeState:
+            | {
+                  captureCount: number;
+                  resetCount: number;
+                  mutationCount: number;
+                  acquired: number[];
+                  released: number;
+                  cleaned: boolean;
+              }
+            | undefined;
+        const states = new Map<string, NonNullable<typeof representativeState>>();
+        const makeFixture = async (entryCount: number, shape: "deep" | "wide", contentCardinality: number) => {
+            const root = `${shape}:${contentCardinality}`;
+            const state = {
+                captureCount: 0,
+                resetCount: 0,
+                mutationCount: 0,
+                acquired: [] as number[],
+                released: 0,
+                cleaned: false,
+            };
+            states.set(root, state);
+            if (shape === "deep" && contentCardinality === 64) representativeState = state;
+            const tracker = {
+                capture: async () => {
+                    state.captureCount++;
+                    if (shape === "deep" && contentCardinality === 64 && state.captureCount === 5) {
+                        throw captureTimeout;
+                    }
+                    if (
+                        shape === "deep" &&
+                        contentCardinality === 64 &&
+                        state.captureCount >= 6 &&
+                        state.captureCount <= 8
+                    ) {
+                        const current = queued[state.captureCount - 6]!;
+                        queuedStarted++;
+                        if (queuedStarted === queued.length) allQueuedStarted.resolve();
+                        return await current.promise;
+                    }
+                    return { coverage: { newlyHashedBytes: 0 } };
+                },
+            };
+            return {
+                root,
+                shape,
+                workspaceRoot: root,
+                directoryCount: 0,
+                contentCardinality,
+                paths: Array.from({ length: entryCount }, (_, index) => `file-${index}`),
+                store: {},
+                tracker,
+                feed: { record: () => undefined },
+                metrics: {
+                    fullReconcileCount: 0,
+                    enumeratedEntries: 0,
+                    workerActive: 0,
+                    workerPeak: 0,
+                    newlyHashedBytes: 0,
+                    hooks: {},
+                    reset: () => {
+                        state.resetCount++;
+                    },
+                },
+            };
+        };
+        const run = runAgentRewindSnapshotBenchmark as unknown as (
+            options: { entryCounts: number[]; iterations: number },
+            onRow: (row: Record<string, unknown>) => void,
+            dependencies: Record<string, unknown>
+        ) => Promise<Array<Record<string, unknown>>>;
+        const pending = run({ entryCounts: [10], iterations: 1 }, () => undefined, {
+            makeFixture,
+            countLooseObjects: async () => 0,
+            mutatePaths: async (workspaceRoot: string) => {
+                states.get(workspaceRoot)!.mutationCount++;
+            },
+            now: () => 1,
+            cleanupFixture: async (fixture: { root: string }) => {
+                states.get(fixture.root)!.cleaned = true;
+            },
+            acquireLeases: async (fixture: { root: string; tracker: unknown }, count: number) => {
+                const state = states.get(fixture.root)!;
+                state.acquired.push(count);
+                return Array.from({ length: count }, () => ({
+                    tracker: fixture.tracker,
+                    release: async () => {
+                        state.released++;
+                    },
+                }));
+            },
+        });
+        await allQueuedStarted.promise;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(representativeState).toMatchObject({
+            resetCount: 4,
+            mutationCount: 3,
+            acquired: [1, 2, 4],
+            released: 3,
+            cleaned: false,
+        });
+
+        const unexpected = new Error("queued capture failed");
+        queued[0]!.resolve({ coverage: { newlyHashedBytes: 0 } });
+        queued[1]!.reject(unexpected);
+        queued[2]!.resolve({ coverage: { newlyHashedBytes: 0 } });
+        await expect(pending).rejects.toBe(unexpected);
+        expect(representativeState).toMatchObject({
+            acquired: [1, 2, 4],
+            released: 7,
+            cleaned: true,
+        });
+    });
 });
+
+function makeDeferred<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+}

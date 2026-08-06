@@ -239,18 +239,17 @@ async function measureWarmRow(
             );
             fixture.feed.record(dirtyPaths);
             const started = dependencies.now();
-            try {
-                const captures = await Promise.all(
-                    leases.map((lease) => lease.tracker.capture({ profile: "terminal" }))
-                );
-                durations.push(dependencies.now() - started);
-                fixture.metrics.newlyHashedBytes += captures.reduce(
-                    (total, capture) => total + capture.coverage.newlyHashedBytes,
-                    0
-                );
-            } catch (error) {
-                if (!isCaptureTimeout(error)) throw error;
-                durations.push(dependencies.now() - started);
+            const captures = leases.map((lease) =>
+                Promise.resolve().then(() => lease.tracker.capture({ profile: "terminal" }))
+            );
+            const settled = await Promise.allSettled(captures);
+            durations.push(dependencies.now() - started);
+            const unexpected = settled.find(
+                (result): result is PromiseRejectedResult =>
+                    result.status === "rejected" && !isCaptureTimeout(result.reason)
+            );
+            if (unexpected) throw unexpected.reason;
+            if (settled.some((result) => result.status === "rejected")) {
                 return makeRow(fixture, {
                     mode: "warm-incremental",
                     outcome: "capture-timeout",
@@ -260,6 +259,14 @@ async function measureWarmRow(
                     newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
                 });
             }
+            const completed = settled.filter(
+                (result): result is Extract<(typeof settled)[number], { status: "fulfilled" }> =>
+                    result.status === "fulfilled"
+            );
+            fixture.metrics.newlyHashedBytes += completed.reduce(
+                (total, capture) => total + capture.value.coverage.newlyHashedBytes,
+                0
+            );
         }
         return makeRow(fixture, {
             mode: "warm-incremental",
