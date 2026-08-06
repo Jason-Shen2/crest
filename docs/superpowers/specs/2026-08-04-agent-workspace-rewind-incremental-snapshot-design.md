@@ -429,6 +429,105 @@ journal、持久化 recovery 或新的用户可见状态：
 这些规则只强化现有 fail-closed 模型，不改变 logical checkpoint、snapshot ref、Rewind/Redo
 或 turn Undo 的 API 与语义。
 
+## Benchmark 结果
+
+### Gate 设计与实现过程
+
+Task 10 把性能验证分成两个层次：
+
+1. 默认 CI 运行不依赖 wall-clock 的 algorithmic contract。warm 和单 dirty path 使用最小的真实
+   `WorkspaceSnapshotStore`、`WorkspaceSnapshotTracker` 与 `IncrementalPathCapture`；100 parent
+   并发上限直接运行生产 `runAnchoredReaderBatch`，但注入无磁盘 I/O 的可控 group reader；
+   1/2/4 Session 只验证 `WorkspaceTrackerRegistry` 的实例共享。这样保留真实决策点，又不会在
+   默认 CI 中重复执行 100 次 Git COW 和 child process。
+2. opt-in benchmark 才记录本机 p50/p95。脚本默认覆盖 10k/50k/200k entries、deep/wide、
+   dirty 0/1/100 和 Session 1/2/4，也允许用 `--entries`、`--iterations` 跑小矩阵。
+
+首轮 100-dirty 测试发现每个 path 都重新打开一次 immutable manifest reader。虽然这不重新
+枚举 workspace，但会丢失 state-tree ancestor cache，并把 deep path 的 Git 读取显著放大。
+最终只增加了一个 batch `readNodeKinds` 入口：一次 capture 使用一个局部
+`StoredManifestReader`，共享该 reader 已有的 tree cache；reader 不跨 capture 保存，不增加持久化
+状态、journal 或 recovery。单-path fallback 仍保持顺序 await，错误和 abort 继续走原有
+fail-closed 路径。
+
+worker instrumentation 紧贴生产 batch scheduler 的 group start/settle，默认未注入时无额外运行路径。
+实际向生产 scheduler 输入 100 个不同 parent，contract 观测到 100 次 group reader 调用、peak 8；
+不是根据常量推导结果。首版 contract 让 100 个 group 真实执行 Git COW/child process，单独运行约
+24 秒，并在 full suite 的并发 I/O 下超过 30 秒。该版本不适合作为默认 CI gate，因此改成上述
+轻量 reader；真实 filesystem 成本只留给 opt-in benchmark。
+
+### Algorithmic contract
+
+2026-08-06 本机结果：`snapshot-performance.test.ts` 6/6 PASS。
+
+| 场景 | full reconcile | enumerated entries | worker peak | exact quota scan | 结果 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| warm、无改动 | 0 | 0 | 0 | 0 | `after.ref === before.ref` |
+| 1 dirty path | 0 | 1 | 1 | 仅与增量提交相关，不进入 no-change gate | path-local |
+| 100 dirty paths / 100 parents | 不适用 | 100 个调度 group | 8 | 不适用 | 生产 scheduler bounded |
+| 1/2/4 Session lease | 1 个 store 实例 | 不适用 | 不适用 | 不适用 | 同一个 tracker |
+
+计数测试不设置毫秒阈值，因此机器负载变化不会让默认 CI 变成 flaky performance test。
+
+### 本机环境
+
+| 项目 | 值 |
+| --- | --- |
+| 日期 | 2026-08-06（Asia/Shanghai） |
+| CPU | Apple M5 Pro |
+| OS | macOS 26.4.1 (25E253) |
+| filesystem | APFS，4 KiB allocation/device block，内部 SSD |
+| Node | v22.22.3 |
+| Electron | 41.1.0 |
+
+命令：
+
+```bash
+npm run benchmark:agent-rewind-snapshots -- --entries=10000 --iterations=10
+```
+
+fixture 的 entry count 包含文件和显式目录。deep 使用 `ceil(log2(entries))` 层目录，10k 时为
+14 层；wide 使用 8 个同级目录，让 100-dirty row 实际覆盖 8-worker 上限。每个 shape 先跑
+deterministic unique-content cold probe，再用固定 64-bucket content pool 建立可复现 baseline 并
+执行完整 warm matrix。这里明确记录 content cardinality，避免用全部同内容文件掩盖 full capture
+对象成本。以下 `enumerated`、`new objects` 和 `hashed bytes` 是 10 iterations 的 row 总量；
+p50/p95 是每次 1/2/4 个共享 tracker caller 全部完成的边界延迟。
+
+| shape | mode | cardinality | dirty | sessions | p50 ms | p95 ms | full | enumerated | worker peak | new objects | hashed bytes |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep | full, unique | 9,986 | 0 | 1 | timeout | timeout | 1 | 9,986 | 1 | 20,004 | 0 |
+| deep | full, representative | 64 | 0 | 1 | 9,900.80 | 9,900.80 | 1 | 9,986 | 1 | 160 | 98,298 |
+| deep | warm | 64 | 0 | 1 | 0.01 | 0.09 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm | 64 | 0 | 2 | 0.01 | 0.04 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm | 64 | 0 | 4 | 0.02 | 0.05 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm | 64 | 1 | 1 | 3,146.58 | 3,449.85 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 1 | 2 | 3,148.53 | 3,257.43 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 1 | 4 | 3,178.48 | 3,317.43 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 100 | 1 | 14,826.60 | 15,158.22 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| deep | warm | 64 | 100 | 2 | 14,816.90 | 15,399.30 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| deep | warm | 64 | 100 | 4 | 14,881.72 | 15,856.17 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| wide | full, unique | 9,992 | 0 | 1 | timeout | timeout | 1 | 9,992 | 1 | 20,004 | 0 |
+| wide | full, representative | 64 | 0 | 1 | 10,275.72 | 10,275.72 | 1 | 9,992 | 1 | 148 | 98,352 |
+| wide | warm | 64 | 0 | 1 | 0.00 | 0.03 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 0 | 2 | 0.00 | 0.03 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 0 | 4 | 0.01 | 0.03 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 1 | 1 | 958.86 | 1,194.53 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 1 | 2 | 944.82 | 1,000.69 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 1 | 4 | 947.95 | 1,012.92 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 100 | 1 | 14,127.79 | 15,510.76 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+| wide | warm | 64 | 100 | 2 | 14,250.36 | 15,517.92 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+| wide | warm | 64 | 100 | 4 | 14,267.47 | 16,081.26 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+
+unique-content cold probe 在生产 30 秒 capture deadline 内没有完成。表中的 timeout 是结构化
+结果，不是提高 timeout 后得到的数字；失败后的 object inventory 证明该路径创建约 20k loose
+objects，full capture/object durability 仍是 rollout limitation。64-bucket baseline 仅用于建立
+真实 tracker 以测 warm matrix，不能替代或粉饰 unique-content cold latency。
+
+50k/200k 和 Linux/Windows 尚未在本机实测。macOS/APFS 的 10k healthy warm/no-change 已满足
+“成本不随 workspace 总 entries 线性增长”的算法证据；不能据此宣称其他平台或 cold full capture
+已经优化完成。Linux/Windows 尤其需要分别验证 Parcel 历史查询、filesystem watcher continuity、
+owner-only staging 和 warm latency 后才能解除平台限制。
+
 ## 决策结论
 
 保留每个 durable turn 的逻辑 checkpoint 和现有 fail-closed Rewind 语义。把物理层从

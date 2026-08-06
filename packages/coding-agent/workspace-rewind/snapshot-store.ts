@@ -680,6 +680,27 @@ export class WorkspaceSnapshotStore {
         }
     }
 
+    async readNodeKinds(
+        snapshot: WorkspaceSnapshotRefV1,
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">> {
+        for (const path of paths) validateRelativePath(path);
+        try {
+            if (signal?.aborted) throw signal.reason;
+            const manifest = await this.#readStoredManifest(snapshot, signal);
+            const kinds = new Map<string, "absent" | "leaf" | "tree">();
+            for (const path of paths) {
+                if (signal?.aborted) throw signal.reason;
+                kinds.set(path, await manifest.readNodeKind(path));
+            }
+            return kinds;
+        } catch (cause) {
+            if (signal?.aborted) throw signal.reason ?? cause;
+            throw asCorruptSnapshot(cause);
+        }
+    }
+
     readIncrementalSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
         scope: WorkspaceScopeManifest;
         coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;

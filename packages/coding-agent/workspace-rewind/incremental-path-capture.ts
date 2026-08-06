@@ -11,6 +11,7 @@ import {
     AnchoredReaderError,
     runAnchoredReaderBatch,
     type AnchoredReaderBatchEntry,
+    type AnchoredReaderBatchHooks,
     type AnchoredReaderEntryIdentity,
 } from "./anchored-reader";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
@@ -39,10 +40,19 @@ export interface IncrementalPathCaptureOptions {
     maxNewlyHashedBytes: number;
     timeoutMs: number;
     base: BasePathKindReader;
+    hooks?: IncrementalPathCaptureHooks;
+}
+
+export interface IncrementalPathCaptureHooks extends AnchoredReaderBatchHooks {
+    scopeClassified?(entryCount: number): void;
 }
 
 export interface BasePathKindReader {
     readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree">;
+    readNodeKinds?(
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">>;
 }
 
 export interface IncrementalCapturedBatch {
@@ -75,6 +85,7 @@ export class IncrementalPathCapture {
     readonly maxNewlyHashedBytes: number;
     readonly timeoutMs: number;
     readonly base: BasePathKindReader;
+    readonly hooks?: IncrementalPathCaptureHooks;
     pendingCaptures = new WeakMap<object, IncrementalCapturedBatch>();
     readonly pendingBatches = new Set<IncrementalCapturedBatch>();
     readonly pendingResults = new Map<IncrementalCapturedBatch, object>();
@@ -97,10 +108,14 @@ export class IncrementalPathCapture {
         this.maxUntrackedBytes = validateNonNegativeLimit(input.maxUntrackedBytes, "untracked byte");
         this.maxNewlyHashedBytes = validateNonNegativeLimit(input.maxNewlyHashedBytes, "hash byte");
         this.timeoutMs = validateNonNegativeLimit(input.timeoutMs, "timeout");
+        this.hooks = input.hooks;
         if (!input.base || typeof input.base.readNodeKind !== "function") {
             throw new Error("Incremental capture requires a base path kind reader");
         }
-        this.base = Object.freeze({ readNodeKind: input.base.readNodeKind.bind(input.base) });
+        this.base = Object.freeze({
+            readNodeKind: input.base.readNodeKind.bind(input.base),
+            ...(input.base.readNodeKinds ? { readNodeKinds: input.base.readNodeKinds.bind(input.base) } : {}),
+        });
         if (
             this.scope.schemaVersion !== 1 ||
             this.scope.policy.maxEntries !== this.maxEntries ||
@@ -168,9 +183,17 @@ export class IncrementalPathCapture {
             signal,
         });
         if (scope.status === "reconcile") return scope;
+        this.hooks?.scopeClassified?.(scope.entries.length);
         try {
+            const baseKinds = this.base.readNodeKinds
+                ? await this.base.readNodeKinds(
+                      scope.pathKinds.map((current) => current.path),
+                      signal
+                  )
+                : await readBaseNodeKinds(this.base, scope.pathKinds, signal);
             for (const current of scope.pathKinds) {
-                const base = await this.base.readNodeKind(current.path, signal);
+                const base = baseKinds.get(current.path);
+                if (!base) return { status: "reconcile", reason: "unsafe-evidence" };
                 if ((current.kind === "tree" && base === "leaf") || (current.kind === "leaf" && base === "tree")) {
                     return { status: "reconcile", reason: "unsafe-evidence" };
                 }
@@ -210,6 +233,7 @@ export class IncrementalPathCapture {
                 maxTotalBytes: this.maxNewlyHashedBytes,
                 timeoutMs: remainingCaptureMs(deadline, signal),
                 signal,
+                hooks: this.hooks,
             });
             const newlyHashedBytes = results.reduce((total, result) => total + result.hashedBytes, 0);
             if (newlyHashedBytes > this.maxNewlyHashedBytes) {
@@ -432,6 +456,16 @@ export class IncrementalPathCapture {
         }
         return oids;
     }
+}
+
+async function readBaseNodeKinds(
+    base: BasePathKindReader,
+    paths: readonly { path: string }[],
+    signal: AbortSignal
+): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">> {
+    const kinds = new Map<string, "absent" | "leaf" | "tree">();
+    for (const { path } of paths) kinds.set(path, await base.readNodeKind(path, signal));
+    return kinds;
 }
 
 function remainingCaptureMs(deadline: number, signal: AbortSignal): number {

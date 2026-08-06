@@ -26,6 +26,7 @@
         "coverage": "vitest run --coverage",
         "test": "vitest",
         "test:observability-types": "vitest run --typecheck.only --typecheck.ignoreSourceErrors frontend/app/observability/observability-types.test-d.ts frontend/app/observability/trace-panel/io-preview.test-d.ts",
+        "benchmark:agent-rewind-snapshots": "tsx scripts/benchmark-agent-rewind-snapshots.ts",
         "smoke:agent-pty-package": "node scripts/smoke-agent-pty-package.mjs",
         "postinstall": "node ./postinstall.cjs"
     },

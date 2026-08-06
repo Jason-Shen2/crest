@@ -49,6 +49,11 @@ export interface WorkspaceSnapshotTrackerStore {
         path: string,
         signal?: AbortSignal
     ): Promise<"absent" | "leaf" | "tree">;
+    readNodeKinds?(
+        snapshot: WorkspaceSnapshotRefV1,
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">>;
     verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
     diff(before: WorkspaceSnapshotRefV1, after: WorkspaceSnapshotRefV1): Promise<WorkspacePathChangeV1[]>;
 }
@@ -84,7 +89,13 @@ export interface WorkspaceSnapshotTrackerOptions {
     makePathCapture?(input: {
         snapshot: WorkspaceSnapshotRefV1;
         scope: WorkspaceScopeManifest;
-        base: { readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree"> };
+        base: {
+            readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree">;
+            readNodeKinds?(
+                paths: readonly string[],
+                signal?: AbortSignal
+            ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">>;
+        };
     }): WorkspaceSnapshotTrackerPathCapture;
     hooks?: WorkspaceSnapshotTrackerHooks;
 }
@@ -239,6 +250,12 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                 base: {
                     readNodeKind: (path, signal) =>
                         this.store.readNodeKind(this.current?.ref ?? captured.ref, path, signal),
+                    ...(this.store.readNodeKinds
+                        ? {
+                              readNodeKinds: (paths: readonly string[], signal?: AbortSignal) =>
+                                  this.store.readNodeKinds!(this.current?.ref ?? captured.ref, paths, signal),
+                          }
+                        : {}),
                 },
             });
             await this.feed.initializeAfterReconcile();
@@ -390,7 +407,13 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
 
     makeDefaultPathCapture(input: {
         scope: WorkspaceScopeManifest;
-        base: { readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree"> };
+        base: {
+            readNodeKind(path: string, signal?: AbortSignal): Promise<"absent" | "leaf" | "tree">;
+            readNodeKinds?(
+                paths: readonly string[],
+                signal?: AbortSignal
+            ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">>;
+        };
     }): WorkspaceSnapshotTrackerPathCapture {
         return new IncrementalPathCapture({
             identity: this.store.identity,

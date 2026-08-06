@@ -42,6 +42,13 @@ export interface AnchoredReaderBatchEntry extends AnchoredReaderEntry {
     parentIdentity: AnchoredReaderIdentity;
 }
 
+export interface AnchoredReaderBatchHooks {
+    workerStarted?(): void;
+    workerSettled?(): void;
+}
+
+export type AnchoredReaderGroupRunner = typeof runAnchoredReader;
+
 export class AnchoredReaderError extends Error {
     readonly code: "aborted" | "timeout" | "capture_budget" | "unstable_file" | "worker_failed";
 
@@ -84,14 +91,18 @@ export function hasReusableAnchoredIdentity(
     return BigInt(nowMs) * 1_000_000n - newest > AnchoredReaderRacyWindowNs;
 }
 
-export async function runAnchoredReaderBatch(input: {
-    rootPath: string;
-    entries: AnchoredReaderBatchEntry[];
-    maxSingleFileBytes: number;
-    maxTotalBytes: number;
-    timeoutMs: number;
-    signal: AbortSignal;
-}): Promise<AnchoredReaderResult[]> {
+export async function runAnchoredReaderBatch(
+    input: {
+        rootPath: string;
+        entries: AnchoredReaderBatchEntry[];
+        maxSingleFileBytes: number;
+        maxTotalBytes: number;
+        timeoutMs: number;
+        signal: AbortSignal;
+        hooks?: AnchoredReaderBatchHooks;
+    },
+    runGroup: AnchoredReaderGroupRunner = runAnchoredReader
+): Promise<AnchoredReaderResult[]> {
     if (input.entries.length === 0) return [];
     const entries = [...input.entries];
     for (const entry of entries) {
@@ -139,17 +150,22 @@ export async function runAnchoredReaderBatch(input: {
                 ) {
                     throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
                 }
-                results.push(
-                    ...(await runAnchoredReader({
-                        parentPath: parent ? join(input.rootPath, ...parent.split("/")) : input.rootPath,
-                        parentIdentity,
-                        entries: groupEntries,
-                        maxSingleFileBytes: input.maxSingleFileBytes,
-                        maxTotalBytes: input.maxTotalBytes,
-                        timeoutMs: remainingMs,
-                        signal: controller.signal,
-                    }))
-                );
+                input.hooks?.workerStarted?.();
+                try {
+                    results.push(
+                        ...(await runGroup({
+                            parentPath: parent ? join(input.rootPath, ...parent.split("/")) : input.rootPath,
+                            parentIdentity,
+                            entries: groupEntries,
+                            maxSingleFileBytes: input.maxSingleFileBytes,
+                            maxTotalBytes: input.maxTotalBytes,
+                            timeoutMs: remainingMs,
+                            signal: controller.signal,
+                        }))
+                    );
+                } finally {
+                    input.hooks?.workerSettled?.();
+                }
             }
         } catch (error) {
             firstFailure ??= error;
