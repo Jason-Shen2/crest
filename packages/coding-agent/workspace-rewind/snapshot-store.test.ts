@@ -955,6 +955,18 @@ describe("workspace snapshots", () => {
 
         expect(reconciledManifest).toMatchObject({ schemaversion: 2, statetree: expect.stringMatching(/^[0-9a-f]+$/) });
         expect(capturedManifest).toMatchObject({ schemaversion: 2, statetree: expect.stringMatching(/^[0-9a-f]+$/) });
+        await expect(fixture.store.readIncrementalSnapshotMetadata(reconciled.ref)).resolves.toMatchObject({
+            scope: {
+                schemaVersion: 1,
+                policy: {
+                    maxEntries: WorkspaceCheckpointLimits.maxEntries,
+                    maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+                    gitGlobalExcludes: "disabled-by-isolated-runner",
+                },
+                ignoreInputs: [],
+                nestedRepositoryBoundaries: [],
+            },
+        });
         await expect(fixture.store.verifyOwnedSnapshot(reconciled.ref)).resolves.toBeUndefined();
         await expect(fixture.store.verifyOwnedSnapshot(captured.ref)).resolves.toBeUndefined();
     });
@@ -1573,20 +1585,16 @@ describe("workspace snapshots", () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "base.txt"), "base");
         const captured = await fixture.store.capture({ profile: "terminal" });
+        const scope = (await fixture.store.readIncrementalSnapshotMetadata(captured.ref)).scope;
         const v1 = await convertSnapshotToV1(fixture, captured.ref, ["base.txt"]);
         await fixture.store.anchorSnapshot(v1);
-        const scope = (
-            JSON.parse((await fixture.store.readBlob(v1.scopeManifest)).toString("utf8")) as {
-                scope: unknown;
-            }
-        ).scope;
         fixture.git.calls.length = 0;
 
         await expect(
             fixture.store.commitIncrementalSnapshot({
                 base: v1,
                 mutations: [{ path: "base.txt", state: { state: "absent" } }],
-                scope: scope as never,
+                scope,
                 coverage: withoutNewlyHashedBytes(captured.coverage),
                 newlyHashedBytes: 0,
                 profile: "terminal",
@@ -1713,7 +1721,7 @@ describe("workspace snapshots", () => {
         const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
         await fixture.store.anchorSnapshot(base);
         const input = await readIncrementalCommitInput(fixture, base, captured.coverage);
-        (input.scope as unknown as { policy: { maxentries: number } }).policy.maxentries += 1;
+        input.scope.policy.maxEntries += 1;
         const refsBefore = await fixture.store.listCrestRefs();
         fixture.git.calls.length = 0;
 
@@ -2703,12 +2711,10 @@ async function readIncrementalCommitInput(
     base: WorkspaceSnapshotRefV1,
     coverage: WorkspaceSnapshotCoverage
 ) {
-    const manifest = JSON.parse((await fixture.store.readBlob(base.scopeManifest)).toString("utf8")) as {
-        scope: unknown;
-    };
+    const metadata = await fixture.store.readIncrementalSnapshotMetadata(base);
     return {
         base,
-        scope: manifest.scope as never,
+        scope: metadata.scope,
         coverage: withoutNewlyHashedBytes(coverage),
         newlyHashedBytes: 5,
         profile: "terminal" as const,

@@ -20,7 +20,7 @@ export interface StoredScopeManifestV1 {
     schemaversion: 1;
     workspaceidentity: string;
     workspaceincarnation: string;
-    scope: WorkspaceScopeManifest;
+    scope: StoredWorkspaceScopeManifestV1;
     entries: StoredManifestEntry[];
 }
 
@@ -28,7 +28,7 @@ export interface StoredScopeManifestV2 {
     schemaversion: 2;
     workspaceidentity: string;
     workspaceincarnation: string;
-    scope: WorkspaceScopeManifest;
+    scope: StoredWorkspaceScopeManifestV1;
     coverage: StoredSnapshotCoverage;
     statetree: string;
 }
@@ -50,6 +50,51 @@ export interface StoredPathStateV1 {
 }
 
 export type StoredScopeManifest = StoredScopeManifestV1 | StoredScopeManifestV2;
+
+export type StoredWorkspaceScopeManifestPath =
+    | { path: string; pathbytesbase64?: never }
+    | { path?: never; pathbytesbase64: string };
+
+export type StoredWorkspaceScopeIgnoreInput = StoredWorkspaceScopeManifestPath & {
+    source: "gitignore" | "git-info-exclude" | "git-core-excludes-file";
+    contenthash: string;
+};
+
+export interface StoredWorkspaceScopeSerializedIdentity {
+    dev: string;
+    ino: string;
+    birthtimens: string;
+    mtimens: string;
+    ctimens: string;
+}
+
+export interface StoredWorkspaceScopeSerializedEntryIdentity extends StoredWorkspaceScopeSerializedIdentity {
+    mode: string;
+    nlink: string;
+    size: string;
+}
+
+export interface StoredWorkspaceScopeGitIndexEvidence {
+    path: string;
+    parentpath: string;
+    parentidentity: StoredWorkspaceScopeSerializedIdentity;
+    state: "absent" | "file";
+    entryidentity?: StoredWorkspaceScopeSerializedEntryIdentity;
+    contenthash?: string;
+}
+
+export interface StoredWorkspaceScopeManifestV1 {
+    schemaversion: 1;
+    policy: {
+        maxentries: number;
+        maxuntrackedbytes: number;
+        gitglobalexcludes: "disabled-by-isolated-runner";
+    };
+    ignoreinputs: StoredWorkspaceScopeIgnoreInput[];
+    nestedrepositoryboundaries: StoredWorkspaceScopeManifestPath[];
+    gitindex?: StoredWorkspaceScopeGitIndexEvidence;
+    budgetexhaustion?: { scope: "workspace-root" };
+}
 
 export interface StoredManifestObjectReader {
     readBlob(oid: string): Promise<Buffer>;
@@ -222,6 +267,10 @@ export class StoredManifestReader {
             eligibleEntryCount: this.manifest.coverage.eligibleentrycount,
             exclusions: this.manifest.coverage.exclusions.map(normalizeCoverageExclusion),
         };
+    }
+
+    getScope(): WorkspaceScopeManifest {
+        return normalizeStoredScope(this.manifest.scope);
     }
 
     withV2StateTree(snapshot: WorkspaceSnapshotRefV1, stateTree: string): StoredManifestReader {
@@ -522,6 +571,138 @@ function normalizeCoverageExclusion(
     return { pathBytesBase64: value.pathbytesbase64, reason: value.reason };
 }
 
+function normalizeStoredScope(value: unknown): WorkspaceScopeManifest {
+    if (!isStoredScope(value)) throw new Error("Invalid snapshot scope manifest");
+    const stored = value as StoredWorkspaceScopeManifestV1;
+    return {
+        schemaVersion: 1,
+        policy: {
+            maxEntries: stored.policy.maxentries,
+            maxUntrackedBytes: stored.policy.maxuntrackedbytes,
+            gitGlobalExcludes: stored.policy.gitglobalexcludes,
+        },
+        ignoreInputs: stored.ignoreinputs.map((item) => ({
+            source: item.source,
+            contentHash: item.contenthash,
+            ...normalizeStoredManifestPath(item),
+        })),
+        nestedRepositoryBoundaries: stored.nestedrepositoryboundaries.map(normalizeStoredManifestPath),
+        ...(stored.gitindex
+            ? {
+                  gitIndex: {
+                      path: stored.gitindex.path,
+                      parentPath: stored.gitindex.parentpath,
+                      parentIdentity: normalizeStoredIdentity(stored.gitindex.parentidentity),
+                      state: stored.gitindex.state,
+                      ...(stored.gitindex.entryidentity
+                          ? { entryIdentity: normalizeStoredEntryIdentity(stored.gitindex.entryidentity) }
+                          : {}),
+                      ...(stored.gitindex.contenthash ? { contentHash: stored.gitindex.contenthash } : {}),
+                  },
+              }
+            : {}),
+        ...(stored.budgetexhaustion ? { budgetExhaustion: { scope: stored.budgetexhaustion.scope } } : {}),
+    };
+}
+
+function normalizeStoredManifestPath(value: {
+    path?: string;
+    pathbytesbase64?: string;
+}): { path: string } | { pathBytesBase64: string } {
+    if (value.path != null) return { path: value.path };
+    return { pathBytesBase64: value.pathbytesbase64! };
+}
+
+function normalizeStoredIdentity(value: StoredWorkspaceScopeSerializedIdentity) {
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        birthtimeNs: value.birthtimens,
+        mtimeNs: value.mtimens,
+        ctimeNs: value.ctimens,
+    };
+}
+
+function normalizeStoredEntryIdentity(value: StoredWorkspaceScopeSerializedEntryIdentity) {
+    return {
+        ...normalizeStoredIdentity(value),
+        mode: value.mode,
+        nlink: value.nlink,
+        size: value.size,
+    };
+}
+
+export function toStoredWorkspaceScope(scope: WorkspaceScopeManifest): StoredWorkspaceScopeManifestV1 {
+    return {
+        schemaversion: 1,
+        policy: {
+            maxentries: scope.policy.maxEntries,
+            maxuntrackedbytes: scope.policy.maxUntrackedBytes,
+            gitglobalexcludes: scope.policy.gitGlobalExcludes,
+        },
+        ignoreinputs: scope.ignoreInputs.map((item) => ({
+            source: item.source,
+            contenthash: item.contentHash,
+            ...toStoredManifestPath(item),
+        })),
+        nestedrepositoryboundaries: scope.nestedRepositoryBoundaries.map(toStoredManifestPath),
+        ...(scope.gitIndex
+            ? {
+                  gitindex: {
+                      path: scope.gitIndex.path,
+                      parentpath: scope.gitIndex.parentPath,
+                      parentidentity: toStoredIdentity(scope.gitIndex.parentIdentity),
+                      state: scope.gitIndex.state,
+                      ...(scope.gitIndex.entryIdentity
+                          ? { entryidentity: toStoredEntryIdentity(scope.gitIndex.entryIdentity) }
+                          : {}),
+                      ...(scope.gitIndex.contentHash ? { contenthash: scope.gitIndex.contentHash } : {}),
+                  },
+              }
+            : {}),
+        ...(scope.budgetExhaustion ? { budgetexhaustion: { scope: scope.budgetExhaustion.scope } } : {}),
+    };
+}
+
+function toStoredManifestPath(value: { path?: string; pathBytesBase64?: string }): StoredWorkspaceScopeManifestPath {
+    if (value.path != null) return { path: value.path };
+    return { pathbytesbase64: value.pathBytesBase64! };
+}
+
+function toStoredIdentity(value: {
+    dev: string;
+    ino: string;
+    birthtimeNs: string;
+    mtimeNs: string;
+    ctimeNs: string;
+}): StoredWorkspaceScopeSerializedIdentity {
+    return {
+        dev: value.dev,
+        ino: value.ino,
+        birthtimens: value.birthtimeNs,
+        mtimens: value.mtimeNs,
+        ctimens: value.ctimeNs,
+    };
+}
+
+function toStoredEntryIdentity(value: {
+    dev: string;
+    ino: string;
+    birthtimeNs: string;
+    mtimeNs: string;
+    ctimeNs: string;
+    mode: string;
+    nlink: string;
+    size: string;
+}): StoredWorkspaceScopeSerializedEntryIdentity {
+    return {
+        ...toStoredIdentity(value),
+        mode: value.mode,
+        nlink: value.nlink,
+        size: value.size,
+    };
+}
+
 function isStoredScope(value: unknown): boolean {
     if (
         !isJsonRecord(value) ||
@@ -713,8 +894,8 @@ function isOid(value: string): boolean {
     return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(value);
 }
 
-function scopeHasBudgetExhaustion(scope: WorkspaceScopeManifest): boolean {
-    return Object.hasOwn(scope as unknown as Record<string, unknown>, "budgetexhaustion");
+function scopeHasBudgetExhaustion(scope: StoredWorkspaceScopeManifestV1): boolean {
+    return scope.budgetexhaustion != null;
 }
 
 function isJsonRecord(value: unknown): value is Record<string, unknown> {

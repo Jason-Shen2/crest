@@ -53,6 +53,7 @@ import {
     encodeCanonicalStoredJson as canonicalJson,
     StoredManifestBlobBatchSize,
     StoredManifestReader,
+    toStoredWorkspaceScope,
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
     type StoredScopeManifestV2,
@@ -413,7 +414,7 @@ export class WorkspaceSnapshotStore {
                 schemaversion: 2,
                 workspaceidentity: this.identity.workspaceIdentity,
                 workspaceincarnation: this.identity.workspaceIncarnation,
-                scope: scope.manifest,
+                scope: toStoredWorkspaceScope(scope.manifest),
                 coverage: {
                     complete: scope.coverage.complete,
                     eligibleentrycount: scope.coverage.eligibleEntryCount,
@@ -506,7 +507,9 @@ export class WorkspaceSnapshotStore {
             if (baseManifest.manifest.schemaversion !== 2) {
                 throw new Error("Incremental snapshot commit requires a v2 base snapshot");
             }
-            if (!canonicalJson(input.scope).equals(canonicalJson(baseManifest.manifest.scope))) {
+            if (
+                !canonicalJson(toStoredWorkspaceScope(input.scope)).equals(canonicalJson(baseManifest.manifest.scope))
+            ) {
                 throw new Error("Incremental snapshot scope changed; a full capture is required");
             }
             quotaReservation = await this.quotaAccounting.reserve({
@@ -535,7 +538,7 @@ export class WorkspaceSnapshotStore {
                 schemaversion: 2,
                 workspaceidentity: this.identity.workspaceIdentity,
                 workspaceincarnation: this.identity.workspaceIncarnation,
-                scope: input.scope,
+                scope: toStoredWorkspaceScope(input.scope),
                 coverage: {
                     complete: expectedCoverage.complete,
                     eligibleentrycount: expectedCoverage.eligibleEntryCount,
@@ -688,7 +691,7 @@ export class WorkspaceSnapshotStore {
                 throw new Error("Incremental snapshot metadata requires a v2 snapshot");
             }
             return {
-                scope: JSON.parse(JSON.stringify(manifest.manifest.scope)) as WorkspaceScopeManifest,
+                scope: manifest.getScope(),
                 coverage: {
                     complete: coverage.complete,
                     eligibleEntryCount: coverage.eligibleEntryCount,

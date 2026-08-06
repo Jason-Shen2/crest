@@ -7,12 +7,14 @@ import { describe, expect, test } from "vitest";
 
 import {
     StoredManifestReader,
+    toStoredWorkspaceScope,
     type StoredManifestObjectReader,
     type StoredPathStateV1,
     type StoredScopeManifestV1,
     type StoredScopeManifestV2,
 } from "./stored-manifest";
 import type { CapturedPathStateV1, WorkspaceSnapshotRefV1 } from "./types";
+import type { WorkspaceScopeManifest } from "./workspace-scope";
 
 const WorkspaceIdentity = "a".repeat(64);
 const WorkspaceIncarnation = "b".repeat(64);
@@ -105,22 +107,22 @@ describe("stored snapshot manifests", () => {
     test("rejects Git index evidence whose parent path is not the index dirname", async () => {
         const objects = new MemoryObjects();
         const manifest = makeV1Manifest(new Map());
-        manifest.scope.gitIndex = {
+        manifest.scope.gitindex = {
             path: "/workspace/.git/index",
-            parentPath: "/different/.git",
-            parentIdentity: { dev: "1", ino: "2", birthtimeNs: "3", mtimeNs: "4", ctimeNs: "5" },
+            parentpath: "/different/.git",
+            parentidentity: { dev: "1", ino: "2", birthtimens: "3", mtimens: "4", ctimens: "5" },
             state: "file",
-            entryIdentity: {
+            entryidentity: {
                 dev: "1",
                 ino: "6",
-                birthtimeNs: "7",
-                mtimeNs: "8",
-                ctimeNs: "9",
+                birthtimens: "7",
+                mtimens: "8",
+                ctimens: "9",
                 mode: "33188",
                 nlink: "1",
                 size: "12",
             },
-            contentHash: "f".repeat(64),
+            contenthash: "f".repeat(64),
         };
         const manifestOid = objects.putBlob(canonicalJson(manifest));
 
@@ -204,6 +206,26 @@ describe("stored snapshot manifests", () => {
             exclusions: [{ pathBytesBase64: "/w==", reason: "non-utf8-path" }],
         });
     });
+
+    test("exposes canonical lowercase v2 scope bytes as a camelCase domain manifest", async () => {
+        const objects = new MemoryObjects();
+        const stateTree = objects.putStateTree(new Map());
+        const manifest = makeV2Manifest(stateTree);
+        const scope = makeScope();
+        scope.ignoreInputs = [{ source: "gitignore", path: ".gitignore", contentHash: "c".repeat(64) }];
+        scope.nestedRepositoryBoundaries = [{ path: "vendor/repository" }];
+        scope.budgetExhaustion = { scope: "workspace-root" };
+        manifest.scope = toStoredWorkspaceScope(scope);
+        const manifestOid = objects.putBlob(canonicalJson(manifest));
+        const reader = await openReader(objects, manifestOid);
+
+        expect(reader.getScope()).toEqual(scope);
+        expect(reader.manifest.scope).toMatchObject({
+            ignoreinputs: [{ contenthash: "c".repeat(64) }],
+            nestedrepositoryboundaries: [{ path: "vendor/repository" }],
+            budgetexhaustion: { scope: "workspace-root" },
+        });
+    });
 });
 
 async function makeV1Reader(states: ReadonlyMap<string, CapturedPathStateV1>): Promise<StoredManifestReader> {
@@ -241,7 +263,7 @@ function makeV1Manifest(states: ReadonlyMap<string, CapturedPathStateV1>): Store
         schemaversion: 1,
         workspaceidentity: WorkspaceIdentity,
         workspaceincarnation: WorkspaceIncarnation,
-        scope: makeScope(),
+        scope: toStoredWorkspaceScope(makeScope()),
         entries: [...states]
             .sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)))
             .map(([path, state]) => ({ path, state })),
@@ -253,13 +275,13 @@ function makeV2Manifest(stateTree: string): StoredScopeManifestV2 {
         schemaversion: 2,
         workspaceidentity: WorkspaceIdentity,
         workspaceincarnation: WorkspaceIncarnation,
-        scope: makeScope(),
+        scope: toStoredWorkspaceScope(makeScope()),
         coverage: { complete: false, eligibleentrycount: 3, exclusions: [] },
         statetree: stateTree,
     };
 }
 
-function makeScope(): StoredScopeManifestV1["scope"] {
+function makeScope(): WorkspaceScopeManifest {
     return {
         schemaVersion: 1,
         policy: {
