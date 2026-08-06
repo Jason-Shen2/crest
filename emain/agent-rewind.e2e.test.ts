@@ -21,7 +21,7 @@ import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as electron from "electron";
 import { createElement, useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => {
     const handle = vi.fn((channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -314,44 +314,52 @@ function installPromptHarness(mutate: () => Promise<void>) {
         maxTokens: 1_000,
     };
     let settledCount = 0;
-    const settledWaiters = new Set<{ count: number; resolve: () => void }>();
+    let terminalFailure: { cause: unknown } | undefined;
+    const settledWaiters = new Set<{ count: number; resolve: () => void; reject: (error: unknown) => void }>();
     const waitForSettled = (count: number) => {
+        if (terminalFailure) {
+            const rejected = Promise.reject(terminalFailure.cause);
+            void rejected.catch(() => undefined);
+            return rejected;
+        }
         if (settledCount >= count) return Promise.resolve();
-        return new Promise<void>((resolve) => settledWaiters.add({ count, resolve }));
+        const pending = new Promise<void>((resolve, reject) => settledWaiters.add({ count, resolve, reject }));
+        void pending.catch(() => undefined);
+        return pending;
     };
-    const observed = { events: [] as string[], settled: waitForSettled(1), waitForSettled };
+    const observed = {
+        events: [] as string[],
+        sessions: [] as Array<{ closed: boolean }>,
+        settled: waitForSettled(1),
+        waitForSettled,
+    };
     registerApiProvider({
         api: model.api,
         stream: () => new AssistantMessageEventStream(),
         streamSimple: (activeModel) => {
             const output = new AssistantMessageEventStream();
             void (async () => {
-                await mutate();
-                const message: AssistantMessage = {
-                    role: "assistant",
-                    content: [{ type: "text", text: "done" }],
-                    api: activeModel.api,
-                    provider: activeModel.provider,
-                    model: activeModel.id,
-                    stopReason: "stop",
-                    timestamp: Date.now(),
-                    usage: {
-                        input: 0,
-                        output: 0,
-                        cacheRead: 0,
-                        cacheWrite: 0,
-                        totalTokens: 0,
-                        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-                    },
-                };
-                output.push({ type: "start", partial: message });
-                output.push({ type: "done", reason: "stop", message });
+                try {
+                    await mutate();
+                    const message = makePromptHarnessMessage(activeModel, "stop");
+                    output.push({ type: "start", partial: message });
+                    output.push({ type: "done", reason: "stop", message });
+                } catch (error) {
+                    terminalFailure ??= { cause: error };
+                    for (const waiter of settledWaiters) {
+                        settledWaiters.delete(waiter);
+                        waiter.reject(terminalFailure.cause);
+                    }
+                    const message = makePromptHarnessMessage(activeModel, "error", terminalFailure.cause);
+                    output.push({ type: "error", reason: "error", error: message });
+                }
             })();
             return output;
         },
     });
     vi.mocked(getModel).mockReturnValue(model as never);
     vi.mocked(buildAgentHarnessHost).mockImplementation((options) => {
+        observed.sessions.push(options.session);
         const harness = new AgentHarness({
             env: new NodeExecutionEnv({ cwd: options.promptInputs.cwd }),
             session: options.session,
@@ -386,6 +394,27 @@ function installPromptHarness(mutate: () => Promise<void>) {
         } as never;
     });
     return observed;
+}
+
+function makePromptHarnessMessage(model: Model<any>, stopReason: "stop" | "error", error?: unknown): AssistantMessage {
+    return {
+        role: "assistant",
+        content: [{ type: "text", text: stopReason === "stop" ? "done" : "" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        stopReason,
+        ...(error ? { errorMessage: error instanceof Error ? error.message : String(error) } : {}),
+        timestamp: Date.now(),
+        usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+    };
 }
 
 function RewindMessageUi(props: {
@@ -992,21 +1021,19 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         value.session.close();
     }, 30_000);
 
-    it("reuses the live incremental boundary across no-change turns and preserves restore operations", async () => {
+    it("rejects every prompt waiter with the provider mutation failure", async () => {
         const value = await makeFixture();
-        const file = join(value.workspaceRoot, "incremental-boundary.txt");
-        await writeFile(file, "before\n");
         await value.manager.dispose();
-        let mutationIndex = 0;
+        const failure = new Error("provider mutation failed");
         const promptHarness = installPromptHarness(async () => {
-            mutationIndex++;
-            if (mutationIndex === 3) await writeFile(file, "after\n");
+            throw failure;
         });
-        const fullReconcile = vi.spyOn(WorkspaceSnapshotStore.prototype, "captureFullReconcile");
         const running = value.makeService();
-        const { client } = value.register(running.service);
-        const send = async (text: string, settledCount: number) => {
-            const result = await client.send({
+        const disposeAll = vi.spyOn(running.registry, "disposeAll");
+
+        try {
+            const { client } = value.register(running.service);
+            await client.send({
                 sessionMetadata: value.metadata,
                 context: {
                     workspaceId: RequestIdentity.workspaceId,
@@ -1014,96 +1041,266 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                     sessionPath: value.metadata.path,
                     environment: {},
                 },
-                text,
+                text: "fail provider mutation",
                 provider: "p",
                 model: "m",
             });
-            await promptHarness.waitForSettled(settledCount);
-            return result.turnId;
+            const waiterTimeout = new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error("prompt waiter did not reject")), 1_000)
+            );
+            await expect(Promise.race([promptHarness.settled, waiterTimeout])).rejects.toBe(failure);
+            await expect(promptHarness.waitForSettled(2)).rejects.toBe(failure);
+        } finally {
+            await running.registry.disposeAll();
+            value.session.close();
+        }
+
+        expect(disposeAll).toHaveBeenCalledOnce();
+        expect(running.registry.entries.size).toBe(0);
+    }, 10_000);
+
+    describe.sequential("live incremental 3-turn restore workflow", () => {
+        type Fixture = Awaited<ReturnType<typeof makeFixture>>;
+        type RunningService = ReturnType<Fixture["makeService"]>;
+
+        let originalConfigHome: string | undefined;
+        let originalDataHome: string | undefined;
+        let sharedConfigHome: string;
+        let value: Fixture | undefined;
+        let file: string;
+        let promptHarness: ReturnType<typeof installPromptHarness> | undefined;
+        let fullReconcile: ReturnType<typeof vi.spyOn> | undefined;
+        let repoOpen: ReturnType<typeof vi.spyOn> | undefined;
+        let running: RunningService | undefined;
+        let disposeAll: ReturnType<typeof vi.spyOn> | undefined;
+        let client: AgentRuntimeClient | undefined;
+        let firstTurnId: string | undefined;
+        let secondTurnId: string | undefined;
+        let thirdTurnId: string | undefined;
+        let workflowFailure: unknown;
+        let cleaned = false;
+        const openedSessions: Array<{ closed: boolean }> = [];
+        const originalFullReconcile = WorkspaceSnapshotStore.prototype.captureFullReconcile;
+        let originalRepoOpen: Fixture["repo"]["open"] | undefined;
+        let originalRegistryDisposeAll: RunningService["registry"]["disposeAll"] | undefined;
+
+        const cleanupWorkflow = async () => {
+            if (cleaned) return;
+            cleaned = true;
+            try {
+                if (running) {
+                    await running.registry.disposeAll();
+                    expect(disposeAll).toHaveBeenCalledOnce();
+                    expect(running.registry.entries.size).toBe(0);
+                }
+                await _resetAgentIpcForTests();
+                if (openedSessions.length > 0) {
+                    expect(openedSessions.every((session) => session.closed)).toBe(true);
+                }
+                if (promptHarness?.sessions.length) {
+                    expect(promptHarness.sessions.every((session) => session.closed)).toBe(true);
+                }
+            } finally {
+                fullReconcile?.mockRestore();
+                repoOpen?.mockRestore();
+                disposeAll?.mockRestore();
+                expect(WorkspaceSnapshotStore.prototype.captureFullReconcile).toBe(originalFullReconcile);
+                if (value) {
+                    expect(value.repo.open).toBe(originalRepoOpen);
+                    expect(running?.registry.disposeAll).toBe(originalRegistryDisposeAll);
+                    await value.manager.dispose();
+                    value.session.close();
+                    expect(value.session.closed).toBe(true);
+                    await rm(value.root, { recursive: true, force: true });
+                }
+                if (sharedConfigHome) await rm(sharedConfigHome, { recursive: true, force: true });
+            }
         };
 
-        const firstTurnId = await send("cold boundary", 1);
-        const secondTurnId = await send("no workspace changes", 2);
-        const thirdTurnId = await send("shell changes a file", 3);
-        const checkpoints = (await value.session.getEntries())
-            .map(decodeWorkspaceCheckpointEntry)
-            .filter(
-                (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
-                    checkpoint?.status === "available"
-            );
-        const first = checkpoints.find((checkpoint) => checkpoint.turnId === firstTurnId)!;
-        const second = checkpoints.find((checkpoint) => checkpoint.turnId === secondTurnId)!;
-        const third = checkpoints.find((checkpoint) => checkpoint.turnId === thirdTurnId)!;
-
-        expect(fullReconcile).toHaveBeenCalledTimes(1);
-        expect(first.before).toEqual(first.after);
-        expect(second).toMatchObject({ before: first.after, after: first.after, changes: [] });
-        expect(third.before).toEqual(first.after);
-        expect(third.after).not.toEqual(third.before);
-        expect(third.changes).toEqual([expect.objectContaining({ path: "incremental-boundary.txt" })]);
-        expect(JSON.parse((await value.store.readBlob(third.after.scopeManifest)).toString("utf8"))).toMatchObject({
-            schemaversion: 2,
-            statetree: expect.any(String),
+        beforeAll(async () => {
+            originalConfigHome = process.env.WAVETERM_CONFIG_HOME;
+            originalDataHome = process.env.WAVETERM_DATA_HOME;
+            sharedConfigHome = await realpath(await mkdtemp(join(tmpdir(), "crest-agent-rewind-e2e-shared-")));
+            process.env.WAVETERM_CONFIG_HOME = sharedConfigHome;
+            try {
+                value = await makeFixture();
+                const cleanupIndex = cleanupRoots.lastIndexOf(value.root);
+                if (cleanupIndex >= 0) cleanupRoots.splice(cleanupIndex, 1);
+                file = join(value.workspaceRoot, "incremental-boundary.txt");
+                await writeFile(file, "before\n");
+                await value.manager.dispose();
+                let mutationIndex = 0;
+                promptHarness = installPromptHarness(async () => {
+                    mutationIndex++;
+                    if (mutationIndex === 3) await writeFile(file, "after\n");
+                });
+                originalRepoOpen = value.repo.open;
+                const openSession = originalRepoOpen.bind(value.repo);
+                repoOpen = vi.spyOn(value.repo, "open").mockImplementation(async (metadata) => {
+                    const session = await openSession(metadata);
+                    openedSessions.push(session);
+                    return session;
+                });
+                fullReconcile = vi.spyOn(WorkspaceSnapshotStore.prototype, "captureFullReconcile");
+                running = value.makeService();
+                originalRegistryDisposeAll = running.registry.disposeAll;
+                disposeAll = vi.spyOn(running.registry, "disposeAll");
+                client = value.register(running.service).client;
+            } catch (error) {
+                workflowFailure = error;
+                await cleanupWorkflow();
+                throw error;
+            }
         });
 
-        const state = (await client.getSessionState(value.metadata)).rewindState!;
-        const rewindPreview = await client.previewRewind({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: state.semanticLeafId,
-            target: { kind: "rewind", targetTurnId: thirdTurnId },
+        beforeEach(() => {
+            if (!value) return;
+            process.env.WAVETERM_CONFIG_HOME = sharedConfigHome;
+            process.env.WAVETERM_DATA_HOME = join(value.root, "data");
+            _setSessionsRepoForTests(value.repo);
         });
-        expect(rewindPreview).toMatchObject({
-            fileCount: 1,
-            hardBlocked: false,
-            forceRequired: false,
-            files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
-        });
-        await client.rewindTree({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: state.semanticLeafId,
-            targetTurnId: thirdTurnId,
-            mode: "normal",
-            confirmationToken: rewindPreview.confirmationToken!,
-        });
-        expect(await readFile(file, "utf8")).toBe("before\n");
 
-        const reverted = await value.rewindState();
-        expect(reverted.redo).toMatchObject({ fileCount: 1 });
-        const redoPreview = await client.previewRewind({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: reverted.semanticLeafId,
-            target: { kind: "redo" },
+        afterAll(async () => {
+            try {
+                await cleanupWorkflow();
+            } finally {
+                if (originalConfigHome == null) delete process.env.WAVETERM_CONFIG_HOME;
+                else process.env.WAVETERM_CONFIG_HOME = originalConfigHome;
+                if (originalDataHome == null) delete process.env.WAVETERM_DATA_HOME;
+                else process.env.WAVETERM_DATA_HOME = originalDataHome;
+            }
         });
-        expect(redoPreview).toMatchObject({
-            fileCount: 1,
-            hardBlocked: false,
-            forceRequired: false,
-            files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
-        });
-        await client.redoRewind({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: reverted.semanticLeafId,
-            confirmationToken: redoPreview.confirmationToken!,
-        });
-        expect(await readFile(file, "utf8")).toBe("after\n");
 
-        const redone = await value.rewindState();
-        const undoPreview = await client.previewTurnUndo({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: redone.semanticLeafId,
-            turnId: thirdTurnId,
-        });
-        expect(undoPreview.files).toEqual(rewindPreview.files);
-        await client.applyTurnUndo({
-            sessionMetadata: value.metadata,
-            expectedSemanticLeafId: redone.semanticLeafId,
-            turnId: thirdTurnId,
-            mode: "normal",
-            confirmationToken: undoPreview.confirmationToken!,
-        });
-        expect(await readFile(file, "utf8")).toBe("before\n");
-        value.session.close();
-    }, 30_000);
+        it("phase 1 captures two no-change turns and one direct disk write", async () => {
+            let complete = false;
+            try {
+                if (!value || !client || !promptHarness || !fullReconcile) {
+                    throw new Error("incremental workflow setup is unavailable", { cause: workflowFailure });
+                }
+                const send = async (text: string, settledCount: number) => {
+                    const result = await client!.send({
+                        sessionMetadata: value!.metadata,
+                        context: {
+                            workspaceId: RequestIdentity.workspaceId,
+                            workspaceDir: value!.workspaceRoot,
+                            sessionPath: value!.metadata.path,
+                            environment: {},
+                        },
+                        text,
+                        provider: "p",
+                        model: "m",
+                    });
+                    await promptHarness!.waitForSettled(settledCount);
+                    return result.turnId;
+                };
+
+                firstTurnId = await send("cold boundary", 1);
+                secondTurnId = await send("no workspace changes", 2);
+                thirdTurnId = await send("shell changes a file", 3);
+                const checkpoints = (await value.session.getEntries())
+                    .map(decodeWorkspaceCheckpointEntry)
+                    .filter(
+                        (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
+                            checkpoint?.status === "available"
+                    );
+                const first = checkpoints.find((checkpoint) => checkpoint.turnId === firstTurnId)!;
+                const second = checkpoints.find((checkpoint) => checkpoint.turnId === secondTurnId)!;
+                const third = checkpoints.find((checkpoint) => checkpoint.turnId === thirdTurnId)!;
+
+                expect(fullReconcile).toHaveBeenCalledTimes(1);
+                expect(first.before).toEqual(first.after);
+                expect(second).toMatchObject({ before: first.after, after: first.after, changes: [] });
+                expect(third.before).toEqual(first.after);
+                expect(third.after).not.toEqual(third.before);
+                expect(third.changes).toEqual([expect.objectContaining({ path: "incremental-boundary.txt" })]);
+                expect(
+                    JSON.parse((await value.store.readBlob(third.after.scopeManifest)).toString("utf8"))
+                ).toMatchObject({
+                    schemaversion: 2,
+                    statetree: expect.any(String),
+                });
+                complete = true;
+            } catch (error) {
+                workflowFailure = error;
+                throw error;
+            } finally {
+                if (!complete) await cleanupWorkflow();
+            }
+        }, 30_000);
+
+        it("phase 2 continues the persisted marker through Revert → Redo → turn Undo", async () => {
+            try {
+                if (workflowFailure || !value || !client || !thirdTurnId) {
+                    throw new Error("incremental workflow phase 1 is unavailable", { cause: workflowFailure });
+                }
+                expect(promptHarness?.sessions.length).toBeGreaterThan(0);
+                expect(promptHarness?.sessions.every((session) => session.closed)).toBe(true);
+                const state = (await client.getSessionState(value.metadata)).rewindState!;
+                const rewindPreview = await client.previewRewind({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: state.semanticLeafId,
+                    target: { kind: "rewind", targetTurnId: thirdTurnId },
+                });
+                expect(rewindPreview).toMatchObject({
+                    fileCount: 1,
+                    hardBlocked: false,
+                    forceRequired: false,
+                    files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
+                });
+                const revertedResult = await client.rewindTree({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: state.semanticLeafId,
+                    targetTurnId: thirdTurnId,
+                    mode: "normal",
+                    confirmationToken: rewindPreview.confirmationToken!,
+                });
+                expect(await readFile(file, "utf8")).toBe("before\n");
+
+                const reverted = (await client.getSessionState(value.metadata)).rewindState!;
+                expect(reverted).toMatchObject({
+                    semanticLeafId: revertedResult.semanticLeafId,
+                    redo: { fileCount: 1 },
+                });
+                const redoPreview = await client.previewRewind({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: reverted.semanticLeafId,
+                    target: { kind: "redo" },
+                });
+                expect(redoPreview).toMatchObject({
+                    fileCount: 1,
+                    hardBlocked: false,
+                    forceRequired: false,
+                    files: [expect.objectContaining({ path: "incremental-boundary.txt" })],
+                });
+                const redoneResult = await client.redoRewind({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: reverted.semanticLeafId,
+                    confirmationToken: redoPreview.confirmationToken!,
+                });
+                expect(await readFile(file, "utf8")).toBe("after\n");
+
+                const redone = (await client.getSessionState(value.metadata)).rewindState!;
+                expect(redone.semanticLeafId).toBe(redoneResult.semanticLeafId);
+                const undoPreview = await client.previewTurnUndo({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: redone.semanticLeafId,
+                    turnId: thirdTurnId,
+                });
+                expect(undoPreview.files).toEqual(rewindPreview.files);
+                const undoneResult = await client.applyTurnUndo({
+                    sessionMetadata: value.metadata,
+                    expectedSemanticLeafId: redone.semanticLeafId,
+                    turnId: thirdTurnId,
+                    mode: "normal",
+                    confirmationToken: undoPreview.confirmationToken!,
+                });
+                expect(undoneResult.semanticLeafId).not.toBe(redone.semanticLeafId);
+                expect(await readFile(file, "utf8")).toBe("before\n");
+            } finally {
+                await cleanupWorkflow();
+            }
+        }, 30_000);
+    });
 
     it("checkpoints a sent turn, restores through the renderer hook, reloads, and redoes", async () => {
         const value = await makeFixture();

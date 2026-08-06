@@ -465,9 +465,10 @@ entry。它不再借用 anchored reader 的 leaf 读取次数，因此不会遗�
 Session 维度也不再用同一 tracker 上的普通并发 caller 模拟。每个 measured row 通过真实
 `WorkspaceTrackerRegistry` 获取 1/2/4 个 lease，每个 lease 调用一次共享 tracker capture，
 并在 `finally` 中逐个 release。fixture 只保留一个 keeper lease 维持 warm baseline，不参与
-计时或 Session 计数。脚本把 cold、representative baseline 和 warm 的 capture timeout 都写成
-结构化 row 并继续后续矩阵；representative baseline 不可用时，九条 dependent warm row 仍以
-`baseline-unavailable` 和完整字段输出。非 timeout 错误继续让进程非零退出。
+计时或 Session 计数。`capture-timeout` 和 `capture-budget` 是 benchmark 明确定义的结构化结果，
+脚本会保留对应 row 并继续后续矩阵；representative baseline 不可用时，九条 dependent warm row
+仍以 `baseline-unavailable` 和完整字段输出。除这两类预期 capture 结果外，任何错误都属于 benchmark
+失败，必须让进程非零退出，不能被写成普通结果继续执行。
 
 首轮 100-dirty 测试发现每个 path 都重新打开一次 immutable manifest reader。虽然这不重新
 枚举 workspace，但会丢失 state-tree ancestor cache，并把 deep path 的 Git 读取显著放大。
@@ -481,6 +482,21 @@ worker instrumentation 紧贴生产 batch scheduler 的 group start/settle，默
 不是根据常量推导结果。首版 contract 让 100 个 group 真实执行 Git COW/child process，单独运行约
 24 秒，并在 full suite 的并发 I/O 下超过 30 秒。该版本不适合作为默认 CI gate，因此改成上述
 轻量 reader；真实 filesystem 成本只留给 opt-in benchmark。
+
+### 三 turn 恢复 E2E 的性能与生命周期收口
+
+完整三 turn 场景最初单测试耗时约 25–29 秒。临时分段计时确认，主要成本不是固定等待，而是六次
+真实 boundary capture（约 15 秒）和三次真实 workspace apply（约 7 秒）；重复读取 authoritative
+state 还增加约 2 秒。测试没有提高 timeout、跳过 capture/apply 或 mock durability，而是改成共享
+fixture 的两个顺序 phase：phase 1 只建立三 turn/checkpoint，phase 2 从已持久化 marker 继续执行
+Revert → Redo → turn Undo，并只通过 IPC 获取每次 authoritative state。
+
+同机连续三轮结果分别为：phase 1 `13.624s / 13.761s / 13.790s`，phase 2
+`10.553s / 10.536s / 10.837s`。两 phase 仍覆盖真实 IPC/runtime、live tracker、SQLite/store、
+直接磁盘写入，以及 preview/apply 的 path、ref、bytes 和 semantic leaf 断言。phase 1 失败会立即清理并
+留下 phase unavailable 原因；phase 2 在 `finally` 中清理，`afterAll` 只做幂等兜底。清理断言验证
+registry `disposeAll()` 恰好一次且 entries 为 0、所有捕获到的 runtime/authoritative SQLite session
+均关闭，并且 repo、registry 和 snapshot prototype spy 全部恢复。
 
 ### Algorithmic contract
 
