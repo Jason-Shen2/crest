@@ -17,6 +17,11 @@ import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewi
 import { decodeWorkspaceCheckpointEntry } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
+import {
+    ParcelWorkspaceChangeFeed,
+    type WorkspaceChangeEvent,
+    type WorkspaceChangeWatcher,
+} from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery } from "./workspace-recovery";
 import { WorkspaceTrackerRegistry } from "./workspace-tracker-registry";
@@ -161,13 +166,40 @@ function findAvailableCheckpoint(entries: readonly SessionTreeEntry[], sessionId
     throw new Error(`Missing available checkpoint for ${sessionId}`);
 }
 
+class DeterministicWatcher implements WorkspaceChangeWatcher {
+    eventLog: Array<{ sequence: number; event: WorkspaceChangeEvent }> = [];
+    eventSequence = 0;
+
+    record(event: WorkspaceChangeEvent): void {
+        this.eventLog.push({ sequence: ++this.eventSequence, event });
+    }
+
+    async getEventsSince(_directory: string, snapshot: string): Promise<WorkspaceChangeEvent[]> {
+        const snapshotSequence = Number.parseInt(await readFile(snapshot, "utf8"), 10);
+        return this.eventLog.filter((entry) => entry.sequence > snapshotSequence).map((entry) => entry.event);
+    }
+
+    async subscribe(_directory: string, _callback: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown) {
+        return { unsubscribe: async () => undefined };
+    }
+
+    async writeSnapshot(_directory: string, snapshot: string): Promise<string> {
+        await writeFile(snapshot, String(this.eventSequence), { mode: 0o600 });
+        return snapshot;
+    }
+}
+
 describe("workspace rewind across sessions", () => {
     it("shares one tracker baseline across interleaved Session boundaries without weakening live drift checks", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
         const openStore = vi.fn(async () => value.store);
         const fullReconcile = vi.spyOn(value.store, "captureFullReconcile");
-        const registry = new WorkspaceTrackerRegistry({ openStore });
+        const watcher = new DeterministicWatcher();
+        const registry = new WorkspaceTrackerRegistry({
+            openStore,
+            makeFeed: (feedInput) => new ParcelWorkspaceChangeFeed({ ...feedInput, watcher }),
+        });
         const input = {
             dataRoot: join(value.root, "data"),
             identity: value.identity,
@@ -239,6 +271,7 @@ describe("workspace rewind across sessions", () => {
             } as AgentHarnessEvent);
 
             await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-during-overlap");
+            watcher.record({ type: "update", path: join(value.workspaceRoot, "shared.txt") });
             await harnessB.emit({
                 type: "session_user_turn_terminal",
                 boundaryToken: "boundary-b",
