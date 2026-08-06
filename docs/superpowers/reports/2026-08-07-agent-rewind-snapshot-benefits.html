@@ -1,0 +1,1662 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta
+            name="description"
+            content="Crest workspace rewind 增量快照优化的算法收益、实测边界与下一阶段瓶颈。"
+        />
+        <title>Crest Rewind · 从全仓扫描到增量捕获</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                --ink: #f4f2ec;
+                --muted: #9da6b2;
+                --dim: #626d79;
+                --graphite: #0e1116;
+                --panel: #151a21;
+                --panel-raised: #1a2028;
+                --line: #29313c;
+                --line-strong: #3a4654;
+                --good: #4fd1a1;
+                --good-soft: rgba(79, 209, 161, 0.13);
+                --dirty: #f2b84b;
+                --dirty-soft: rgba(242, 184, 75, 0.13);
+                --fail: #ff766b;
+                --fail-soft: rgba(255, 118, 107, 0.12);
+                --blueprint: #85a8c8;
+                --display: "Arial Narrow", "Roboto Condensed", "Helvetica Neue", sans-serif;
+                --body: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html {
+                scroll-behavior: smooth;
+            }
+
+            body {
+                margin: 0;
+                min-width: 320px;
+                background:
+                    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+                    var(--graphite);
+                background-size: 48px 48px;
+                color: var(--ink);
+                font-family: var(--body);
+                -webkit-font-smoothing: antialiased;
+            }
+
+            button,
+            a {
+                font: inherit;
+            }
+
+            button {
+                cursor: pointer;
+            }
+
+            a {
+                color: inherit;
+            }
+
+            :focus-visible {
+                outline: 2px solid var(--dirty);
+                outline-offset: 4px;
+            }
+
+            .shell {
+                width: min(1440px, calc(100% - 48px));
+                margin: 0 auto;
+            }
+
+            .topbar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                min-height: 72px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .brand {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                font-family: var(--mono);
+                font-size: 12px;
+                letter-spacing: 0.13em;
+                text-transform: uppercase;
+            }
+
+            .brand-mark {
+                position: relative;
+                width: 26px;
+                height: 26px;
+                border: 1px solid var(--line-strong);
+            }
+
+            .brand-mark::before,
+            .brand-mark::after {
+                position: absolute;
+                content: "";
+                background: var(--good);
+            }
+
+            .brand-mark::before {
+                top: 6px;
+                right: 6px;
+                bottom: 6px;
+                width: 1px;
+            }
+
+            .brand-mark::after {
+                right: 6px;
+                bottom: 6px;
+                left: 6px;
+                height: 1px;
+            }
+
+            .top-meta {
+                color: var(--muted);
+                font-family: var(--mono);
+                font-size: 11px;
+                letter-spacing: 0.05em;
+            }
+
+            .hero {
+                display: grid;
+                grid-template-columns: minmax(0, 0.9fr) minmax(540px, 1.1fr);
+                min-height: 720px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .hero-copy {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                padding: 92px 64px 92px 0;
+                border-right: 1px solid var(--line);
+            }
+
+            .eyebrow {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin: 0 0 24px;
+                color: var(--good);
+                font-family: var(--mono);
+                font-size: 11px;
+                letter-spacing: 0.16em;
+                text-transform: uppercase;
+            }
+
+            .eyebrow::before {
+                width: 28px;
+                height: 1px;
+                background: currentColor;
+                content: "";
+            }
+
+            h1,
+            h2,
+            h3,
+            p {
+                margin-top: 0;
+            }
+
+            h1 {
+                max-width: 750px;
+                margin-bottom: 32px;
+                font-family: var(--display);
+                font-size: clamp(54px, 5.4vw, 88px);
+                font-stretch: condensed;
+                font-weight: 620;
+                letter-spacing: -0.055em;
+                line-height: 0.96;
+            }
+
+            .hero-lede {
+                max-width: 620px;
+                margin-bottom: 46px;
+                color: #c8c6bf;
+                font-size: 17px;
+                line-height: 1.75;
+            }
+
+            .hero-verdict {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                border-top: 1px solid var(--line);
+                border-bottom: 1px solid var(--line);
+            }
+
+            .verdict-item {
+                padding: 20px 20px 20px 0;
+            }
+
+            .verdict-item + .verdict-item {
+                padding-left: 20px;
+                border-left: 1px solid var(--line);
+            }
+
+            .verdict-label {
+                display: block;
+                margin-bottom: 9px;
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 10px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+
+            .verdict-value {
+                font-family: var(--mono);
+                font-size: 15px;
+                line-height: 1.45;
+            }
+
+            .verdict-value.good {
+                color: var(--good);
+            }
+
+            .verdict-value.pending {
+                color: var(--dirty);
+            }
+
+            .hero-instrument {
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                padding: 72px 0 72px 64px;
+            }
+
+            .instrument-head {
+                display: flex;
+                align-items: flex-end;
+                justify-content: space-between;
+                gap: 24px;
+                margin-bottom: 22px;
+            }
+
+            .instrument-title {
+                margin: 0;
+                font-family: var(--mono);
+                font-size: 12px;
+                font-weight: 500;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            .instrument-state {
+                color: var(--good);
+                font-family: var(--mono);
+                font-size: 11px;
+            }
+
+            .matrix-frame {
+                position: relative;
+                overflow: hidden;
+                padding: 28px;
+                border: 1px solid var(--line-strong);
+                background: rgba(11, 14, 18, 0.84);
+                box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.018);
+            }
+
+            .matrix-frame::before {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                left: -20%;
+                width: 16%;
+                background: linear-gradient(90deg, transparent, rgba(79, 209, 161, 0.16), transparent);
+                content: "";
+                transform: skewX(-10deg);
+                animation: scan 5.5s ease-in-out infinite;
+            }
+
+            .matrix-scale {
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 12px;
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 9px;
+            }
+
+            .entry-matrix {
+                display: grid;
+                grid-template-columns: repeat(20, minmax(0, 1fr));
+                gap: 6px;
+                min-height: 292px;
+            }
+
+            .entry-cell {
+                aspect-ratio: 1;
+                border: 1px solid #252d37;
+                background: #151a21;
+                transition:
+                    background 260ms ease,
+                    border-color 260ms ease,
+                    box-shadow 260ms ease,
+                    opacity 260ms ease;
+            }
+
+            .entry-cell.is-dirty {
+                border-color: rgba(242, 184, 75, 0.72);
+                background: var(--dirty);
+                box-shadow: 0 0 18px rgba(242, 184, 75, 0.34);
+            }
+
+            .entry-cell.is-shared {
+                border-color: rgba(79, 209, 161, 0.5);
+                background: rgba(79, 209, 161, 0.2);
+            }
+
+            .matrix-readout {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                margin-top: 22px;
+                border-top: 1px solid var(--line);
+            }
+
+            .readout {
+                padding: 17px 12px 0 0;
+            }
+
+            .readout + .readout {
+                padding-left: 16px;
+                border-left: 1px solid var(--line);
+            }
+
+            .readout strong,
+            .readout span {
+                display: block;
+            }
+
+            .readout strong {
+                margin-bottom: 6px;
+                font-family: var(--mono);
+                font-size: 17px;
+                font-weight: 500;
+            }
+
+            .readout span {
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 9px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+
+            .truth-strip {
+                display: grid;
+                grid-template-columns: 210px 1fr;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .truth-label,
+            .truth-copy {
+                padding: 22px 0;
+            }
+
+            .truth-label {
+                color: var(--fail);
+                font-family: var(--mono);
+                font-size: 11px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+
+            .truth-copy {
+                color: #c6c2b9;
+                font-size: 14px;
+                line-height: 1.65;
+            }
+
+            .truth-copy strong {
+                color: var(--ink);
+                font-weight: 600;
+            }
+
+            .section {
+                display: grid;
+                grid-template-columns: 210px 1fr;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .section-rail {
+                padding: 88px 34px 88px 0;
+                border-right: 1px solid var(--line);
+            }
+
+            .rail-kicker {
+                display: block;
+                margin-bottom: 12px;
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 10px;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+            }
+
+            .rail-title {
+                margin: 0;
+                font-family: var(--display);
+                font-size: 27px;
+                font-weight: 560;
+                letter-spacing: -0.03em;
+                line-height: 1.05;
+            }
+
+            .section-body {
+                min-width: 0;
+                padding: 88px 0 88px 64px;
+            }
+
+            .section-intro {
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(260px, 0.65fr);
+                gap: 72px;
+                align-items: end;
+                margin-bottom: 54px;
+            }
+
+            .section-intro h2 {
+                margin-bottom: 0;
+                font-family: var(--display);
+                font-size: clamp(38px, 4vw, 60px);
+                font-weight: 580;
+                letter-spacing: -0.045em;
+                line-height: 1.02;
+            }
+
+            .section-intro p {
+                margin-bottom: 0;
+                color: var(--muted);
+                font-size: 14px;
+                line-height: 1.75;
+            }
+
+            .architecture {
+                display: grid;
+                grid-template-columns: 1fr 52px 1fr;
+                align-items: stretch;
+                border: 1px solid var(--line);
+            }
+
+            .arch-panel {
+                min-width: 0;
+                padding: 30px;
+                background: rgba(21, 26, 33, 0.54);
+            }
+
+            .arch-arrow {
+                display: grid;
+                place-items: center;
+                border-right: 1px solid var(--line);
+                border-left: 1px solid var(--line);
+                color: var(--good);
+                font-family: var(--mono);
+                font-size: 20px;
+            }
+
+            .arch-tag {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 32px;
+                color: var(--muted);
+                font-family: var(--mono);
+                font-size: 10px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+
+            .arch-tag::before {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: currentColor;
+                content: "";
+            }
+
+            .arch-tag.old {
+                color: var(--fail);
+            }
+
+            .arch-tag.new {
+                color: var(--good);
+            }
+
+            .arch-equation {
+                min-height: 94px;
+                margin-bottom: 28px;
+                font-family: var(--mono);
+                font-size: clamp(19px, 2vw, 30px);
+                line-height: 1.5;
+            }
+
+            .arch-equation .faint {
+                color: var(--dim);
+            }
+
+            .arch-equation .bad {
+                color: var(--fail);
+            }
+
+            .arch-equation .good {
+                color: var(--good);
+            }
+
+            .arch-list {
+                display: grid;
+                gap: 0;
+                margin: 0;
+                padding: 0;
+                list-style: none;
+                border-top: 1px solid var(--line);
+            }
+
+            .arch-list li {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 20px;
+                padding: 13px 0;
+                border-bottom: 1px solid var(--line);
+                color: var(--muted);
+                font-size: 13px;
+            }
+
+            .arch-list code {
+                color: var(--ink);
+                font-family: var(--mono);
+                font-size: 11px;
+            }
+
+            .scenario-tabs {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-bottom: 28px;
+            }
+
+            .scenario-tab {
+                padding: 10px 15px;
+                border: 1px solid var(--line);
+                border-radius: 0;
+                background: transparent;
+                color: var(--muted);
+                font-family: var(--mono);
+                font-size: 11px;
+                transition:
+                    color 160ms ease,
+                    border-color 160ms ease,
+                    background 160ms ease;
+            }
+
+            .scenario-tab:hover {
+                border-color: var(--line-strong);
+                color: var(--ink);
+            }
+
+            .scenario-tab[aria-selected="true"] {
+                border-color: var(--dirty);
+                background: var(--dirty-soft);
+                color: var(--dirty);
+            }
+
+            .scenario-stage {
+                display: grid;
+                grid-template-columns: minmax(260px, 0.68fr) minmax(0, 1.32fr);
+                min-height: 390px;
+                border: 1px solid var(--line);
+                background: rgba(21, 26, 33, 0.38);
+            }
+
+            .scenario-summary {
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+                padding: 34px;
+                border-right: 1px solid var(--line);
+            }
+
+            .scenario-number {
+                color: var(--dirty);
+                font-family: var(--display);
+                font-size: clamp(74px, 8vw, 126px);
+                font-weight: 520;
+                letter-spacing: -0.08em;
+                line-height: 0.88;
+            }
+
+            .scenario-unit {
+                display: block;
+                margin-top: 14px;
+                color: var(--muted);
+                font-family: var(--mono);
+                font-size: 11px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+
+            .scenario-description {
+                margin: 0;
+                color: #c2c0b9;
+                font-size: 14px;
+                line-height: 1.7;
+            }
+
+            .scenario-comparison {
+                display: grid;
+                grid-template-rows: repeat(2, 1fr);
+            }
+
+            .comparison-row {
+                display: grid;
+                grid-template-columns: 120px 1fr 92px;
+                align-items: center;
+                gap: 24px;
+                padding: 32px;
+            }
+
+            .comparison-row + .comparison-row {
+                border-top: 1px solid var(--line);
+            }
+
+            .comparison-label {
+                font-family: var(--mono);
+                font-size: 11px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            .comparison-label.before {
+                color: var(--fail);
+            }
+
+            .comparison-label.after {
+                color: var(--good);
+            }
+
+            .track {
+                height: 7px;
+                background: #222a34;
+            }
+
+            .track-fill {
+                width: var(--fill, 0%);
+                height: 100%;
+                transform-origin: left center;
+                transition: width 420ms cubic-bezier(0.2, 0.75, 0.2, 1);
+            }
+
+            .track-fill.before {
+                background: var(--fail);
+            }
+
+            .track-fill.after {
+                background: var(--good);
+            }
+
+            .comparison-value {
+                text-align: right;
+                font-family: var(--mono);
+                font-size: 13px;
+            }
+
+            .scenario-notes {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                margin-top: 18px;
+                border-top: 1px solid var(--line);
+                border-bottom: 1px solid var(--line);
+            }
+
+            .scenario-note {
+                padding: 17px 18px 17px 0;
+            }
+
+            .scenario-note + .scenario-note {
+                padding-left: 18px;
+                border-left: 1px solid var(--line);
+            }
+
+            .scenario-note span,
+            .scenario-note strong {
+                display: block;
+            }
+
+            .scenario-note span {
+                margin-bottom: 8px;
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 9px;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }
+
+            .scenario-note strong {
+                font-family: var(--mono);
+                font-size: 12px;
+                font-weight: 500;
+            }
+
+            .shape-table {
+                border-top: 1px solid var(--line);
+            }
+
+            .shape-row {
+                display: grid;
+                grid-template-columns: minmax(210px, 0.75fr) repeat(3, minmax(130px, 1fr));
+                border-bottom: 1px solid var(--line);
+            }
+
+            .shape-cell {
+                min-width: 0;
+                padding: 20px 18px;
+                border-right: 1px solid var(--line);
+                font-family: var(--mono);
+                font-size: 12px;
+            }
+
+            .shape-cell:last-child {
+                border-right: 0;
+            }
+
+            .shape-row.header .shape-cell {
+                color: var(--dim);
+                font-size: 9px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            .shape-cell strong {
+                display: block;
+                margin-bottom: 5px;
+                color: var(--ink);
+                font-family: var(--body);
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            .shape-cell small {
+                color: var(--dim);
+                font-family: var(--body);
+                font-size: 11px;
+            }
+
+            .shape-cell.good {
+                color: var(--good);
+            }
+
+            .shape-cell.dirty {
+                color: var(--dirty);
+            }
+
+            .shape-cell.fail {
+                color: var(--fail);
+            }
+
+            .capacity-ladder {
+                position: relative;
+                padding-left: 33px;
+            }
+
+            .capacity-ladder::before {
+                position: absolute;
+                top: 18px;
+                bottom: 18px;
+                left: 6px;
+                width: 1px;
+                background: var(--line-strong);
+                content: "";
+            }
+
+            .capacity-step {
+                position: relative;
+                display: grid;
+                grid-template-columns: 150px minmax(0, 1fr) 180px;
+                gap: 28px;
+                align-items: center;
+                min-height: 112px;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .capacity-step::before {
+                position: absolute;
+                left: -33px;
+                width: 13px;
+                height: 13px;
+                border: 2px solid var(--line-strong);
+                border-radius: 50%;
+                background: var(--graphite);
+                content: "";
+            }
+
+            .capacity-step.verified::before {
+                border-color: var(--good);
+                box-shadow: 0 0 0 6px var(--good-soft);
+            }
+
+            .capacity-step.blocked::before {
+                border-color: var(--fail);
+                box-shadow: 0 0 0 6px var(--fail-soft);
+            }
+
+            .capacity-scale {
+                font-family: var(--display);
+                font-size: 38px;
+                font-weight: 540;
+                letter-spacing: -0.04em;
+            }
+
+            .capacity-copy strong,
+            .capacity-copy span {
+                display: block;
+            }
+
+            .capacity-copy strong {
+                margin-bottom: 7px;
+                font-size: 15px;
+            }
+
+            .capacity-copy span {
+                color: var(--muted);
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .status-pill {
+                justify-self: end;
+                padding: 8px 10px;
+                border: 1px solid var(--line-strong);
+                color: var(--muted);
+                font-family: var(--mono);
+                font-size: 10px;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+            }
+
+            .status-pill.good {
+                border-color: rgba(79, 209, 161, 0.45);
+                background: var(--good-soft);
+                color: var(--good);
+            }
+
+            .status-pill.fail {
+                border-color: rgba(255, 118, 107, 0.45);
+                background: var(--fail-soft);
+                color: var(--fail);
+            }
+
+            .evidence-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                border-top: 1px solid var(--line);
+                border-left: 1px solid var(--line);
+            }
+
+            .evidence-item {
+                min-height: 182px;
+                padding: 28px;
+                border-right: 1px solid var(--line);
+                border-bottom: 1px solid var(--line);
+            }
+
+            .evidence-index {
+                display: inline-grid;
+                place-items: center;
+                width: 24px;
+                height: 24px;
+                margin-bottom: 32px;
+                border: 1px solid var(--line-strong);
+                color: var(--good);
+                font-family: var(--mono);
+                font-size: 9px;
+            }
+
+            .evidence-item h3 {
+                margin-bottom: 10px;
+                font-size: 15px;
+                font-weight: 620;
+            }
+
+            .evidence-item p {
+                margin: 0;
+                color: var(--muted);
+                font-size: 12px;
+                line-height: 1.65;
+            }
+
+            .conclusion {
+                display: grid;
+                grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.5fr);
+                gap: 72px;
+                padding: 116px 0 96px;
+            }
+
+            .conclusion h2 {
+                max-width: 930px;
+                margin-bottom: 32px;
+                font-family: var(--display);
+                font-size: clamp(44px, 5vw, 74px);
+                font-weight: 570;
+                letter-spacing: -0.05em;
+                line-height: 1;
+            }
+
+            .conclusion h2 em {
+                color: var(--good);
+                font-style: normal;
+            }
+
+            .conclusion-copy {
+                max-width: 760px;
+                margin: 0;
+                color: var(--muted);
+                font-size: 15px;
+                line-height: 1.8;
+            }
+
+            .next-bottleneck {
+                align-self: end;
+                padding: 24px 0 24px 24px;
+                border-left: 2px solid var(--dirty);
+            }
+
+            .next-bottleneck span,
+            .next-bottleneck strong {
+                display: block;
+            }
+
+            .next-bottleneck span {
+                margin-bottom: 9px;
+                color: var(--dirty);
+                font-family: var(--mono);
+                font-size: 9px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            .next-bottleneck strong {
+                font-size: 15px;
+                line-height: 1.55;
+            }
+
+            footer {
+                display: grid;
+                grid-template-columns: 210px 1fr;
+                border-top: 1px solid var(--line);
+            }
+
+            .footer-label,
+            .footer-copy {
+                padding: 28px 0 44px;
+            }
+
+            .footer-label {
+                border-right: 1px solid var(--line);
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 9px;
+                letter-spacing: 0.1em;
+                text-transform: uppercase;
+            }
+
+            .footer-copy {
+                padding-left: 64px;
+                color: var(--dim);
+                font-family: var(--mono);
+                font-size: 10px;
+                line-height: 1.8;
+            }
+
+            .reveal {
+                opacity: 0;
+                transform: translateY(18px);
+                transition:
+                    opacity 600ms ease,
+                    transform 600ms ease;
+            }
+
+            .reveal.is-visible {
+                opacity: 1;
+                transform: none;
+            }
+
+            @keyframes scan {
+                0%,
+                20% {
+                    left: -20%;
+                    opacity: 0;
+                }
+                40% {
+                    opacity: 1;
+                }
+                75%,
+                100% {
+                    left: 112%;
+                    opacity: 0;
+                }
+            }
+
+            @media (max-width: 1040px) {
+                .hero {
+                    grid-template-columns: 1fr;
+                }
+
+                .hero-copy {
+                    padding-right: 0;
+                    border-right: 0;
+                    border-bottom: 1px solid var(--line);
+                }
+
+                .hero-instrument {
+                    padding-left: 0;
+                }
+
+                .section-intro {
+                    grid-template-columns: 1fr;
+                    gap: 22px;
+                }
+
+                .architecture {
+                    grid-template-columns: 1fr;
+                }
+
+                .arch-arrow {
+                    min-height: 50px;
+                    border: 0;
+                    border-top: 1px solid var(--line);
+                    border-bottom: 1px solid var(--line);
+                    transform: rotate(90deg);
+                }
+
+                .shape-row {
+                    grid-template-columns: minmax(180px, 0.8fr) repeat(3, 1fr);
+                }
+            }
+
+            @media (max-width: 760px) {
+                .shell {
+                    width: min(100% - 28px, 1440px);
+                }
+
+                .top-meta {
+                    display: none;
+                }
+
+                .hero {
+                    min-height: auto;
+                }
+
+                .hero-copy,
+                .hero-instrument {
+                    padding-top: 64px;
+                    padding-bottom: 64px;
+                }
+
+                h1 {
+                    font-size: clamp(48px, 15vw, 68px);
+                }
+
+                .truth-strip,
+                .section,
+                footer {
+                    grid-template-columns: 1fr;
+                }
+
+                .truth-label {
+                    padding-bottom: 0;
+                }
+
+                .section-rail {
+                    padding: 52px 0 0;
+                    border-right: 0;
+                }
+
+                .section-body {
+                    padding: 32px 0 64px;
+                }
+
+                .scenario-stage {
+                    grid-template-columns: 1fr;
+                }
+
+                .scenario-summary {
+                    min-height: 280px;
+                    border-right: 0;
+                    border-bottom: 1px solid var(--line);
+                }
+
+                .comparison-row {
+                    grid-template-columns: 90px 1fr;
+                    gap: 16px;
+                }
+
+                .comparison-value {
+                    grid-column: 2;
+                    text-align: left;
+                }
+
+                .scenario-notes,
+                .evidence-grid {
+                    grid-template-columns: 1fr;
+                }
+
+                .scenario-note + .scenario-note {
+                    padding-left: 0;
+                    border-top: 1px solid var(--line);
+                    border-left: 0;
+                }
+
+                .shape-table {
+                    overflow-x: auto;
+                }
+
+                .shape-row {
+                    min-width: 700px;
+                }
+
+                .capacity-step {
+                    grid-template-columns: 100px 1fr;
+                    gap: 16px;
+                    padding: 22px 0;
+                }
+
+                .capacity-scale {
+                    font-size: 30px;
+                }
+
+                .status-pill {
+                    grid-column: 2;
+                    justify-self: start;
+                }
+
+                .conclusion {
+                    grid-template-columns: 1fr;
+                    padding: 80px 0 70px;
+                }
+
+                .footer-label {
+                    padding-bottom: 10px;
+                    border-right: 0;
+                }
+
+                .footer-copy {
+                    padding-left: 0;
+                }
+            }
+
+            @media (prefers-reduced-motion: reduce) {
+                html {
+                    scroll-behavior: auto;
+                }
+
+                *,
+                *::before,
+                *::after {
+                    scroll-behavior: auto !important;
+                    animation-duration: 0.01ms !important;
+                    animation-iteration-count: 1 !important;
+                    transition-duration: 0.01ms !important;
+                }
+
+                .reveal {
+                    opacity: 1;
+                    transform: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header class="shell topbar">
+            <div class="brand">
+                <span class="brand-mark" aria-hidden="true"></span>
+                <span>Crest / Rewind Lab</span>
+            </div>
+            <div class="top-meta">MEASUREMENT NOTE · MACOS / APFS · 2026-08-06</div>
+        </header>
+
+        <main>
+            <section class="shell hero" aria-labelledby="hero-title">
+                <div class="hero-copy">
+                    <p class="eyebrow">Workspace snapshot architecture</p>
+                    <h1 id="hero-title">从每轮全仓扫描，收缩为一次基线 + 脏路径捕获。</h1>
+                    <p class="hero-lede">
+                        优化后的 rewind 不再让每个 Agent Session 在每个 turn 边界重新遍历 workspace。
+                        多 Session 共享同一份可信基线，稳定阶段只处理真实发生变化的路径。
+                    </p>
+                    <div class="hero-verdict" aria-label="核心结论">
+                        <div class="verdict-item">
+                            <span class="verdict-label">算法实测规模</span>
+                            <span class="verdict-value good">10,000 entries · warm path</span>
+                        </div>
+                        <div class="verdict-item">
+                            <span class="verdict-label">产品端到端量级</span>
+                            <span class="verdict-value pending">尚未做真实 monorepo 实测</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="hero-instrument" aria-label="工作区 entry 捕获示意">
+                    <div class="instrument-head">
+                        <h2 class="instrument-title">Workspace entry field / 10k</h2>
+                        <span class="instrument-state" id="matrix-state">WARM · NO CHANGE</span>
+                    </div>
+                    <div class="matrix-frame">
+                        <div class="matrix-scale" aria-hidden="true">
+                            <span>00000</span>
+                            <span>05000</span>
+                            <span>10000</span>
+                        </div>
+                        <div class="entry-matrix" id="entry-matrix" aria-hidden="true"></div>
+                        <div class="matrix-readout">
+                            <div class="readout">
+                                <strong id="matrix-enumerated">0</strong>
+                                <span>Enumerated</span>
+                            </div>
+                            <div class="readout">
+                                <strong id="matrix-workers">0</strong>
+                                <span>Worker peak</span>
+                            </div>
+                            <div class="readout">
+                                <strong id="matrix-sessions">4</strong>
+                                <span>Shared sessions</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="shell truth-strip" aria-label="证据边界">
+                <div class="truth-label">Evidence boundary</div>
+                <div class="truth-copy">
+                    <strong>这不是“已经支持 200k 文件”的宣传页。</strong>
+                    10k 只证明代表性 baseline 后的增量路径；50k baseline 达到生产 timeout，200k deep 达到 capture
+                    budget。未执行的 warm row 不会被当成 0 ms 性能。
+                </div>
+            </aside>
+
+            <section class="shell section" aria-labelledby="model-title">
+                <div class="section-rail">
+                    <span class="rail-kicker">Model change</span>
+                    <h2 class="rail-title">计算模型</h2>
+                </div>
+                <div class="section-body">
+                    <div class="section-intro reveal">
+                        <h2 id="model-title">变化的不是快照语义，而是谁承担扫描成本。</h2>
+                        <p>
+                            checkpoint 仍然保存 before / after 的精确状态。优化只把物理捕获层从“Session 私有、边界全扫”
+                            改成“workspace 共享、事件驱动增量”。
+                        </p>
+                    </div>
+                    <div class="architecture reveal">
+                        <article class="arch-panel">
+                            <span class="arch-tag old">Before / session-local</span>
+                            <div class="arch-equation">
+                                <span class="faint">每个 turn</span><br />
+                                <span class="bad">2 × N × Sessions</span>
+                            </div>
+                            <ul class="arch-list">
+                                <li><span>用户消息开始前</span><code>FULL SCAN</code></li>
+                                <li><span>Agent turn 结束后</span><code>FULL SCAN</code></li>
+                                <li><span>4 个并行 Session</span><code>× 4</code></li>
+                            </ul>
+                        </article>
+                        <div class="arch-arrow" aria-hidden="true">→</div>
+                        <article class="arch-panel">
+                            <span class="arch-tag new">After / workspace-shared</span>
+                            <div class="arch-equation">
+                                <span class="faint">建立一次可信基线</span><br />
+                                <span class="good">Baseline + Δ paths</span>
+                            </div>
+                            <ul class="arch-list">
+                                <li><span>无文件变化</span><code>0 paths</code></li>
+                                <li><span>修改 1 个文件</span><code>dirty path only</code></li>
+                                <li><span>4 个并行 Session</span><code>same tracker</code></li>
+                            </ul>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="shell section" aria-labelledby="experiment-title">
+                <div class="section-rail">
+                    <span class="rail-kicker">Interactive trace</span>
+                    <h2 class="rail-title">10k 实验</h2>
+                </div>
+                <div class="section-body">
+                    <div class="section-intro reveal">
+                        <h2 id="experiment-title">同一个 10k workspace，工作量随 dirty paths 变化。</h2>
+                        <p>
+                            下面用同样的 10 个 capture boundaries 比较：旧机制是 10k entries × 4 Sessions × 10
+                            boundaries；新机制的 enumerated 与 p95 来自 10 次 macOS/APFS benchmark。
+                        </p>
+                    </div>
+
+                    <div class="scenario-tabs reveal" role="tablist" aria-label="选择工作区场景">
+                        <button class="scenario-tab" type="button" role="tab" aria-selected="true" data-scenario="idle">
+                            无改动 · 4 Sessions
+                        </button>
+                        <button class="scenario-tab" type="button" role="tab" aria-selected="false" data-scenario="one">
+                            修改 1 个文件
+                        </button>
+                        <button class="scenario-tab" type="button" role="tab" aria-selected="false" data-scenario="hundred">
+                            修改 100 个文件
+                        </button>
+                        <button class="scenario-tab" type="button" role="tab" aria-selected="false" data-scenario="cold">
+                            Cold baseline
+                        </button>
+                    </div>
+
+                    <div class="scenario-stage reveal" role="tabpanel" aria-live="polite">
+                        <div class="scenario-summary">
+                            <div>
+                                <div class="scenario-number" id="scenario-number">0</div>
+                                <span class="scenario-unit" id="scenario-unit">entries enumerated</span>
+                            </div>
+                            <p class="scenario-description" id="scenario-description">
+                                四个 Session 共用已建立的 tracker。没有文件变化时，10 次 warm capture 没有枚举任何 workspace
+                                entry。
+                            </p>
+                        </div>
+                        <div class="scenario-comparison">
+                            <div class="comparison-row">
+                                <div class="comparison-label before">Before</div>
+                                <div class="track"><div class="track-fill before" id="before-fill" style="--fill: 100%"></div></div>
+                                <div class="comparison-value" id="before-value">400,000 entries</div>
+                            </div>
+                            <div class="comparison-row">
+                                <div class="comparison-label after">After</div>
+                                <div class="track"><div class="track-fill after" id="after-fill" style="--fill: 0%"></div></div>
+                                <div class="comparison-value" id="after-value">0 visits</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="scenario-notes reveal">
+                        <div class="scenario-note">
+                            <span>Deep p95</span>
+                            <strong id="deep-p95">0.03 ms</strong>
+                        </div>
+                        <div class="scenario-note">
+                            <span>Wide p95</span>
+                            <strong id="wide-p95">0.02 ms</strong>
+                        </div>
+                        <div class="scenario-note">
+                            <span>Measurement unit</span>
+                            <strong id="measurement-unit">10 iterations total</strong>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="shell section" aria-labelledby="latency-title">
+                <div class="section-rail">
+                    <span class="rail-kicker">Measured latency</span>
+                    <h2 class="rail-title">真实代价</h2>
+                </div>
+                <div class="section-body">
+                    <div class="section-intro reveal">
+                        <h2 id="latency-title">扫描消失了，不代表所有脏路径都已经足够快。</h2>
+                        <p>
+                            无改动边界几乎为零；1 个 dirty path 在 deep fixture 仍需约 3.5 秒，100 个 dirty paths
+                            达到约 19–21 秒。优化解决了重复全扫，但 anchored capture 仍是下一处瓶颈。
+                        </p>
+                    </div>
+                    <div class="shape-table reveal" role="table" aria-label="10k benchmark p95 对比">
+                        <div class="shape-row header" role="row">
+                            <div class="shape-cell" role="columnheader">Fixture shape</div>
+                            <div class="shape-cell" role="columnheader">No change / 4 sessions</div>
+                            <div class="shape-cell" role="columnheader">1 dirty / 4 sessions</div>
+                            <div class="shape-cell" role="columnheader">100 dirty / 4 sessions</div>
+                        </div>
+                        <div class="shape-row" role="row">
+                            <div class="shape-cell" role="rowheader">
+                                <strong>Deep / 14 dirs</strong>
+                                <small>ancestor-heavy</small>
+                            </div>
+                            <div class="shape-cell good" role="cell">0.03 ms</div>
+                            <div class="shape-cell dirty" role="cell">3,548.44 ms</div>
+                            <div class="shape-cell fail" role="cell">21,272.26 ms</div>
+                        </div>
+                        <div class="shape-row" role="row">
+                            <div class="shape-cell" role="rowheader">
+                                <strong>Wide / 8 dirs</strong>
+                                <small>8-worker fan-out</small>
+                            </div>
+                            <div class="shape-cell good" role="cell">0.02 ms</div>
+                            <div class="shape-cell dirty" role="cell">1,372.72 ms</div>
+                            <div class="shape-cell fail" role="cell">19,088.67 ms</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="shell section" aria-labelledby="capacity-title">
+                <div class="section-rail">
+                    <span class="rail-kicker">Capacity boundary</span>
+                    <h2 class="rail-title">规模边界</h2>
+                </div>
+                <div class="section-body">
+                    <div class="section-intro reveal">
+                        <h2 id="capacity-title">算法上限与产品上限，必须分开说。</h2>
+                        <p>
+                            只有 cold baseline 成功并完成真实 Undo / Redo，才能称为产品支持。当前没有执行真实大型
+                            monorepo 端到端矩阵，因此本页只报告合成 benchmark 边界。
+                        </p>
+                    </div>
+                    <div class="capacity-ladder reveal">
+                        <div class="capacity-step">
+                            <div class="capacity-scale">Core</div>
+                            <div class="capacity-copy">
+                                <strong>精确 Undo / Redo 语义</strong>
+                                <span>已有真实文件系统集成测试；不代表特定仓库规模。</span>
+                            </div>
+                            <div class="status-pill">Correctness verified</div>
+                        </div>
+                        <div class="capacity-step verified">
+                            <div class="capacity-scale">10k</div>
+                            <div class="capacity-copy">
+                                <strong>代表性 baseline + 完整 warm matrix</strong>
+                                <span>64-bucket baseline 成功；无改动、1/100 dirty、1/2/4 Session 均实测。</span>
+                            </div>
+                            <div class="status-pill good">Algorithm verified</div>
+                        </div>
+                        <div class="capacity-step blocked">
+                            <div class="capacity-scale">50k</div>
+                            <div class="capacity-copy">
+                                <strong>生产 capture deadline 内未建立 baseline</strong>
+                                <span>deep 35.45 s、wide 30.62 s；warm matrix 未执行。</span>
+                            </div>
+                            <div class="status-pill fail">Capture timeout</div>
+                        </div>
+                        <div class="capacity-step blocked">
+                            <div class="capacity-scale">200k</div>
+                            <div class="capacity-copy">
+                                <strong>达到输入预算或生产 deadline</strong>
+                                <span>deep 为 capture-budget；wide 为 capture-timeout。</span>
+                            </div>
+                            <div class="status-pill fail">Baseline unavailable</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="shell section" aria-labelledby="evidence-title">
+                <div class="section-rail">
+                    <span class="rail-kicker">Safety invariant</span>
+                    <h2 class="rail-title">保留的能力</h2>
+                </div>
+                <div class="section-body">
+                    <div class="section-intro reveal">
+                        <h2 id="evidence-title">共享捕获层，没有削弱回退的安全底座。</h2>
+                        <p>
+                            这次变化只替换 snapshot 的物理获取方式。checkpoint、磁盘冲突检测、workspace lock、confirmation
+                            token 和 fail-closed 仍保持原语义。
+                        </p>
+                    </div>
+                    <div class="evidence-grid reveal">
+                        <article class="evidence-item">
+                            <span class="evidence-index">A</span>
+                            <h3>多 Session，共享 tracker</h3>
+                            <p>同一物理 workspace 只建立一个 baseline；Session 仍各自持有 checkpoint 和消息树。</p>
+                        </article>
+                        <article class="evidence-item">
+                            <span class="evidence-index">B</span>
+                            <h3>精确 before / after</h3>
+                            <p>Undo 继续应用 checkpoint.after → checkpoint.before，不依赖 write/edit 工具调用历史。</p>
+                        </article>
+                        <article class="evidence-item">
+                            <span class="evidence-index">C</span>
+                            <h3>外部写入必须冲突</h3>
+                            <p>磁盘状态与 checkpoint 不一致时，普通 revert 停止；只有显式 Force 可以覆盖确认的文件。</p>
+                        </article>
+                        <article class="evidence-item">
+                            <span class="evidence-index">D</span>
+                            <h3>观察不连续时 fail closed</h3>
+                            <p>watcher gap、scope invalidation 或 capture budget 不会生成“available empty”的假 checkpoint。</p>
+                        </article>
+                    </div>
+                </div>
+            </section>
+
+            <section class="shell conclusion reveal" aria-labelledby="conclusion-title">
+                <div>
+                    <p class="eyebrow">Engineering conclusion</p>
+                    <h2 id="conclusion-title">这次优化消除了重复全仓扫描；<em>还没有消除首次建库成本。</em></h2>
+                    <p class="conclusion-copy">
+                        对日常无改动 turn 和多 Session 并行，这是结构性改进：工作量不再与 workspace 总文件数 × Session
+                        数量线性相乘。但对大型 monorepo，cold baseline 与大量 dirty paths 仍可能接近生产 deadline。下一步应优化
+                        full snapshot 对象持久化和 anchored path capture，而不是继续堆叠 Session 级缓存。
+                    </p>
+                </div>
+                <aside class="next-bottleneck">
+                    <span>Next bottleneck</span>
+                    <strong>Cold baseline durability<br />+ dirty-path latency</strong>
+                </aside>
+            </section>
+        </main>
+
+        <footer class="shell">
+            <div class="footer-label">Method note</div>
+            <div class="footer-copy">
+                数据来源：2026-08-06 macOS/APFS synthetic benchmark，production capture timeout / budget 保持不变；
+                10 iterations。10k enumerated / object / hashed byte 为 row 总量；p50/p95 为一次共享 boundary 延迟。
+                50k/200k baseline-unavailable 的 0 值表示未执行，不是性能结果。Linux 未实测，Windows 当前不支持。
+            </div>
+        </footer>
+
+        <script>
+            const scenarios = {
+                idle: {
+                    number: "0",
+                    unit: "entries enumerated",
+                    description:
+                        "四个 Session 共用已建立的 tracker。没有文件变化时，10 次 warm capture 没有枚举任何 workspace entry。",
+                    beforeValue: "400,000 entries",
+                    afterValue: "0 entries",
+                    afterFill: "0%",
+                    deep: "0.03 ms",
+                    wide: "0.02 ms",
+                    measure: "10 iterations total",
+                    cells: 0,
+                    workers: "0",
+                    sessions: "4",
+                    matrixState: "WARM · NO CHANGE",
+                },
+                one: {
+                    number: "10",
+                    unit: "entries / 10 iterations",
+                    description:
+                        "每次只处理一个真实 dirty path；表中的 10 是 10 次 capture 总量。ancestor evidence 与对象持久化仍占据主要延迟。",
+                    beforeValue: "400,000 entries",
+                    afterValue: "10 entries",
+                    afterFill: "2%",
+                    deep: "3,548.44 ms",
+                    wide: "1,372.72 ms",
+                    measure: "1 dirty · 4 sessions",
+                    cells: 1,
+                    workers: "1",
+                    sessions: "4",
+                    matrixState: "WARM · 1 DIRTY PATH",
+                },
+                hundred: {
+                    number: "1,000",
+                    unit: "entries / 10 iterations",
+                    description:
+                        "100 个 dirty paths 不触发 full reconcile，但捕获成本已经明显。wide fixture 使用到 8 个 worker，p95 约 19 秒。",
+                    beforeValue: "400,000 entries",
+                    afterValue: "1,000 entries",
+                    afterFill: "12.5%",
+                    deep: "21,272.26 ms",
+                    wide: "19,088.67 ms",
+                    measure: "100 dirty · 4 sessions",
+                    cells: 100,
+                    workers: "8",
+                    sessions: "4",
+                    matrixState: "WARM · 100 DIRTY PATHS",
+                },
+                cold: {
+                    number: "10k",
+                    unit: "entries enumerated once",
+                    description:
+                        "首次建立可信 baseline 仍必须遍历 workspace。代表性 64-bucket fixture 成功，但 unique-content cold probe 超过生产 deadline。",
+                    beforeValue: "10,000 entries",
+                    afterValue: "10,000 entries",
+                    afterFill: "100%",
+                    deep: "10,180.33 ms",
+                    wide: "12,209.81 ms",
+                    measure: "representative baseline",
+                    cells: 200,
+                    workers: "1",
+                    sessions: "1",
+                    matrixState: "COLD · FULL RECONCILE",
+                },
+            };
+
+            const matrix = document.querySelector("#entry-matrix");
+            const cellCount = 200;
+
+            for (let index = 0; index < cellCount; index += 1) {
+                const cell = document.createElement("span");
+                cell.className = "entry-cell";
+                matrix.append(cell);
+            }
+
+            const matrixCells = [...matrix.children];
+
+            function paintMatrix(scenario) {
+                const dirtyIndices = new Set();
+                if (scenario.cells === 1) {
+                    dirtyIndices.add(127);
+                } else if (scenario.cells === 100) {
+                    for (let index = 0; index < 100; index += 1) {
+                        dirtyIndices.add((index * 37) % cellCount);
+                    }
+                }
+
+                matrixCells.forEach((cell, index) => {
+                    cell.classList.toggle("is-dirty", dirtyIndices.has(index));
+                    cell.classList.toggle("is-shared", scenario.cells === cellCount);
+                });
+            }
+
+            function setScenario(key) {
+                const scenario = scenarios[key];
+                document.querySelector("#scenario-number").textContent = scenario.number;
+                document.querySelector("#scenario-unit").textContent = scenario.unit;
+                document.querySelector("#scenario-description").textContent = scenario.description;
+                document.querySelector("#before-value").textContent = scenario.beforeValue;
+                document.querySelector("#after-value").textContent = scenario.afterValue;
+                document.querySelector("#after-fill").style.setProperty("--fill", scenario.afterFill);
+                document.querySelector("#deep-p95").textContent = scenario.deep;
+                document.querySelector("#wide-p95").textContent = scenario.wide;
+                document.querySelector("#measurement-unit").textContent = scenario.measure;
+                document.querySelector("#matrix-enumerated").textContent = scenario.number;
+                document.querySelector("#matrix-workers").textContent = scenario.workers;
+                document.querySelector("#matrix-sessions").textContent = scenario.sessions;
+                document.querySelector("#matrix-state").textContent = scenario.matrixState;
+                paintMatrix(scenario);
+            }
+
+            document.querySelectorAll(".scenario-tab").forEach((tab) => {
+                tab.addEventListener("click", () => {
+                    document.querySelectorAll(".scenario-tab").forEach((candidate) => {
+                        candidate.setAttribute("aria-selected", String(candidate === tab));
+                    });
+                    setScenario(tab.dataset.scenario);
+                });
+            });
+
+            const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+            if (reducedMotion || !("IntersectionObserver" in window)) {
+                document.querySelectorAll(".reveal").forEach((element) => element.classList.add("is-visible"));
+            } else {
+                const observer = new IntersectionObserver(
+                    (entries) => {
+                        entries.forEach((entry) => {
+                            if (!entry.isIntersecting) {
+                                return;
+                            }
+                            entry.target.classList.add("is-visible");
+                            observer.unobserve(entry.target);
+                        });
+                    },
+                    { threshold: 0.12 }
+                );
+                document.querySelectorAll(".reveal").forEach((element) => observer.observe(element));
+            }
+
+            setScenario("idle");
+        </script>
+    </body>
+</html>
