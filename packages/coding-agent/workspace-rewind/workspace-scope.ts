@@ -255,6 +255,10 @@ export async function classifyIncrementalWorkspacePaths(input: {
         for (const candidate of candidates) {
             const path = candidate.path!;
             const isTracked = tracked.has(path);
+            if (candidate.kind === "absent") {
+                entries.push({ ...candidate, tracked: isTracked });
+                continue;
+            }
             if (ignored.has(path)) {
                 entries.push({ ...candidate, kind: "excluded", tracked: isTracked, exclusionReason: "ignored" });
                 continue;

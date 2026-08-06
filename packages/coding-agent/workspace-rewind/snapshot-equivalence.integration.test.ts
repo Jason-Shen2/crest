@@ -37,7 +37,12 @@ import {
     type StoredManifestObjectReader,
     type StoredScopeManifestV2,
 } from "./stored-manifest";
-import type { CapturedPathStateV1, WorkspacePathChangeV1, WorkspaceSnapshotRefV1 } from "./types";
+import type {
+    CapturedPathStateV1,
+    WorkspacePathChangeV1,
+    WorkspaceSnapshotCoverage,
+    WorkspaceSnapshotRefV1,
+} from "./types";
 import {
     ParcelWorkspaceChangeFeed,
     type WorkspaceChangeEvent,
@@ -62,6 +67,7 @@ describe("full and incremental snapshot equivalence", () => {
         "keeps fixed filesystem operations equivalent in Git=%s workspaces",
         async (git) => {
             const value = await makeFixture(git ? "git" : "plain", git);
+            const fullReconcile = vi.spyOn(value.store, "captureFullReconcile");
             try {
                 let previousIncremental = await value.tracker.capture({ profile: "pre-turn" });
                 let previousFull = await value.store.captureFullReconcile({ profile: "pre-turn" });
@@ -72,6 +78,7 @@ describe("full and incremental snapshot equivalence", () => {
                 const operations: Array<{
                     name: string;
                     paths: string[];
+                    posixOnly?: boolean;
                     scopeInvalidated?: boolean;
                     apply(): Promise<void>;
                 }> = [
@@ -104,11 +111,13 @@ describe("full and incremental snapshot equivalence", () => {
                     {
                         name: "chmod",
                         paths: ["text.txt"],
+                        posixOnly: true,
                         apply: async () => await chmod(join(value.workspaceRoot, "text.txt"), 0o755),
                     },
                     {
                         name: "symlink",
                         paths: ["latest"],
+                        posixOnly: true,
                         apply: async () => await symlink("text.txt", join(value.workspaceRoot, "latest")),
                     },
                     {
@@ -150,6 +159,11 @@ describe("full and incremental snapshot equivalence", () => {
                         },
                     },
                     {
+                        name: "delete ignored file",
+                        paths: ["ignored.tmp"],
+                        apply: async () => await unlink(join(value.workspaceRoot, "ignored.tmp")),
+                    },
+                    {
                         name: "nested repository",
                         paths: ["nested-repo"],
                         scopeInvalidated: true,
@@ -164,9 +178,11 @@ describe("full and incremental snapshot equivalence", () => {
                 ];
 
                 for (const operation of operations) {
+                    if (operation.posixOnly && process.platform === "win32") continue;
                     await operation.apply();
                     value.feed.record(operation.paths, operation.scopeInvalidated ?? false);
                     for (const path of operation.paths) observedPaths.add(path);
+                    const fullReconcilesBefore = fullReconcile.mock.calls.length;
                     const full = await value.store.captureFullReconcile({ profile: "terminal" });
                     const context = `${operation.name} (${git ? "Git" : "non-Git"})`;
                     let incremental: Awaited<ReturnType<WorkspaceSnapshotTracker["capture"]>>;
@@ -175,8 +191,12 @@ describe("full and incremental snapshot equivalence", () => {
                     } catch (cause) {
                         throw new Error(`Incremental capture failed after ${context}`, { cause });
                     }
+                    if (operation.name === "delete ignored file") {
+                        expect(fullReconcile.mock.calls.length - fullReconcilesBefore, context).toBe(1);
+                    }
 
                     await expectEquivalent(value.store, incremental.ref, full.ref, observedPaths, context);
+                    expect(semanticCoverage(incremental.coverage), context).toEqual(semanticCoverage(full.coverage));
                     expect(await value.store.diff(previousIncremental.ref, incremental.ref), context).toEqual(
                         await value.store.diff(previousFull.ref, full.ref)
                     );
@@ -766,4 +786,12 @@ async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceId
 
 function comparePaths(left: string, right: string): number {
     return Buffer.compare(Buffer.from(left), Buffer.from(right));
+}
+
+function semanticCoverage(coverage: WorkspaceSnapshotCoverage): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    return {
+        complete: coverage.complete,
+        eligibleEntryCount: coverage.eligibleEntryCount,
+        exclusions: coverage.exclusions,
+    };
 }
