@@ -202,7 +202,7 @@ function makeMetrics(): PerformanceMetrics {
         workerActive: 0,
         workerPeak: 0,
         hooks: {
-            scopeClassified: (entryCount) => {
+            scopeEnumerated: (entryCount) => {
                 metrics.enumeratedEntryCount += entryCount;
             },
             workerStarted: () => {

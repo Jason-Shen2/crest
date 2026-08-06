@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 
 import { waitForChildProcess } from "../tools/_child-process";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
+import { observeSafely } from "./observation";
 
 export interface AnchoredReaderIdentity {
     dev: string;
@@ -150,7 +151,7 @@ export async function runAnchoredReaderBatch(
                 ) {
                     throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
                 }
-                input.hooks?.workerStarted?.();
+                observeSafely(input.hooks?.workerStarted);
                 try {
                     results.push(
                         ...(await runGroup({
@@ -164,7 +165,7 @@ export async function runAnchoredReaderBatch(
                         }))
                     );
                 } finally {
-                    input.hooks?.workerSettled?.();
+                    observeSafely(input.hooks?.workerSettled);
                 }
             }
         } catch (error) {

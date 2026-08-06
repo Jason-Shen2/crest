@@ -51,6 +51,29 @@ describe("IncrementalPathCapture", () => {
         await rm(root, { recursive: true, force: true });
     });
 
+    test("keeps enumeration observer failures outside the capture result", async () => {
+        await writeFile(join(workspace, "README.md"), "before");
+        const fixture = await makeCaptureFixture(root, workspace, git);
+        await writeFile(join(workspace, "README.md"), "after");
+        let observed = 0;
+        const capture = new IncrementalPathCapture({
+            ...fixture.options,
+            hooks: {
+                scopeEnumerated: () => {
+                    observed++;
+                    throw new Error("observer failed");
+                },
+            },
+        });
+        capturesForCleanup.push(capture);
+
+        await expect(capture.capture(["README.md"])).resolves.toMatchObject({
+            status: "captured",
+            mutations: [{ path: "README.md" }],
+        });
+        expect(observed).toBe(1);
+    });
+
     test("captures exact sorted file and absence mutations without writing unrooted Git objects", async () => {
         await writeFile(join(workspace, "README.md"), "before");
         await writeFile(join(workspace, "deleted.txt"), "delete me");

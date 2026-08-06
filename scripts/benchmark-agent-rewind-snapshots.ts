@@ -11,6 +11,7 @@ import {
     IncrementalPathCapture,
     type IncrementalPathCaptureHooks,
 } from "../packages/coding-agent/workspace-rewind/incremental-path-capture";
+import { observeSafely } from "../packages/coding-agent/workspace-rewind/observation";
 import {
     WorkspaceCheckpointLimits,
     WorkspaceSnapshotStore,
@@ -22,19 +23,24 @@ import type {
 } from "../packages/coding-agent/workspace-rewind/workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "../packages/coding-agent/workspace-rewind/workspace-identity";
 import { WorkspaceSnapshotTracker } from "../packages/coding-agent/workspace-rewind/workspace-snapshot-tracker";
+import {
+    WorkspaceTrackerRegistry,
+    type WorkspaceTrackerAcquireInput,
+    type WorkspaceTrackerLease,
+} from "../packages/coding-agent/workspace-rewind/workspace-tracker-registry";
 
 type FixtureShape = "deep" | "wide";
 type BenchmarkMode = "full-baseline" | "warm-incremental";
 
-interface BenchmarkOptions {
+export interface BenchmarkOptions {
     entryCounts: number[];
     iterations: number;
 }
 
-interface BenchmarkRow {
+export interface BenchmarkRow {
     shape: FixtureShape;
     mode: BenchmarkMode;
-    outcome: "completed" | "capture-timeout";
+    outcome: "completed" | "capture-timeout" | "baseline-unavailable";
     contentCardinality: number;
     entryCount: number;
     directoryCount: number;
@@ -59,7 +65,7 @@ interface CaptureMetrics {
     reset(): void;
 }
 
-interface BenchmarkFixture {
+export interface BenchmarkFixture {
     root: string;
     shape: FixtureShape;
     workspaceRoot: string;
@@ -70,6 +76,18 @@ interface BenchmarkFixture {
     tracker: WorkspaceSnapshotTracker;
     feed: DeterministicChangeFeed;
     metrics: CaptureMetrics;
+    registry: WorkspaceTrackerRegistry;
+    registryInput: WorkspaceTrackerAcquireInput;
+    keeperLease: WorkspaceTrackerLease;
+}
+
+export interface BenchmarkDependencies {
+    makeFixture: typeof makeFixture;
+    countLooseObjects: typeof countLooseObjects;
+    mutatePaths: typeof mutatePaths;
+    now(): number;
+    acquireLeases(fixture: BenchmarkFixture, count: number): Promise<WorkspaceTrackerLease[]>;
+    cleanupFixture(fixture: BenchmarkFixture): Promise<void>;
 }
 
 const DirtyCounts = [0, 1, 100] as const;
@@ -77,71 +95,105 @@ const SessionCounts = [1, 2, 4] as const;
 const DefaultEntryCounts = [10_000, 50_000, 200_000];
 const DefaultIterations = 20;
 const RepresentativeContentCardinality = 64;
+const DefaultBenchmarkDependencies: BenchmarkDependencies = {
+    makeFixture,
+    countLooseObjects,
+    mutatePaths,
+    now: () => performance.now(),
+    acquireLeases: (fixture, count) =>
+        Promise.all(Array.from({ length: count }, () => fixture.registry.acquire(fixture.registryInput))),
+    cleanupFixture: async (fixture) => {
+        await fixture.keeperLease.release();
+        await rm(fixture.root, { recursive: true, force: true });
+    },
+};
 
 export async function runAgentRewindSnapshotBenchmark(
     options: BenchmarkOptions,
-    onRow: (row: BenchmarkRow) => void = () => undefined
+    onRow: (row: BenchmarkRow) => void = () => undefined,
+    dependencies: Partial<BenchmarkDependencies> = {}
 ): Promise<BenchmarkRow[]> {
+    const resolved = { ...DefaultBenchmarkDependencies, ...dependencies };
     const rows: BenchmarkRow[] = [];
     const append = (row: BenchmarkRow) => {
         rows.push(row);
-        onRow(row);
+        observeSafely(() => onRow(row));
     };
     for (const entryCount of options.entryCounts) {
         for (const shape of ["deep", "wide"] as const) {
-            append(await measureUniqueContentColdProbe(entryCount, shape));
-            const fixture = await makeFixture(entryCount, shape, RepresentativeContentCardinality);
+            append(await measureUniqueContentColdProbe(entryCount, shape, resolved));
+            const fixture = await resolved.makeFixture(entryCount, shape, RepresentativeContentCardinality);
             try {
-                append(await measureFullBaseline(fixture));
+                const baseline = await measureFullBaseline(fixture, resolved);
+                append(baseline);
                 for (const dirtyCount of DirtyCounts) {
                     for (const sessionCount of SessionCounts) {
+                        const input = {
+                            dirtyCount: Math.min(dirtyCount, fixture.paths.length),
+                            sessionCount,
+                            iterations: options.iterations,
+                        };
                         append(
-                            await measureWarmRow(fixture, {
-                                dirtyCount: Math.min(dirtyCount, fixture.paths.length),
-                                sessionCount,
-                                iterations: options.iterations,
-                            })
+                            baseline.outcome === "completed"
+                                ? await measureWarmRow(fixture, input, resolved)
+                                : makeUnavailableWarmRow(fixture, input)
                         );
                     }
                 }
             } finally {
-                await fixture.tracker.dispose();
-                await rm(fixture.root, { recursive: true, force: true });
+                await resolved.cleanupFixture(fixture);
             }
         }
     }
     return rows;
 }
 
-async function measureFullBaseline(fixture: BenchmarkFixture): Promise<BenchmarkRow> {
+async function measureFullBaseline(
+    fixture: BenchmarkFixture,
+    dependencies: BenchmarkDependencies
+): Promise<BenchmarkRow> {
     fixture.metrics.reset();
-    const objectsBefore = await countLooseObjects(fixture.store);
-    const started = performance.now();
-    const captured = await fixture.tracker.capture({ profile: "terminal" });
-    const elapsed = performance.now() - started;
-    fixture.metrics.newlyHashedBytes += captured.coverage.newlyHashedBytes;
-    const objectsAfter = await countLooseObjects(fixture.store);
-    return makeRow(fixture, {
-        mode: "full-baseline",
-        outcome: "completed",
-        dirtyCount: 0,
-        sessionCount: 1,
-        durations: [elapsed],
-        newObjects: objectsAfter - objectsBefore,
-    });
+    const objectsBefore = await dependencies.countLooseObjects(fixture.store);
+    const started = dependencies.now();
+    try {
+        const captured = await fixture.tracker.capture({ profile: "terminal" });
+        fixture.metrics.newlyHashedBytes += captured.coverage.newlyHashedBytes;
+        return makeRow(fixture, {
+            mode: "full-baseline",
+            outcome: "completed",
+            dirtyCount: 0,
+            sessionCount: 1,
+            durations: [dependencies.now() - started],
+            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
+        });
+    } catch (error) {
+        if (!isCaptureTimeout(error)) throw error;
+        return makeRow(fixture, {
+            mode: "full-baseline",
+            outcome: "capture-timeout",
+            dirtyCount: 0,
+            sessionCount: 1,
+            durations: [dependencies.now() - started],
+            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
+        });
+    }
 }
 
-async function measureUniqueContentColdProbe(entryCount: number, shape: FixtureShape): Promise<BenchmarkRow> {
-    const fixture = await makeFixture(entryCount, shape, entryCount);
+async function measureUniqueContentColdProbe(
+    entryCount: number,
+    shape: FixtureShape,
+    dependencies: BenchmarkDependencies
+): Promise<BenchmarkRow> {
+    const fixture = await dependencies.makeFixture(entryCount, shape, entryCount);
     try {
         fixture.metrics.reset();
-        const objectsBefore = await countLooseObjects(fixture.store);
-        const started = performance.now();
+        const objectsBefore = await dependencies.countLooseObjects(fixture.store);
+        const started = dependencies.now();
         try {
             const captured = await fixture.tracker.capture({ profile: "terminal" });
-            const elapsed = performance.now() - started;
+            const elapsed = dependencies.now() - started;
             fixture.metrics.newlyHashedBytes += captured.coverage.newlyHashedBytes;
-            const objectsAfter = await countLooseObjects(fixture.store);
+            const objectsAfter = await dependencies.countLooseObjects(fixture.store);
             return makeRow(fixture, {
                 mode: "full-baseline",
                 outcome: "completed",
@@ -151,9 +203,9 @@ async function measureUniqueContentColdProbe(entryCount: number, shape: FixtureS
                 newObjects: objectsAfter - objectsBefore,
             });
         } catch (error) {
-            if (!(error instanceof WorkspaceSnapshotStoreError) || error.code !== "capture_timeout") throw error;
-            const elapsed = performance.now() - started;
-            const objectsAfter = await countLooseObjects(fixture.store);
+            if (!isCaptureTimeout(error)) throw error;
+            const elapsed = dependencies.now() - started;
+            const objectsAfter = await dependencies.countLooseObjects(fixture.store);
             return makeRow(fixture, {
                 mode: "full-baseline",
                 outcome: "capture-timeout",
@@ -164,47 +216,68 @@ async function measureUniqueContentColdProbe(entryCount: number, shape: FixtureS
             });
         }
     } finally {
-        await fixture.tracker.dispose();
-        await rm(fixture.root, { recursive: true, force: true });
+        await dependencies.cleanupFixture(fixture);
     }
 }
 
 async function measureWarmRow(
     fixture: BenchmarkFixture,
-    input: { dirtyCount: number; sessionCount: number; iterations: number }
+    input: { dirtyCount: number; sessionCount: number; iterations: number },
+    dependencies: BenchmarkDependencies
 ): Promise<BenchmarkRow> {
     fixture.metrics.reset();
     const durations: number[] = [];
-    const objectsBefore = await countLooseObjects(fixture.store);
-    for (let iteration = 0; iteration < input.iterations; iteration++) {
-        const dirtyPaths = fixture.paths.slice(0, input.dirtyCount);
-        await mutatePaths(fixture.workspaceRoot, dirtyPaths, `${input.dirtyCount}:${input.sessionCount}:${iteration}`);
-        fixture.feed.record(dirtyPaths);
-        const started = performance.now();
-        const captures = await Promise.all(
-            Array.from({ length: input.sessionCount }, () => fixture.tracker.capture({ profile: "terminal" }))
-        );
-        durations.push(performance.now() - started);
-        fixture.metrics.newlyHashedBytes += captures.reduce(
-            (total, capture) => total + capture.coverage.newlyHashedBytes,
-            0
-        );
+    const objectsBefore = await dependencies.countLooseObjects(fixture.store);
+    const leases = await dependencies.acquireLeases(fixture, input.sessionCount);
+    try {
+        for (let iteration = 0; iteration < input.iterations; iteration++) {
+            const dirtyPaths = fixture.paths.slice(0, input.dirtyCount);
+            await dependencies.mutatePaths(
+                fixture.workspaceRoot,
+                dirtyPaths,
+                `${input.dirtyCount}:${input.sessionCount}:${iteration}`
+            );
+            fixture.feed.record(dirtyPaths);
+            const started = dependencies.now();
+            try {
+                const captures = await Promise.all(
+                    leases.map((lease) => lease.tracker.capture({ profile: "terminal" }))
+                );
+                durations.push(dependencies.now() - started);
+                fixture.metrics.newlyHashedBytes += captures.reduce(
+                    (total, capture) => total + capture.coverage.newlyHashedBytes,
+                    0
+                );
+            } catch (error) {
+                if (!isCaptureTimeout(error)) throw error;
+                durations.push(dependencies.now() - started);
+                return makeRow(fixture, {
+                    mode: "warm-incremental",
+                    outcome: "capture-timeout",
+                    dirtyCount: input.dirtyCount,
+                    sessionCount: input.sessionCount,
+                    durations,
+                    newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
+                });
+            }
+        }
+        return makeRow(fixture, {
+            mode: "warm-incremental",
+            dirtyCount: input.dirtyCount,
+            sessionCount: input.sessionCount,
+            durations,
+            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
+        });
+    } finally {
+        await Promise.all(leases.map((lease) => lease.release()));
     }
-    const objectsAfter = await countLooseObjects(fixture.store);
-    return makeRow(fixture, {
-        mode: "warm-incremental",
-        dirtyCount: input.dirtyCount,
-        sessionCount: input.sessionCount,
-        durations,
-        newObjects: objectsAfter - objectsBefore,
-    });
 }
 
 function makeRow(
     fixture: BenchmarkFixture,
     input: {
         mode: BenchmarkMode;
-        outcome?: "completed" | "capture-timeout";
+        outcome?: BenchmarkRow["outcome"];
         dirtyCount: number;
         sessionCount: number;
         durations: number[];
@@ -230,6 +303,25 @@ function makeRow(
     };
 }
 
+function makeUnavailableWarmRow(
+    fixture: BenchmarkFixture,
+    input: { dirtyCount: number; sessionCount: number }
+): BenchmarkRow {
+    fixture.metrics.reset();
+    return makeRow(fixture, {
+        mode: "warm-incremental",
+        outcome: "baseline-unavailable",
+        dirtyCount: input.dirtyCount,
+        sessionCount: input.sessionCount,
+        durations: [0],
+        newObjects: 0,
+    });
+}
+
+function isCaptureTimeout(error: unknown): boolean {
+    return error instanceof WorkspaceSnapshotStoreError && error.code === "capture_timeout";
+}
+
 async function makeFixture(
     entryCount: number,
     shape: FixtureShape,
@@ -243,7 +335,7 @@ async function makeFixture(
         const workspaceRoot = await realpath(await mkdir(join(root, "workspace"), { recursive: true }));
         const layout = await createFixtureEntries(workspaceRoot, entryCount, shape, contentCardinality);
         const identity = await makeIdentity(workspaceRoot, `${shape}-${entryCount}`);
-        const store = await WorkspaceSnapshotStore.open({
+        const registryInput: WorkspaceTrackerAcquireInput = {
             dataRoot: join(root, "data"),
             identity,
             git: new WorkspaceGitRunner(),
@@ -252,31 +344,38 @@ async function makeFixture(
                 processStartToken: `benchmark-${shape}-${entryCount}`,
                 nonce: "7".repeat(64),
             },
-        });
+        };
+        const store = await WorkspaceSnapshotStore.open(registryInput);
         const metrics = makeMetrics();
         instrumentStore(store, metrics);
         const feed = new DeterministicChangeFeed();
-        const tracker = new WorkspaceSnapshotTracker({
-            store,
-            feed,
-            state: {
-                load: async () => ({ status: "untrusted" }),
-                publish: async () => undefined,
-            },
-            makePathCapture: (input) =>
-                new IncrementalPathCapture({
-                    identity,
-                    git: store.git,
-                    storeRoot: store.storeRoot,
-                    scope: input.scope,
-                    maxEntries: WorkspaceCheckpointLimits.maxEntries,
-                    maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
-                    maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
-                    timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
-                    base: input.base,
-                    hooks: metrics.hooks,
+        const registry = new WorkspaceTrackerRegistry({
+            openStore: async () => store,
+            makeFeed: () => feed,
+            makeTracker: () =>
+                new WorkspaceSnapshotTracker({
+                    store,
+                    feed,
+                    state: {
+                        load: async () => ({ status: "untrusted" }),
+                        publish: async () => undefined,
+                    },
+                    makePathCapture: (input) =>
+                        new IncrementalPathCapture({
+                            identity,
+                            git: store.git,
+                            storeRoot: store.storeRoot,
+                            scope: input.scope,
+                            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+                            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+                            maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+                            timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                            base: input.base,
+                            hooks: metrics.hooks,
+                        }),
                 }),
         });
+        const keeperLease = await registry.acquire(registryInput);
         return {
             root,
             shape,
@@ -285,9 +384,12 @@ async function makeFixture(
             contentCardinality: layout.contentCardinality,
             paths: layout.paths,
             store,
-            tracker,
+            tracker: keeperLease.tracker,
             feed,
             metrics,
+            registry,
+            registryInput,
+            keeperLease,
         };
     } catch (error) {
         await rm(root, { recursive: true, force: true });
@@ -346,7 +448,7 @@ function makeMetrics(): CaptureMetrics {
         workerPeak: 0,
         newlyHashedBytes: 0,
         hooks: {
-            scopeClassified: (entryCount) => {
+            scopeEnumerated: (entryCount) => {
                 metrics.enumeratedEntries += entryCount;
             },
             workerStarted: () => {
@@ -376,7 +478,6 @@ function instrumentStore(store: WorkspaceSnapshotStore, metrics: CaptureMetrics)
         store.captureAnchoredGroupAttempt = async (...args) => {
             metrics.workerActive++;
             metrics.workerPeak = Math.max(metrics.workerPeak, metrics.workerActive);
-            metrics.enumeratedEntries += args[1].length;
             try {
                 return await captureAnchoredGroupAttempt(...args);
             } finally {
@@ -384,7 +485,14 @@ function instrumentStore(store: WorkspaceSnapshotStore, metrics: CaptureMetrics)
             }
         };
         try {
-            return await captureFullReconcile(options);
+            return await captureFullReconcile({
+                ...options,
+                observer: {
+                    scopeEnumerated: (entryCount) => {
+                        metrics.enumeratedEntries += entryCount;
+                    },
+                },
+            });
         } finally {
             store.captureAnchoredGroupAttempt = captureAnchoredGroupAttempt;
         }

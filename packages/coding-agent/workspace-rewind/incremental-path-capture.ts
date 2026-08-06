@@ -44,7 +44,7 @@ export interface IncrementalPathCaptureOptions {
 }
 
 export interface IncrementalPathCaptureHooks extends AnchoredReaderBatchHooks {
-    scopeClassified?(entryCount: number): void;
+    scopeEnumerated?(entryCount: number): void;
 }
 
 export interface BasePathKindReader {
@@ -181,9 +181,11 @@ export class IncrementalPathCapture {
             maxEntries: this.maxEntries,
             maxUntrackedBytes: this.maxUntrackedBytes,
             signal,
+            observer: {
+                scopeEnumerated: this.hooks?.scopeEnumerated,
+            },
         });
         if (scope.status === "reconcile") return scope;
-        this.hooks?.scopeClassified?.(scope.entries.length);
         try {
             const baseKinds = this.base.readNodeKinds
                 ? await this.base.readNodeKinds(

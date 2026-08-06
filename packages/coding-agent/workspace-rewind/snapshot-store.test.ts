@@ -1158,6 +1158,73 @@ describe("workspace snapshots", () => {
         expect(whileHeld).toBe("leaf");
     });
 
+    test("reads v2 ancestor, descendant, duplicate, absent, and excluded node kinds in one reader batch", async () => {
+        const fixture = await makeStoreFixture();
+        await mkdir(join(fixture.workspace, "nested"));
+        await writeFile(join(fixture.workspace, "nested", "child.txt"), "child");
+        await writeFile(join(fixture.workspace, ".gitignore"), "ignored.txt\n");
+        await writeFile(join(fixture.workspace, "ignored.txt"), "ignored");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const run = vi.spyOn(fixture.git, "run");
+        run.mockClear();
+
+        const kinds = await fixture.store.readNodeKinds(base, [
+            "nested",
+            "nested/child.txt",
+            "nested/child.txt",
+            "missing.txt",
+            "ignored.txt",
+        ]);
+
+        expect([...kinds]).toEqual([
+            ["nested", "tree"],
+            ["nested/child.txt", "leaf"],
+            ["missing.txt", "absent"],
+            ["ignored.txt", "leaf"],
+        ]);
+        expect(
+            run.mock.calls.filter(([args]) => args[0] === "cat-file" && args[1] === "tree" && args[2] === base.id)
+        ).toHaveLength(1);
+        expect(
+            run.mock.calls.filter(
+                ([args]) => args[0] === "cat-file" && args[1] === "blob" && args[2] === base.scopeManifest
+            )
+        ).toHaveLength(1);
+    });
+
+    test("rejects v1 batches and descendants that traverse a v2 leaf", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "content");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const v1 = await convertSnapshotToV1(fixture, captured.ref, ["README.md"]);
+        const v2 = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+
+        await expect(fixture.store.readNodeKinds(v1, ["README.md"])).rejects.toMatchObject({
+            code: "corrupt_snapshot",
+            message: expect.stringMatching(/v2 base snapshot/i),
+        });
+        await expect(fixture.store.readNodeKinds(v2, ["README.md/child"])).rejects.toMatchObject({
+            code: "corrupt_snapshot",
+            message: expect.stringMatching(/traverses a leaf/i),
+        });
+    });
+
+    test("propagates batch abort reasons and stored reader errors", async () => {
+        const fixture = await makeStoreFixture();
+        await writeFile(join(fixture.workspace, "README.md"), "content");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await convertSnapshotToV2(fixture, captured.ref, captured.coverage);
+        const controller = new AbortController();
+        const abortReason = new Error("cancelled batch read");
+        controller.abort(abortReason);
+
+        await expect(fixture.store.readNodeKinds(base, ["README.md"], controller.signal)).rejects.toBe(abortReason);
+        await expect(
+            fixture.store.readNodeKinds({ ...base, scopeManifest: "0".repeat(40) }, ["README.md"])
+        ).rejects.toMatchObject({ code: "corrupt_snapshot" });
+    });
+
     test("propagates base node cancellation through lock-free manifest Git reads and drains", async () => {
         const fixture = await makeStoreFixture();
         await writeFile(join(fixture.workspace, "README.md"), "content");

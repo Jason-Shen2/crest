@@ -11,6 +11,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
     IncrementalReaderConcurrency,
     runAnchoredReader,
+    runAnchoredReaderBatch,
     type AnchoredReaderEntryIdentity,
     type AnchoredReaderIdentity,
 } from "./anchored-reader";
@@ -24,6 +25,99 @@ afterEach(async () => {
 });
 
 describe("anchored reader", () => {
+    test("keeps observation hook failures outside the reader result", async () => {
+        const entries = [makeBatchEntry("first/file.txt"), makeBatchEntry("second/file.txt")];
+        let started = 0;
+        let settled = 0;
+
+        await expect(
+            runAnchoredReaderBatch(
+                {
+                    rootPath: "/unused",
+                    entries,
+                    maxSingleFileBytes: 1,
+                    maxTotalBytes: 2,
+                    timeoutMs: 1_000,
+                    signal: new AbortController().signal,
+                    hooks: {
+                        workerStarted: () => {
+                            started++;
+                            throw new Error("start observer failed");
+                        },
+                        workerSettled: () => {
+                            settled++;
+                            throw new Error("settle observer failed");
+                        },
+                    },
+                },
+                async (input) =>
+                    input.entries.map((entry) => ({
+                        path: entry.path,
+                        reusedOid: "0".repeat(40),
+                        identity: entry.identity,
+                        hashedBytes: 0,
+                    }))
+            )
+        ).resolves.toHaveLength(2);
+        expect(started).toBe(2);
+        expect(settled).toBe(2);
+    });
+
+    test("preserves reader and abort failures when observation hooks throw", async () => {
+        const readerFailure = new Error("reader failed");
+        let started = 0;
+        let settled = 0;
+        const hooks = {
+            workerStarted: () => {
+                started++;
+                throw new Error("start observer failed");
+            },
+            workerSettled: () => {
+                settled++;
+                throw new Error("settle observer failed");
+            },
+        };
+
+        await expect(
+            runAnchoredReaderBatch(
+                {
+                    rootPath: "/unused",
+                    entries: [makeBatchEntry("first/file.txt")],
+                    maxSingleFileBytes: 1,
+                    maxTotalBytes: 1,
+                    timeoutMs: 1_000,
+                    signal: new AbortController().signal,
+                    hooks,
+                },
+                async () => {
+                    throw readerFailure;
+                }
+            )
+        ).rejects.toBe(readerFailure);
+        expect({ started, settled }).toEqual({ started: 1, settled: 1 });
+
+        const controller = new AbortController();
+        const abortFailure = new Error("cancelled");
+        controller.abort(abortFailure);
+        await expect(
+            runAnchoredReaderBatch(
+                {
+                    rootPath: "/unused",
+                    entries: [makeBatchEntry("first/file.txt")],
+                    maxSingleFileBytes: 1,
+                    maxTotalBytes: 1,
+                    timeoutMs: 1_000,
+                    signal: controller.signal,
+                    hooks,
+                },
+                async (input) => {
+                    throw input.signal.reason;
+                }
+            )
+        ).rejects.toBe(abortFailure);
+        expect({ started, settled }).toEqual({ started: 2, settled: 2 });
+    });
+
     test("uses a fixed batch concurrency and starts no workers for no entries", async () => {
         expect(IncrementalReaderConcurrency).toBe(8);
         let spawnCount = 0;
@@ -519,5 +613,25 @@ function entryIdentity(value: BigIntStats): AnchoredReaderEntryIdentity {
         size: value.size.toString(),
         mtimeNs: value.mtimeNs.toString(),
         ctimeNs: value.ctimeNs.toString(),
+    };
+}
+
+function makeBatchEntry(path: string) {
+    return {
+        path,
+        name: "file.txt",
+        kind: "file" as const,
+        stagingPath: `/unused/${path}`,
+        parentIdentity: { dev: "1", ino: path, birthtimeNs: "1" },
+        identity: {
+            dev: "1",
+            ino: path,
+            birthtimeNs: "1",
+            mode: "33188",
+            nlink: "1",
+            size: "1",
+            mtimeNs: "1",
+            ctimeNs: "1",
+        },
     };
 }

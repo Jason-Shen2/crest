@@ -74,6 +74,7 @@ import {
     type WorkspaceScopeEntry,
     type WorkspaceScopeEntryIdentity,
     type WorkspaceScopeManifest,
+    type WorkspaceScopeObserver,
 } from "./workspace-scope";
 
 export const WorkspaceCheckpointLimits = Object.freeze({
@@ -102,6 +103,7 @@ export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
     requiredPaths?: readonly string[];
     signal?: AbortSignal;
+    observer?: WorkspaceScopeObserver;
 }
 
 export interface WorkspaceSnapshotQuotaStatus {
@@ -381,6 +383,7 @@ export class WorkspaceSnapshotStore {
                         maxEntries: WorkspaceCheckpointLimits.maxEntries,
                         maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
                         signal: controller.signal,
+                        observer: options.observer,
                     }),
                     controller.signal
                 );

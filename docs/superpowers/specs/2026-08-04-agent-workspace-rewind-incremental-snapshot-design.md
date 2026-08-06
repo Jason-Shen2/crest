@@ -446,6 +446,20 @@ Task 10 把性能验证分成两个层次：
 2. opt-in benchmark 才记录本机 p50/p95。脚本默认覆盖 10k/50k/200k entries、deep/wide、
    dirty 0/1/100 和 Session 1/2/4，也允许用 `--entries`、`--iterations` 跑小矩阵。
 
+审查后收紧了 benchmark 的两项计量语义。`enumerated entries` 现在只在 scope enumeration
+边界计数：full capture 统计实际扫描的目录、eligible entry 与 excluded entry，并按真实 retry
+attempt 累加；incremental capture 统计 dirty subtree 中实际访问和分类的目录、leaf 与 absent
+entry。它不再借用 anchored reader 的 leaf 读取次数，因此不会遗漏目录，也不会因读取重试而
+虚增。这个观察回调与 worker start/settle 回调均为 fail-open；回调异常不能改变 capture 的
+成功、原始错误或 abort 结果。
+
+Session 维度也不再用同一 tracker 上的普通并发 caller 模拟。每个 measured row 通过真实
+`WorkspaceTrackerRegistry` 获取 1/2/4 个 lease，每个 lease 调用一次共享 tracker capture，
+并在 `finally` 中逐个 release。fixture 只保留一个 keeper lease 维持 warm baseline，不参与
+计时或 Session 计数。脚本把 cold、representative baseline 和 warm 的 capture timeout 都写成
+结构化 row 并继续后续矩阵；representative baseline 不可用时，九条 dependent warm row 仍以
+`baseline-unavailable` 和完整字段输出。非 timeout 错误继续让进程非零退出。
+
 首轮 100-dirty 测试发现每个 path 都重新打开一次 immutable manifest reader。虽然这不重新
 枚举 workspace，但会丢失 state-tree ancestor cache，并把 deep path 的 Git 读取显著放大。
 最终只增加了一个 batch `readNodeKinds` 入口：一次 capture 使用一个局部
@@ -494,34 +508,35 @@ fixture 的 entry count 包含文件和显式目录。deep 使用 `ceil(log2(ent
 deterministic unique-content cold probe，再用固定 64-bucket content pool 建立可复现 baseline 并
 执行完整 warm matrix。这里明确记录 content cardinality，避免用全部同内容文件掩盖 full capture
 对象成本。以下 `enumerated`、`new objects` 和 `hashed bytes` 是 10 iterations 的 row 总量；
-p50/p95 是每次 1/2/4 个共享 tracker caller 全部完成的边界延迟。
+p50/p95 是每次 1/2/4 个真实 registry lease 全部完成共享 capture 的边界延迟。
 
 | shape | mode | cardinality | dirty | sessions | p50 ms | p95 ms | full | enumerated | worker peak | new objects | hashed bytes |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| deep | full, unique | 9,986 | 0 | 1 | timeout | timeout | 1 | 9,986 | 1 | 20,004 | 0 |
-| deep | full, representative | 64 | 0 | 1 | 9,900.80 | 9,900.80 | 1 | 9,986 | 1 | 160 | 98,298 |
-| deep | warm | 64 | 0 | 1 | 0.01 | 0.09 | 0 | 0 | 0 | 0 | 0 |
+| deep | full, unique | 9,986 | 0 | 1 | timeout | timeout | 1 | 10,000 | 1 | 20,004 | 0 |
+| deep | full, representative | 64 | 0 | 1 | 10,180.33 | 10,180.33 | 1 | 10,000 | 1 | 160 | 98,298 |
+| deep | warm | 64 | 0 | 1 | 0.01 | 0.07 | 0 | 0 | 0 | 0 | 0 |
 | deep | warm | 64 | 0 | 2 | 0.01 | 0.04 | 0 | 0 | 0 | 0 | 0 |
-| deep | warm | 64 | 0 | 4 | 0.02 | 0.05 | 0 | 0 | 0 | 0 | 0 |
-| deep | warm | 64 | 1 | 1 | 3,146.58 | 3,449.85 | 0 | 10 | 1 | 340 | 70 |
-| deep | warm | 64 | 1 | 2 | 3,148.53 | 3,257.43 | 0 | 10 | 1 | 340 | 70 |
-| deep | warm | 64 | 1 | 4 | 3,178.48 | 3,317.43 | 0 | 10 | 1 | 340 | 70 |
-| deep | warm | 64 | 100 | 1 | 14,826.60 | 15,158.22 | 0 | 1,000 | 1 | 2,320 | 9,900 |
-| deep | warm | 64 | 100 | 2 | 14,816.90 | 15,399.30 | 0 | 1,000 | 1 | 2,320 | 9,900 |
-| deep | warm | 64 | 100 | 4 | 14,881.72 | 15,856.17 | 0 | 1,000 | 1 | 2,320 | 9,900 |
-| wide | full, unique | 9,992 | 0 | 1 | timeout | timeout | 1 | 9,992 | 1 | 20,004 | 0 |
-| wide | full, representative | 64 | 0 | 1 | 10,275.72 | 10,275.72 | 1 | 9,992 | 1 | 148 | 98,352 |
-| wide | warm | 64 | 0 | 1 | 0.00 | 0.03 | 0 | 0 | 0 | 0 | 0 |
-| wide | warm | 64 | 0 | 2 | 0.00 | 0.03 | 0 | 0 | 0 | 0 | 0 |
-| wide | warm | 64 | 0 | 4 | 0.01 | 0.03 | 0 | 0 | 0 | 0 | 0 |
-| wide | warm | 64 | 1 | 1 | 958.86 | 1,194.53 | 0 | 10 | 1 | 80 | 70 |
-| wide | warm | 64 | 1 | 2 | 944.82 | 1,000.69 | 0 | 10 | 1 | 80 | 70 |
-| wide | warm | 64 | 1 | 4 | 947.95 | 1,012.92 | 0 | 10 | 1 | 80 | 70 |
-| wide | warm | 64 | 100 | 1 | 14,127.79 | 15,510.76 | 0 | 1,000 | 8 | 2,200 | 9,900 |
-| wide | warm | 64 | 100 | 2 | 14,250.36 | 15,517.92 | 0 | 1,000 | 8 | 2,200 | 9,900 |
-| wide | warm | 64 | 100 | 4 | 14,267.47 | 16,081.26 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+| deep | warm | 64 | 0 | 4 | 0.02 | 0.03 | 0 | 0 | 0 | 0 | 0 |
+| deep | warm | 64 | 1 | 1 | 3,150.33 | 3,432.64 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 1 | 2 | 3,105.72 | 3,266.15 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 1 | 4 | 3,205.26 | 3,548.44 | 0 | 10 | 1 | 340 | 70 |
+| deep | warm | 64 | 100 | 1 | 14,822.36 | 15,397.52 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| deep | warm | 64 | 100 | 2 | 19,212.79 | 21,625.37 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| deep | warm | 64 | 100 | 4 | 18,413.55 | 21,272.26 | 0 | 1,000 | 1 | 2,320 | 9,900 |
+| wide | full, unique | 9,992 | 0 | 1 | timeout | timeout | 1 | 10,000 | 1 | 20,004 | 0 |
+| wide | full, representative | 64 | 0 | 1 | 12,209.81 | 12,209.81 | 1 | 10,000 | 1 | 148 | 98,352 |
+| wide | warm | 64 | 0 | 1 | 0.00 | 0.02 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 0 | 2 | 0.00 | 0.02 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 0 | 4 | 0.01 | 0.02 | 0 | 0 | 0 | 0 | 0 |
+| wide | warm | 64 | 1 | 1 | 1,160.12 | 1,463.86 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 1 | 2 | 1,130.69 | 1,702.45 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 1 | 4 | 1,197.43 | 1,372.72 | 0 | 10 | 1 | 80 | 70 |
+| wide | warm | 64 | 100 | 1 | 16,978.32 | 18,752.24 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+| wide | warm | 64 | 100 | 2 | 17,683.89 | 19,054.51 | 0 | 1,000 | 8 | 2,200 | 9,900 |
+| wide | warm | 64 | 100 | 4 | 17,322.51 | 19,088.67 | 0 | 1,000 | 8 | 2,200 | 9,900 |
 
-unique-content cold probe 在生产 30 秒 capture deadline 内没有完成。表中的 timeout 是结构化
+unique-content cold probe 在生产 30 秒 capture deadline 内没有完成（本次 deep/wide 结构化
+timeout row 分别在 38,284.07 ms 和 32,287.12 ms 返回，包括 timeout 后的资源清理）。表中的 timeout 是结构化
 结果，不是提高 timeout 后得到的数字；失败后的 object inventory 证明该路径创建约 20k loose
 objects，full capture/object durability 仍是 rollout limitation。64-bucket baseline 仅用于建立
 真实 tracker 以测 warm matrix，不能替代或粉饰 unique-content cold latency。

@@ -916,6 +916,12 @@ Expected: PASS；这些测试是默认 CI gate，不使用 wall-clock 阈值。
 
 脚本生成 10k/50k/200k entries 的 deep 与 wide fixtures，分别测 full baseline 和 warm incremental 的 pre-turn/terminal latency，dirty paths 为 0/1/100，并测 1/2/4 Session。输出 JSON 与人类可读 table，字段固定为：entry count、directory count、dirty count、session count、p50、p95、full reconcile count、enumerated entries、worker peak、new objects 和 newly hashed bytes。
 
+`enumerated entries` 在 scope enumeration 边界统计真实目录、leaf、absent 和 excluded entry；不得用
+anchored reader leaf 数近似。Session 行必须通过真实 `WorkspaceTrackerRegistry` lease 测量，每个 lease
+调用一次共享 tracker 并在 row 的 `finally` 中 release。cold、representative baseline 和 warm timeout
+都输出完整结构化 row 并继续矩阵；representative baseline 不可用时仍输出九条
+`baseline-unavailable` warm row，非 timeout 错误保持非零退出。
+
 - [ ] **Step 4: 运行本地小矩阵和完整 correctness suite**
 
 Run:

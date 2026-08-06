@@ -32,6 +32,61 @@ const execFileAsync = promisify(execFile);
 const TwoMiB = 2 * 1024 * 1024;
 
 describe("discoverWorkspaceScope", () => {
+    test("observes every enumerated full and incremental entry without changing capture semantics", async () => {
+        const workspace = join(root, "workspace");
+        await mkdir(join(workspace, "nested"), { recursive: true });
+        await writeFile(join(workspace, "nested", "child.txt"), "child");
+        await writeFile(join(workspace, "top.txt"), "top");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+        const fullCounts: number[] = [];
+        const scope = await discoverWorkspaceScope({
+            identity,
+            git: gitRunner,
+            maxEntries: 200_000,
+            maxUntrackedBytes: TwoMiB,
+            observer: {
+                scopeEnumerated: (count: number) => fullCounts.push(count),
+            },
+        });
+        expect(fullCounts).toEqual([3]);
+
+        const incrementalCounts: number[] = [];
+        const incremental = await classifyIncrementalWorkspacePaths({
+            identity,
+            git: gitRunner,
+            scope: scope.manifest,
+            paths: ["nested"],
+            maxEntries: 200_000,
+            maxUntrackedBytes: TwoMiB,
+            observer: {
+                scopeEnumerated: (count: number) => incrementalCounts.push(count),
+            },
+        });
+        expect(incremental).toMatchObject({ status: "captured" });
+        expect(incrementalCounts).toEqual([2]);
+    });
+
+    test("does not let enumeration observation failures change classification", async () => {
+        const workspace = join(root, "workspace");
+        await mkdir(workspace, { recursive: true });
+        await writeFile(join(workspace, "file.txt"), "value");
+        const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+
+        await expect(
+            discoverWorkspaceScope({
+                identity,
+                git: gitRunner,
+                maxEntries: 200_000,
+                maxUntrackedBytes: TwoMiB,
+                observer: {
+                    scopeEnumerated: () => {
+                        throw new Error("observer failed");
+                    },
+                },
+            })
+        ).resolves.toMatchObject({ entries: [{ path: "file.txt" }] });
+    });
+
     test("returns raw-safe transient directory evidence that detects a newly added name", async () => {
         const workspace = join(root, "workspace");
         await mkdir(join(workspace, "nested"), { recursive: true });

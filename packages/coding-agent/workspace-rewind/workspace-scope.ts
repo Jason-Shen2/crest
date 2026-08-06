@@ -9,6 +9,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 import { hasReusableAnchoredIdentity } from "./anchored-reader";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
+import { observeSafely } from "./observation";
 import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
 
@@ -52,6 +53,11 @@ export interface WorkspaceScopeInput {
     maxEntries: number;
     maxUntrackedBytes: number;
     signal?: AbortSignal;
+    observer?: WorkspaceScopeObserver;
+}
+
+export interface WorkspaceScopeObserver {
+    scopeEnumerated?(entryCount: number): void;
 }
 
 export interface WorkspaceScopeManifestPath {
@@ -171,6 +177,7 @@ interface WorkspaceScopeAttempt {
     scope: WorkspaceScope;
     git?: GitClassification;
     directorySnapshots: WorkspaceScopeDirectoryEvidence[];
+    scannedEntryCount: number;
 }
 
 const ScopeGitTimeoutMs = 30_000;
@@ -196,6 +203,7 @@ export async function discoverWorkspaceScope(input: WorkspaceScopeInput): Promis
     for (let attempt = 0; attempt < 2; attempt++) {
         assertScopeActive(input.signal);
         const result = await discoverWorkspaceScopeAttempt(input);
+        observeSafely(() => input.observer?.scopeEnumerated?.(result.scannedEntryCount));
         if (await verifyWorkspaceScope(input, result)) {
             return result.scope;
         }
@@ -211,6 +219,7 @@ export async function classifyIncrementalWorkspacePaths(input: {
     maxEntries: number;
     maxUntrackedBytes: number;
     signal?: AbortSignal;
+    observer?: WorkspaceScopeObserver;
 }): Promise<IncrementalWorkspaceScopeResult> {
     if (input.paths.length === 0) return { status: "captured", entries: [], pathKinds: [] };
     validateLimits(input.maxEntries, input.maxUntrackedBytes);
@@ -218,6 +227,7 @@ export async function classifyIncrementalWorkspacePaths(input: {
     if (paths.some((path) => invalidatesWorkspaceScope(path, input.scope))) {
         return { status: "reconcile", reason: "scope-invalidated" };
     }
+    let enumeratedEntryCount = 0;
     try {
         const rootBytes = Buffer.from(input.identity.canonicalRoot);
         await verifyCanonicalWorkspaceIdentity(input.identity);
@@ -228,10 +238,18 @@ export async function classifyIncrementalWorkspacePaths(input: {
         const pathKinds: Array<{ path: string; kind: "absent" | "leaf" | "tree" }> = [];
         let visited = 0;
         for (const path of paths) {
-            const result = await enumerateIncrementalPath(rootBytes, Buffer.from(path), input, () => {
-                visited += 1;
-                if (visited > input.maxEntries) throw new WorkspaceBudgetExceeded();
-            });
+            const result = await enumerateIncrementalPath(
+                rootBytes,
+                Buffer.from(path),
+                input,
+                () => {
+                    visited += 1;
+                    if (visited > input.maxEntries) throw new WorkspaceBudgetExceeded();
+                },
+                () => {
+                    enumeratedEntryCount += 1;
+                }
+            );
             if (result === "scope-invalidated") return { status: "reconcile", reason: result };
             if (result === "unsafe-evidence") return { status: "reconcile", reason: result };
             candidates.push(...result);
@@ -290,6 +308,8 @@ export async function classifyIncrementalWorkspacePaths(input: {
         if (isUnsafeIncrementalEvidence(error)) return { status: "reconcile", reason: "unsafe-evidence" };
         if (isScopeInvalidation(error)) return { status: "reconcile", reason: "scope-invalidated" };
         return { status: "reconcile", reason: "unsafe-evidence" };
+    } finally {
+        observeSafely(() => input.observer?.scopeEnumerated?.(enumeratedEntryCount));
     }
 }
 
@@ -383,11 +403,13 @@ async function enumerateIncrementalPath(
         signal?: AbortSignal;
         maxEntries: number;
     },
-    visit: () => void
+    visit: () => void,
+    observeEntry: () => void
 ): Promise<IncrementalWorkspaceScopeEntry[] | "scope-invalidated" | "unsafe-evidence"> {
     assertScopeActive(input.signal);
     const path = decodePath(pathBytes);
     if (path == null) return "unsafe-evidence";
+    observeEntry();
     const parentBytes = dirnameBytes(pathBytes);
     const parent = await readSafeIncrementalParent(rootBytes, parentBytes);
     let metadata: BigIntStats;
@@ -419,7 +441,7 @@ async function enumerateIncrementalPath(
         }
         const childPath = appendPath(pathBytes, child.name);
         if (decodePath(childPath) == null) return "unsafe-evidence";
-        const result = await enumerateIncrementalPath(rootBytes, childPath, input, visit);
+        const result = await enumerateIncrementalPath(rootBytes, childPath, input, visit, observeEntry);
         if (typeof result === "string") return result;
         entries.push(...result);
     }
@@ -698,6 +720,7 @@ async function discoverWorkspaceScopeAttempt(input: WorkspaceScopeInput): Promis
     return {
         git,
         directorySnapshots: state.directorySnapshots,
+        scannedEntryCount: state.scannedEntryCount,
         scope: {
             root: input.identity.canonicalRoot,
             entries: state.entries,
