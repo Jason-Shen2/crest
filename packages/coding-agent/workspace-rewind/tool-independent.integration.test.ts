@@ -4,7 +4,7 @@
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import type { AgentHarness, AgentHarnessEvent } from "@crest/agent/harness/types";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -233,6 +233,22 @@ describe("turn-boundary workspace capture is tool-independent", () => {
             status: "unavailable",
             reasonCode: "hosted_pty_running",
         });
+        await value.manager.dispose();
+    }, 30_000);
+
+    it("records workspace incarnation replacement as unavailable instead of an available empty checkpoint", async () => {
+        const value = await makeFixture("incarnation-replaced");
+        const displaced = `${value.workspaceRoot}-displaced`;
+        const checkpoint = await runTurn(value, "incarnation-replaced", async () => {
+            await rename(value.workspaceRoot, displaced);
+            await mkdir(value.workspaceRoot);
+        });
+
+        expect(checkpoint).toMatchObject({
+            status: "unavailable",
+            reasonCode: "git_unavailable",
+        });
+        expect(checkpoint).not.toHaveProperty("changes");
         await value.manager.dispose();
     }, 30_000);
 

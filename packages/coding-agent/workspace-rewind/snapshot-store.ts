@@ -714,6 +714,19 @@ export class WorkspaceSnapshotStore {
             }
             const changes: WorkspacePathChangeV1[] = [];
             for (const mutation of ownedMutations) {
+                if (mutation.state.state === "absent") {
+                    const existingPaths = await manifest.collectExplicitPathsUnder(mutation.path);
+                    if (existingPaths.length > 0) {
+                        for (const path of existingPaths) {
+                            changes.push({
+                                path,
+                                before: await manifest.readPathState(path),
+                                after: { state: "absent" },
+                            });
+                        }
+                        continue;
+                    }
+                }
                 changes.push({
                     path: mutation.path,
                     before: await manifest.readPathState(mutation.path),

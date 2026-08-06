@@ -298,6 +298,29 @@ export class StoredManifestReader {
         });
     }
 
+    async collectExplicitPathsUnder(path: string): Promise<string[]> {
+        validateWorkspaceRelativePath(path);
+        if (this.manifest.schemaversion === 1) {
+            const prefix = `${path}/`;
+            return [...this.v1States!.keys()]
+                .filter((candidate) => candidate === path || candidate.startsWith(prefix))
+                .sort(comparePathBytes);
+        }
+        const segments = path.split("/");
+        let treeOid = this.manifest.statetree;
+        for (let index = 0; index < segments.length; index++) {
+            const entry = (await this.readTreeEntries(treeOid)).get(segments[index]!);
+            if (!entry) return [];
+            if (entry.mode !== "40000") return index === segments.length - 1 ? [path] : [];
+            treeOid = entry.oid;
+        }
+        const paths = new Set<string>();
+        await this.walkV2LeafOids(treeOid, path, async (candidate) => {
+            paths.add(candidate);
+        });
+        return [...paths].sort(comparePathBytes);
+    }
+
     async readV2PathState(path: string): Promise<CapturedPathStateV1> {
         const segments = path.split("/");
         let treeOid = this.manifest.schemaversion === 2 ? this.manifest.statetree : "";

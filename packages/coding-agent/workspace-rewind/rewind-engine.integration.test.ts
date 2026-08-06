@@ -28,8 +28,10 @@ import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewi
 import { decodeWorkspaceStateEntry } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
+import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery } from "./workspace-recovery";
+import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 
 const cleanupRoots: string[] = [];
 
@@ -154,6 +156,80 @@ async function appendAvailableCheckpoint(
 }
 
 describe("WorkspaceRewindEngine real filesystem transaction", () => {
+    it("rewinds an incremental directory rename checkpoint with the same path set as a full snapshot", async () => {
+        const value = await fixture();
+        await mkdir(join(value.workspaceRoot, "old-dir", "nested"), { recursive: true });
+        await writeFile(join(value.workspaceRoot, "old-dir", "a.txt"), "a");
+        await writeFile(join(value.workspaceRoot, "old-dir", "nested", "b.txt"), "b");
+        const feed = new BoundaryChangeFeed();
+        const tracker = new WorkspaceSnapshotTracker({
+            store: value.store,
+            feed,
+            state: {
+                load: async () => ({ status: "untrusted" }),
+                publish: async () => undefined,
+            },
+        });
+        try {
+            const before = await tracker.capture({ profile: "pre-turn" });
+            const turnId = await value.session.appendMessage({
+                role: "user",
+                content: "rename directory",
+                timestamp: Date.now(),
+            } as never);
+            await rename(join(value.workspaceRoot, "old-dir"), join(value.workspaceRoot, "new-dir"));
+            feed.record(["old-dir", "new-dir"]);
+            const after = await tracker.capture({ profile: "terminal" });
+            const changes = await tracker.diff(before.ref, after.ref);
+            const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
+                schemaVersion: 1,
+                status: "available",
+                originSessionId: value.metadata.id,
+                turnId,
+                workspaceIdentity: value.identity.workspaceIdentity,
+                workspaceIncarnation: value.identity.workspaceIncarnation,
+                before: before.ref,
+                after: after.ref,
+                changes,
+                coverage: after.coverage,
+            } satisfies WorkspaceCheckpointV1);
+
+            expect(changes.map((change) => change.path)).toEqual([
+                "new-dir/a.txt",
+                "new-dir/nested/b.txt",
+                "old-dir/a.txt",
+                "old-dir/nested/b.txt",
+            ]);
+            const preview = await value.engine.previewRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: checkpointId,
+                targetTurnId: turnId,
+            });
+            await value.engine.applyRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.identity,
+                semanticLeafId: checkpointId,
+                targetTurnId: turnId,
+                mode: "normal",
+                confirmation: value.confirmations.take(preview.confirmationToken!),
+            });
+
+            expect(await readFile(join(value.workspaceRoot, "old-dir", "a.txt"), "utf8")).toBe("a");
+            expect(await readFile(join(value.workspaceRoot, "old-dir", "nested", "b.txt"), "utf8")).toBe("b");
+            await expect(lstat(join(value.workspaceRoot, "new-dir", "a.txt"))).rejects.toMatchObject({
+                code: "ENOENT",
+            });
+            await expect(lstat(join(value.workspaceRoot, "new-dir", "nested", "b.txt"))).rejects.toMatchObject({
+                code: "ENOENT",
+            });
+        } finally {
+            await tracker.dispose();
+        }
+    }, 30_000);
+
     it("composes turn Undo state into a later conversation Revert without restoring stale turn bytes", async () => {
         const value = await fixture();
         const file = join(value.workspaceRoot, "sequence.txt");
@@ -574,3 +650,50 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
     }, 30_000);
 });
+
+class BoundaryChangeFeed implements WorkspaceChangeFeed {
+    paths: string[] = [];
+    initialized = false;
+    cursor = 0;
+
+    record(paths: readonly string[]): void {
+        this.paths = [...new Set([...this.paths, ...paths])].sort((left, right) =>
+            Buffer.compare(Buffer.from(left), Buffer.from(right))
+        );
+    }
+
+    async prepareForReconcile(): Promise<void> {}
+
+    async initializeAfterReconcile(): Promise<void> {
+        this.initialized = true;
+        this.paths = [];
+    }
+
+    async readChanges(): Promise<WorkspaceChangeRead> {
+        if (!this.initialized) return { status: "gap", reason: "cold-start" };
+        return this.complete(this.paths);
+    }
+
+    async advanceCandidate(_candidateCursor: string): Promise<WorkspaceChangeRead> {
+        return this.complete([]);
+    }
+
+    async commitCursor(_candidateCursor: string): Promise<void> {
+        this.paths = [];
+    }
+
+    markGap(): void {
+        this.initialized = false;
+    }
+
+    async dispose(): Promise<void> {}
+
+    complete(paths: string[]): WorkspaceChangeRead {
+        return {
+            status: "complete",
+            changedPaths: [...paths],
+            scopeInvalidated: false,
+            candidateCursor: (++this.cursor).toString(16).padStart(32, "0"),
+        };
+    }
+}
