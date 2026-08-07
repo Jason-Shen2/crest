@@ -226,36 +226,56 @@ ancestor subtree's size without adding another durable index or recovery state m
 - Create: `packages/coding-agent/workspace-rewind/workspace-candidates.test.ts`
 - Modify: `packages/coding-agent/workspace-rewind/workspace-change-feed.ts`
 - Test: `packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts`
+- Transition: `packages/coding-agent/workspace-rewind/workspace-snapshot-tracker.ts`
+- Transition tests: `packages/coding-agent/workspace-rewind/workspace-snapshot-tracker.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/git-runner.ts`
+- Regression tests: `packages/coding-agent/workspace-rewind/git-runner.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/multi-session.integration.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/snapshot-equivalence.integration.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/snapshot-performance.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/workspace-change-feed.integration.test.ts`
 
-- [ ] **Step 1: Write failing Git tests**
+- [x] **Step 1: Write failing Git tests**
 
 Cover dirty tracked, staged, untracked, deleted, checkout/reset to clean, ignored, nested repository, and Shadow head differing from source HEAD. Output is canonical, unique, byte-order sorted.
 
-- [ ] **Step 2: Write failing non-Git tests**
+- [x] **Step 2: Write failing non-Git tests**
 
 Cover one cold full baseline, warm dirty hints, overflow reconciliation, and restart ignoring old cursor artifacts.
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
 ```
 
-- [ ] **Step 4: Implement candidates**
+- [x] **Step 4: Implement candidates**
 
 Git candidates are the union of user Git status, Shadow-tree/source-HEAD differences, and warm in-memory hints. Non-Git uses one baseline then in-memory hints. Every hint is re-read and validated; gap/overflow reconciles or returns unavailable.
 
-- [ ] **Step 5: Remove cursor authority from the feed API**
+- [x] **Step 5: Remove cursor authority from the feed API**
 
 Expose only `start()`, `drain()`, `isTrusted()`, and `dispose()`. Leave the old storage file until Task 9 proves no callers remain.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
 git add packages/coding-agent/workspace-rewind/workspace-candidates.ts packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
 git commit -m "feat(agent): discover workspace delta candidates"
 ```
+
+**Implementation note (2026-08-08):** The feed is now an in-memory, generation-fenced hint source with
+no persisted cursor or authority. Git discovery preserves provenance: user status and private-tree
+differences are never removed by current ignore rules; ignore filtering applies only to watcher hints.
+Candidate processing performs one bounded post-processing retry, merges events observed during async path
+and ignore checks, and fails closed if changes continue. Tests use separate user and private object databases;
+the lifecycle layer in Task 5 must make `sourceHeadTree` and `shadowTree` readable from the private database
+before calling discovery, while discovery itself remains read-only. Built-in fsmonitor is attempted through a
+fixed safe option and falls back to disabled fsmonitor. Non-Git restart deliberately performs a full reconcile;
+the transitional tracker keeps no durable cursor state and will be deleted at the authority cutover.
 
 ### Task 5: Tool-independent turn lifecycle
 
