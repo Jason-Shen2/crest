@@ -43,14 +43,17 @@ function makeFixture(options: { hosted?: boolean } = {}) {
     } as unknown as AgentHarness;
     let leafId: string | null = null;
     const entries: SessionTreeEntry[] = [];
-    const session = {
-        getLeafId: vi.fn(async () => leafId),
-        getEntries: vi.fn(async () => [...entries]),
-        appendEntries: vi.fn(async (next: SessionTreeEntry[], appendOptions?: { expectedLeafId?: string | null }) => {
+    const appendEntries = vi.fn(
+        async (next: SessionTreeEntry[], appendOptions?: { expectedLeafId?: string | null }) => {
             expect(appendOptions).toEqual({ expectedLeafId: leafId });
             entries.push(...next);
             leafId = next.at(-1)?.id ?? leafId;
-        }),
+        }
+    );
+    const session = {
+        getLeafId: vi.fn(async () => leafId),
+        getEntries: vi.fn(async () => [...entries]),
+        appendEntries,
     } as unknown as Session;
     const base = snapshot(OidA);
     const after = snapshot(OidB);
@@ -119,6 +122,7 @@ function makeFixture(options: { hosted?: boolean } = {}) {
         release,
         pending,
         entries,
+        appendEntries,
         onCheckpointCommitted,
         async emit(event: AgentHarnessEvent) {
             for (const listener of listeners) await listener(event);
@@ -331,6 +335,84 @@ describe("WorkspaceCheckpointManager", () => {
 
         await expect(fixture.manager.dispose()).rejects.toBe(cleanupFailure);
 
+        expect(fixture.release).toHaveBeenCalledOnce();
+        await expect(fixture.manager.dispose()).resolves.toBeUndefined();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledTimes(2);
+        expect(fixture.release).toHaveBeenCalledOnce();
+    });
+
+    it("retires a live pending boundary when recording the terminal after snapshot fails", async () => {
+        const fixture = makeFixture();
+        const persistenceFailure = new Error("record after failed");
+        fixture.pending.recordAfter.mockRejectedValueOnce(persistenceFailure);
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        await expect(finishBoundary(fixture)).rejects.toBe(persistenceFailure);
+
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledOnce();
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.manager.isBusy()).toBe(false);
+        await fixture.manager.dispose();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledOnce();
+    });
+
+    it("retires a live pending boundary when the Session checkpoint append fails", async () => {
+        const fixture = makeFixture();
+        const persistenceFailure = new Error("session append failed");
+        fixture.appendEntries.mockRejectedValueOnce(persistenceFailure);
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        await expect(finishBoundary(fixture)).rejects.toBe(persistenceFailure);
+
+        expect(fixture.pending.recordAfter).toHaveBeenCalledOnce();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledOnce();
+        expect(fixture.pending.complete).not.toHaveBeenCalled();
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.manager.isBusy()).toBe(false);
+    });
+
+    it("does not duplicate an appended checkpoint when pending completion fails", async () => {
+        const fixture = makeFixture();
+        const persistenceFailure = new Error("pending completion failed");
+        fixture.pending.complete.mockRejectedValueOnce(persistenceFailure);
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        await expect(finishBoundary(fixture)).rejects.toBe(persistenceFailure);
+
+        expect(fixture.entries).toHaveLength(1);
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledOnce();
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.manager.isBusy()).toBe(false);
+        await fixture.manager.dispose();
+        expect(fixture.entries).toHaveLength(1);
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledOnce();
+    });
+
+    it("retains a cleanup-only boundary for disposal when terminal retirement also fails", async () => {
+        const fixture = makeFixture();
+        const persistenceFailure = new Error("record after failed");
+        const cleanupFailure = new Error("pending retirement failed");
+        fixture.pending.recordAfter.mockRejectedValueOnce(persistenceFailure);
+        fixture.pending.retireUnavailable.mockRejectedValueOnce(cleanupFailure);
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        const terminalError = await finishBoundary(fixture).catch((error: unknown) => error);
+
+        expect(terminalError).toBeInstanceOf(AggregateError);
+        expect((terminalError as AggregateError).errors).toEqual([persistenceFailure, cleanupFailure]);
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.manager.isBusy()).toBe(false);
+
+        await fixture.manager.dispose();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledTimes(2);
         expect(fixture.release).toHaveBeenCalledOnce();
     });
 

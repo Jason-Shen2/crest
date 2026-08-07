@@ -67,6 +67,7 @@ function makeStore() {
         },
     });
     const store = {
+        storeRoot: "process-local",
         identity: {
             workspaceIdentity: WorkspaceIdentity,
             workspaceIncarnation: WorkspaceIncarnation,
@@ -74,6 +75,18 @@ function makeStore() {
         mutationLog: {
             readHead: vi.fn(async () => head),
             read: vi.fn(async (commit: string) => ({ tree: trees.get(commit) })),
+            prepare: vi.fn(async (input: { tree: string; expectedHead?: string }) => {
+                const commit = input.tree === "8".repeat(40) ? TurnCommit : ExternalCommit;
+                trees.set(commit, input.tree);
+                return { commit, expectedHead: input.expectedHead };
+            }),
+            publishPrepared: vi.fn(async (prepared: { commit: string; expectedHead?: string }) => {
+                if (head !== prepared.expectedHead) {
+                    throw new Error("Workspace mutation head moved");
+                }
+                head = prepared.commit;
+                return prepared.commit;
+            }),
             append: vi.fn(async (input: { tree: string; expectedHead?: string }) => {
                 if (head !== input.expectedHead) {
                     throw new Error("Workspace mutation head moved");
@@ -85,7 +98,7 @@ function makeStore() {
             }),
         },
         publishCommitSnapshot: vi.fn(async (input: { commit: string }) => {
-            const ref = snapshot(input.commit, input.commit === TurnCommit ? "8".repeat(40) : "7".repeat(40));
+            const ref = snapshot(input.commit, trees.get(input.commit));
             refs.set(input.commit, ref);
             return ref;
         }),
@@ -135,7 +148,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const current = await source.readHead();
 
         expect(legacyCapture.capture).toHaveBeenCalledOnce();
-        expect(fixture.store.mutationLog.append).toHaveBeenCalledWith({
+        expect(fixture.store.mutationLog.prepare).toHaveBeenCalledWith({
             tree: captured.tree,
             metadata: {
                 schemaversion: 1,
@@ -146,6 +159,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         expect(current.ref.id).toBe(ExternalCommit);
         expect(current.coverage).toEqual(Coverage);
+        expect(fixture.store.mutationLog.publishPrepared).toHaveBeenCalledOnce();
     });
 
     it("shares initialization while the winning authority is not published yet", async () => {
@@ -192,7 +206,8 @@ describe("Workspace checkpoint snapshot source", () => {
             expect.objectContaining({ ref: expect.objectContaining({ id: ExternalCommit }) }),
         ]);
         expect(legacyCapture.capture).toHaveBeenCalledOnce();
-        expect(fixture.store.mutationLog.append).toHaveBeenCalledOnce();
+        expect(fixture.store.mutationLog.prepare).toHaveBeenCalledOnce();
+        expect(fixture.store.mutationLog.publishPrepared).toHaveBeenCalledOnce();
     });
 
     it("opens an existing commit-backed head without scanning the Workspace", async () => {
@@ -236,12 +251,12 @@ describe("Workspace checkpoint snapshot source", () => {
             turnId: "turn-a",
         });
 
-        expect(fixture.store.mutationLog.append).toHaveBeenNthCalledWith(1, {
+        expect(fixture.store.mutationLog.prepare).toHaveBeenNthCalledWith(1, {
             expectedHead: BaseCommit,
             tree: externalCapture.tree,
             metadata: expect.objectContaining({ kind: "external" }),
         });
-        expect(fixture.store.mutationLog.append).toHaveBeenNthCalledWith(2, {
+        expect(fixture.store.mutationLog.prepare).toHaveBeenNthCalledWith(2, {
             expectedHead: ExternalCommit,
             tree: turnCapture.tree,
             metadata: expect.objectContaining({ kind: "agent-turn", sessionid: "session-a", turnid: "turn-a" }),
@@ -269,7 +284,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
 
         expect(result).toEqual({ after: base, coverage: Coverage, changes: [] });
-        expect(fixture.store.mutationLog.append).not.toHaveBeenCalled();
+        expect(fixture.store.mutationLog.prepare).not.toHaveBeenCalled();
     });
 
     it("records a same-tree turn when checkpoint scope semantics changed", async () => {
@@ -316,7 +331,7 @@ describe("Workspace checkpoint snapshot source", () => {
             turnId: "turn-a",
         });
 
-        expect(fixture.store.mutationLog.append).toHaveBeenCalledWith(
+        expect(fixture.store.mutationLog.prepare).toHaveBeenCalledWith(
             expect.objectContaining({
                 expectedHead: BaseCommit,
                 tree: base.tree,
@@ -326,23 +341,123 @@ describe("Workspace checkpoint snapshot source", () => {
         expect(result.after.id).toBe(ExternalCommit);
     });
 
-    it("repairs a head whose commit publication was interrupted only when live state still matches", async () => {
+    it("fails closed for an incomplete head without borrowing live scope metadata", async () => {
         const fixture = makeStore();
         const tree = "7".repeat(40);
         fixture.seedHeadWithoutAssociation(ExternalCommit, tree);
         const captured = snapshot("6".repeat(40), tree);
+        fixture.setMetadata(captured.id, {
+            scope: {
+                schemaVersion: 1,
+                policy: {
+                    maxEntries: 200_000,
+                    maxUntrackedBytes: 2 * 1024 ** 2,
+                    gitGlobalExcludes: "disabled-by-isolated-runner",
+                },
+                ignoreInputs: ["different-scope"],
+                nestedRepositoryBoundaries: [],
+            },
+            coverage: {
+                complete: false,
+                eligibleEntryCount: 2,
+                exclusions: [{ path: "different-scope", reason: "ignored" }],
+            },
+        });
         const legacyCapture = {
             capture: vi.fn(async () => ({ ref: captured, coverage: Coverage })),
         };
 
+        await expect(
+            initializeWorkspaceCheckpointSnapshotSource({
+                store: fixture.store as never,
+                legacyCapture,
+            })
+        ).rejects.toThrow(/missing commit snapshot/i);
+        expect(legacyCapture.capture).not.toHaveBeenCalled();
+        expect(fixture.store.publishCommitSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("keeps the previous complete head authoritative until the next association is published", async () => {
+        const fixture = makeStore();
+        fixture.seed(snapshot(BaseCommit, "4".repeat(40)));
+        const captured = snapshot("6".repeat(40), "7".repeat(40));
+        const legacyCapture = {
+            capture: vi.fn(async () => ({ ref: captured, coverage: Coverage })),
+        };
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
             legacyCapture,
         });
+        let markAssociationStarted!: () => void;
+        const associationStarted = new Promise<void>((resolve) => {
+            markAssociationStarted = resolve;
+        });
+        let releaseAssociation!: () => void;
+        const associationReleased = new Promise<void>((resolve) => {
+            releaseAssociation = resolve;
+        });
+        const publishCommitSnapshot = fixture.store.publishCommitSnapshot.getMockImplementation()!;
+        fixture.store.publishCommitSnapshot.mockImplementation(async (input) => {
+            markAssociationStarted();
+            await associationReleased;
+            return await publishCommitSnapshot(input);
+        });
 
-        await expect(source.readHead()).resolves.toMatchObject({ ref: { id: ExternalCommit, tree } });
-        expect(fixture.store.publishCommitSnapshot).toHaveBeenCalledWith(
-            expect.objectContaining({ commit: ExternalCommit })
+        const synchronization = source.synchronizeExternal();
+        await associationStarted;
+
+        await expect(fixture.store.mutationLog.readHead()).resolves.toBe(BaseCommit);
+        await expect(source.readHead()).resolves.toMatchObject({ ref: { id: BaseCommit } });
+
+        releaseAssociation();
+        await expect(synchronization).resolves.toMatchObject({ ref: { id: ExternalCommit } });
+        await expect(fixture.store.mutationLog.readHead()).resolves.toBe(ExternalCommit);
+    });
+
+    it("lets a cross-process CAS loser adopt only a completely associated winner", async () => {
+        const fixture = makeStore();
+        const loserCapture = snapshot("6".repeat(40), "7".repeat(40));
+        const winnerCapture = snapshot("9".repeat(40), "8".repeat(40));
+        let markLoserAssociationStarted!: () => void;
+        const loserAssociationStarted = new Promise<void>((resolve) => {
+            markLoserAssociationStarted = resolve;
+        });
+        let releaseLoserAssociation!: () => void;
+        const loserAssociationReleased = new Promise<void>((resolve) => {
+            releaseLoserAssociation = resolve;
+        });
+        const publishCommitSnapshot = fixture.store.publishCommitSnapshot.getMockImplementation()!;
+        fixture.store.publishCommitSnapshot.mockImplementation(async (input) => {
+            if (input.commit === ExternalCommit) {
+                markLoserAssociationStarted();
+                await loserAssociationReleased;
+            }
+            return await publishCommitSnapshot(input);
+        });
+        const loserPromise = initializeWorkspaceCheckpointSnapshotSource({
+            store: fixture.store as never,
+            legacyCapture: { capture: vi.fn(async () => ({ ref: loserCapture, coverage: Coverage })) },
+        });
+        await loserAssociationStarted;
+        const winnerStore = { ...fixture.store, storeRoot: "other-process" };
+        const winnerOutcome = await initializeWorkspaceCheckpointSnapshotSource({
+            store: winnerStore as never,
+            legacyCapture: { capture: vi.fn(async () => ({ ref: winnerCapture, coverage: Coverage })) },
+        }).then(
+            (source) => ({ source }),
+            (error: unknown) => ({ error })
         );
+        releaseLoserAssociation();
+        const loserOutcome = await loserPromise.then(
+            (source) => ({ source }),
+            (error: unknown) => ({ error })
+        );
+
+        if ("error" in winnerOutcome) throw winnerOutcome.error;
+        if ("error" in loserOutcome) throw loserOutcome.error;
+        await expect(Promise.all([winnerOutcome.source.readHead(), loserOutcome.source.readHead()])).resolves.toEqual([
+            expect.objectContaining({ ref: expect.objectContaining({ id: TurnCommit }) }),
+            expect.objectContaining({ ref: expect.objectContaining({ id: TurnCommit }) }),
+        ]);
     });
 });

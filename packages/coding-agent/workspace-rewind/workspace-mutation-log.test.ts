@@ -57,6 +57,41 @@ describe.sequential("WorkspaceMutationLog", () => {
         expect(count.stdout.toString("ascii").trim()).toBe("1");
     });
 
+    test("prepares an immutable commit without publishing the workspace head", async () => {
+        const fixture = await makeFixture(roots);
+        const base = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "base" }),
+            metadata: makeMetadata("external"),
+        });
+        const prepared = await fixture.log.prepare({
+            expectedHead: base,
+            tree: await writeTree(fixture, { "shared.txt": "prepared" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+
+        expect(Object.isFrozen(prepared)).toBe(true);
+        await expect(fixture.log.readHead()).resolves.toBe(base);
+        await expect(fixture.log.read(prepared.commit)).resolves.toMatchObject({
+            parent: base,
+            metadata: { kind: "agent-turn", sessionid: "session-a" },
+        });
+
+        await expect(fixture.log.publishPrepared(prepared)).resolves.toBe(prepared.commit);
+        await expect(fixture.log.readHead()).resolves.toBe(prepared.commit);
+    });
+
+    test("publishes only the exact prepared mutation token", async () => {
+        const fixture = await makeFixture(roots);
+        const prepared = await fixture.log.prepare({
+            tree: await writeTree(fixture, { "shared.txt": "prepared" }),
+            metadata: makeMetadata("external"),
+        });
+
+        await expect(fixture.log.publishPrepared({ ...prepared })).rejects.toThrow(/prepared mutation token/i);
+        await expect(fixture.log.readHead()).resolves.toBeUndefined();
+        await expect(fixture.log.publishPrepared(prepared)).resolves.toBe(prepared.commit);
+    });
+
     test("does not treat a nested ref as the exact workspace head", async () => {
         const fixture = await makeFixture(roots);
         const commit = await writeRawCommit(

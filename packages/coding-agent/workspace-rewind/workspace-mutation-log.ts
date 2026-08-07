@@ -33,6 +33,11 @@ export interface WorkspaceMutationMetadataV1 {
     operationid?: string;
 }
 
+export interface PreparedWorkspaceMutation {
+    readonly commit: string;
+    readonly expectedHead?: string;
+}
+
 export interface ForeignOverlapInput {
     afterCommit: string;
     paths: readonly string[];
@@ -51,6 +56,7 @@ export class WorkspaceMutationLog {
     readonly gitDir: string;
     readonly workspaceIdentity: string;
     readonly workspaceIncarnation: string;
+    private readonly preparedMutations = new WeakSet<PreparedWorkspaceMutation>();
 
     constructor(input: {
         git: WorkspaceGitRunner;
@@ -91,6 +97,14 @@ export class WorkspaceMutationLog {
         tree: string;
         metadata: WorkspaceMutationMetadataV1;
     }): Promise<string> {
+        return await this.publishPrepared(await this.prepare(input));
+    }
+
+    async prepare(input: {
+        expectedHead?: string;
+        tree: string;
+        metadata: WorkspaceMutationMetadataV1;
+    }): Promise<PreparedWorkspaceMutation> {
         validateSha1(input.tree);
         if (input.expectedHead != null) validateSha1(input.expectedHead);
         validateMetadata(input.metadata, this.workspaceIdentity, this.workspaceIncarnation);
@@ -109,12 +123,28 @@ export class WorkspaceMutationLog {
             }
         );
         const commit = decodeOidLine(commitResult.stdout);
-        await this.git.run(["update-ref", "--no-deref", WorkspaceHeadRef, commit, input.expectedHead ?? ZeroOid], {
-            gitDir: this.gitDir,
-            timeoutMs: GitTimeoutMs,
-            maxStdoutBytes: 0,
+        const prepared = Object.freeze({
+            commit,
+            ...(input.expectedHead == null ? {} : { expectedHead: input.expectedHead }),
         });
-        return commit;
+        this.preparedMutations.add(prepared);
+        return prepared;
+    }
+
+    async publishPrepared(prepared: PreparedWorkspaceMutation): Promise<string> {
+        if (!this.preparedMutations.delete(prepared)) {
+            throw new Error("Invalid prepared mutation token");
+        }
+        await this.readHead();
+        await this.git.run(
+            ["update-ref", "--no-deref", WorkspaceHeadRef, prepared.commit, prepared.expectedHead ?? ZeroOid],
+            {
+                gitDir: this.gitDir,
+                timeoutMs: GitTimeoutMs,
+                maxStdoutBytes: 0,
+            }
+        );
+        return prepared.commit;
     }
 
     async read(commit: string): Promise<{

@@ -206,7 +206,11 @@ export function registerWorkspaceCheckpointManager(input: {
             }
         })();
         boundary.acquisition = acquisition;
-        return await acquisition;
+        try {
+            await acquisition;
+        } finally {
+            if (boundary.acquisition === acquisition) boundary.acquisition = undefined;
+        }
     };
 
     const releaseBoundary = (boundary: ActiveBoundary): void => {
@@ -254,14 +258,19 @@ export function registerWorkspaceCheckpointManager(input: {
     ): Promise<boolean> => {
         const boundary = boundaries.get(boundaryToken);
         if (!boundary) return false;
+        let retirementAttempted = false;
+        const retirePending = async (): Promise<void> => {
+            retirementAttempted = true;
+            await retireFailedPending(boundary);
+        };
         try {
             if (!boundary.userEntryId) {
-                if (boundary.pending) await pendingStore.retireUnbound(boundaryToken, input.processOwner);
+                await retirePending();
                 return false;
             }
             if (boundary.beforeFailure) {
                 await appendUnavailable(boundary.userEntryId, boundary.beforeFailure);
-                await retireFailedPending(boundary);
+                await retirePending();
                 return true;
             }
             if (input.hasRunningHostedCommands()) {
@@ -269,7 +278,7 @@ export function registerWorkspaceCheckpointManager(input: {
                     reasonCode: "hosted_pty_running",
                     message: "A hosted PTY command was still running at the user-turn boundary",
                 });
-                await retireFailedPending(boundary);
+                await retirePending();
                 return true;
             }
             if (!boundary.lease) {
@@ -297,6 +306,7 @@ export function registerWorkspaceCheckpointManager(input: {
                     reasonCode: "corrupt_snapshot",
                     message: `Workspace writer acquisition did not retain a base checkpoint (${reason})`,
                 });
+                await retirePending();
                 return true;
             }
             let captured;
@@ -308,7 +318,7 @@ export function registerWorkspaceCheckpointManager(input: {
                 });
             } catch (error) {
                 await appendUnavailable(boundary.userEntryId, classifyCheckpointFailure(error));
-                await retireFailedPending(boundary);
+                await retirePending();
                 return true;
             }
             if (boundary.pending) await pendingStore.recordAfter(boundaryToken, captured.after);
@@ -324,11 +334,27 @@ export function registerWorkspaceCheckpointManager(input: {
                 changes: captured.changes,
                 coverage: captured.coverage,
             });
-            if (boundary.pending) await pendingStore.complete(boundaryToken);
+            if (boundary.pending) {
+                await pendingStore.complete(boundaryToken);
+                boundary.pending = false;
+            }
             return true;
+        } catch (error) {
+            let failure = error;
+            if (boundary.pending && !retirementAttempted) {
+                try {
+                    await retirePending();
+                } catch (cleanupError) {
+                    failure = new AggregateError(
+                        [error, cleanupError],
+                        "Workspace checkpoint persistence and pending-boundary cleanup failed"
+                    );
+                }
+            }
+            throw failure;
         } finally {
             releaseBoundary(boundary);
-            boundaries.delete(boundaryToken);
+            if (!boundary.pending) boundaries.delete(boundaryToken);
             if (activeBoundaryToken === boundaryToken) activeBoundaryToken = undefined;
         }
     };
@@ -395,15 +421,17 @@ export function registerWorkspaceCheckpointManager(input: {
                 return committed;
             }),
         async dispose() {
-            if (disposed) return;
+            const firstDisposal = !disposed;
             disposed = true;
-            unsubscribe();
-            for (const boundary of boundaries.values()) {
-                boundary.controller.abort(new Error("Workspace checkpoint manager disposed"));
+            if (firstDisposal) {
+                unsubscribe();
+                for (const boundary of boundaries.values()) {
+                    boundary.controller.abort(new Error("Workspace checkpoint manager disposed"));
+                }
+                await Promise.allSettled([...inFlight]);
             }
-            await Promise.allSettled([...inFlight]);
             const failures: unknown[] = [];
-            for (const boundary of boundaries.values()) {
+            for (const [boundaryToken, boundary] of boundaries) {
                 try {
                     await retireFailedPending(boundary);
                 } catch (error) {
@@ -414,8 +442,8 @@ export function registerWorkspaceCheckpointManager(input: {
                 } catch (error) {
                     failures.push(error);
                 }
+                if (!boundary.pending) boundaries.delete(boundaryToken);
             }
-            boundaries.clear();
             activeBoundaryToken = undefined;
             if (failures.length === 1) throw failures[0];
             if (failures.length > 1) {

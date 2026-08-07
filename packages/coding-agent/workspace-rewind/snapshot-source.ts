@@ -72,12 +72,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
     async initialize(): Promise<void> {
         const head = await this.store.mutationLog.readHead();
         if (head) {
-            try {
-                await this.readCommitHead(head);
-            } catch (error) {
-                if (!isMissingAssociation(error)) throw error;
-                await this.repairInterruptedPublication(head);
-            }
+            await this.readCommitHead(head);
             return;
         }
         const captured = await this.legacyCapture.capture({ profile: "terminal" });
@@ -86,7 +81,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         } catch (error) {
             const concurrentHead = await this.store.mutationLog.readHead();
             if (!concurrentHead) throw error;
-            await this.adoptConcurrentInitialization(concurrentHead, captured);
+            await this.readCommitHead(concurrentHead);
         }
     }
 
@@ -160,42 +155,6 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         return encodeCanonicalStoredJson(leftMetadata).equals(encodeCanonicalStoredJson(rightMetadata));
     }
 
-    async repairInterruptedPublication(commit: string): Promise<void> {
-        const mutation = await this.store.mutationLog.read(commit);
-        const captured = await this.legacyCapture.capture({ profile: "terminal" });
-        if (captured.ref.tree !== mutation.tree) {
-            throw new Error("Interrupted Workspace mutation publication cannot be repaired after live drift");
-        }
-        const metadata = await this.store.readSnapshotMetadata(captured.ref);
-        await this.store.publishCommitSnapshot({
-            commit,
-            scope: metadata.scope,
-            coverage: metadata.coverage,
-        });
-        await this.readCommitHead(commit);
-    }
-
-    async adoptConcurrentInitialization(commit: string, captured: WorkspaceCheckpointHead): Promise<void> {
-        try {
-            await this.readCommitHead(commit);
-            return;
-        } catch (error) {
-            if (!isMissingAssociation(error)) throw error;
-        }
-        const mutation = await this.store.mutationLog.read(commit);
-        if (mutation.tree !== captured.ref.tree) {
-            await this.repairInterruptedPublication(commit);
-            return;
-        }
-        const metadata = await this.store.readSnapshotMetadata(captured.ref);
-        await this.store.publishCommitSnapshot({
-            commit,
-            scope: metadata.scope,
-            coverage: metadata.coverage,
-        });
-        await this.readCommitHead(commit);
-    }
-
     async appendCapturedMutation(input: {
         expectedHead?: string;
         captured: WorkspaceCheckpointHead;
@@ -204,7 +163,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         turnId?: string;
     }): Promise<WorkspaceCheckpointHead> {
         const metadata = await this.store.readSnapshotMetadata(input.captured.ref);
-        const commit = await this.store.mutationLog.append({
+        const prepared = await this.store.mutationLog.prepare({
             ...(input.expectedHead ? { expectedHead: input.expectedHead } : {}),
             tree: input.captured.ref.tree,
             metadata: {
@@ -217,10 +176,11 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             },
         });
         const ref = await this.store.publishCommitSnapshot({
-            commit,
+            commit: prepared.commit,
             scope: metadata.scope,
             coverage: metadata.coverage,
         });
+        await this.store.mutationLog.publishPrepared(prepared);
         return { ref, coverage: cloneCoverage(input.captured.coverage) };
     }
 }
@@ -238,8 +198,4 @@ function assertNonEmpty(label: string, value: string): void {
     if (typeof value !== "string" || value.trim().length === 0) {
         throw new Error(`${label} must be non-empty`);
     }
-}
-
-function isMissingAssociation(error: unknown): boolean {
-    return error instanceof Error && /(?:association is missing|missing commit snapshot)/i.test(error.message);
 }
