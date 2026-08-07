@@ -39,6 +39,44 @@ test("keeps a first-seen orphan through fixed grace and removes it only after se
     expect(expired.removedRefs).toEqual([`refs/crest/snapshots/${snapshot.id}`]);
 });
 
+test("retains the current workspace head association while an older unowned association expires", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const metadata = await store.readSnapshotMetadata(snapshot);
+    const firstCommit = await store.mutationLog.append({
+        tree: snapshot.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "external",
+        },
+    });
+    await store.publishCommitSnapshot({ commit: firstCommit, ...metadata });
+    const currentCommit = await store.mutationLog.append({
+        expectedHead: firstCommit,
+        tree: snapshot.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "external",
+        },
+    });
+    const currentSnapshot = await store.publishCommitSnapshot({ commit: currentCommit, ...metadata });
+    await store.deleteCrestRef(store.ownerRefName(snapshot.id));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
+    vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs + 1);
+    const expired = await reconcileSnapshotRefs({ store, sessionsRoot });
+    const remainingRefs = (await store.listCrestRefs()).map((ref) => ref.name);
+
+    expect(expired.removedRefs).toEqual([store.ownerRefName(firstCommit)]);
+    expect(remainingRefs).toContain(store.ownerRefName(currentCommit));
+    await expect(store.readCommitSnapshot(currentCommit)).resolves.toEqual(currentSnapshot);
+});
+
 test("fails closed when any recursive owner source cannot be decoded", async () => {
     const { store, sessionsRoot } = await makeStore();
     await writeFile(join(sessionsRoot, "broken.db"), "not sqlite");

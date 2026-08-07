@@ -155,6 +155,11 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
         );
         addOwned(activeRestore.record.safetySnapshot, input.store, snapshots);
     }
+    const workspaceHead = await input.store.mutationLog.readHead();
+    if (workspaceHead) {
+        await input.store.readCommitSnapshot(workspaceHead);
+        refs.add(input.store.ownerRefName(workspaceHead));
+    }
     return { snapshots, refs, pending };
 }
 
