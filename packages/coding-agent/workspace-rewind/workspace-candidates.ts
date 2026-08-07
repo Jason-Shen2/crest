@@ -14,6 +14,7 @@ const IgnoreBatchSize = 2_048;
 export interface GitWorkspaceCandidateBoundary {
     kind: "git";
     shadowGitDir: string;
+    // Discovery stays read-only, so lifecycle code must first make both trees readable from shadowGitDir.
     sourceHeadTree: string;
     shadowTree: string;
 }
@@ -86,40 +87,55 @@ export class WorkspaceCandidates {
         try {
             const reconciled = this.gitBaseline && !this.feed.isTrusted();
             if (!this.feed.isTrusted()) await this.feed.start();
-            const [status, shadowDifference] = await Promise.all([
-                readGitStatus(this.userGit, this.workspaceRoot, signal),
-                // Both trees already live in the private store so discovery never imports objects or writes user Git.
-                this.shadowGit.run(
-                    [
-                        "diff",
-                        "--name-only",
-                        "-z",
-                        "--no-renames",
-                        "--no-ext-diff",
-                        boundary.sourceHeadTree,
-                        boundary.shadowTree,
-                        "--",
-                    ],
-                    { gitDir: boundary.shadowGitDir, timeoutMs: GitTimeoutMs, signal }
-                ),
-            ]);
-            const hints = await this.feed.drain();
-            if (hints.status === "unavailable") return hints;
-            if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
-            const gitPaths = await collapseRepositoryBoundaries(this.workspaceRoot, [
-                ...parseStatusPaths(status.stdout),
-                ...parseNulPaths(shadowDifference.stdout),
-            ]);
-            const watcherPaths = await collapseRepositoryBoundaries(this.workspaceRoot, hints.changedPaths);
-            const eligibleWatcherPaths = await removeIgnoredPaths(
-                this.userGit,
-                this.workspaceRoot,
-                watcherPaths,
-                signal
-            );
-            const paths = canonicalPaths([...gitPaths, ...eligibleWatcherPaths]);
-            this.gitBaseline = true;
-            return { status: "complete", paths, reconciled };
+            let watcherHints: string[] = [];
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const [status, shadowDifference] = await Promise.all([
+                    readGitStatus(this.userGit, this.workspaceRoot, signal),
+                    this.shadowGit.run(
+                        [
+                            "diff",
+                            "--name-only",
+                            "-z",
+                            "--no-renames",
+                            "--no-ext-diff",
+                            boundary.sourceHeadTree,
+                            boundary.shadowTree,
+                            "--",
+                        ],
+                        { gitDir: boundary.shadowGitDir, timeoutMs: GitTimeoutMs, signal }
+                    ),
+                ]);
+                const hints = await this.feed.drain();
+                signal?.throwIfAborted();
+                if (hints.status === "unavailable") return hints;
+                if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
+                watcherHints = canonicalPaths([...watcherHints, ...hints.changedPaths]);
+                const gitPaths = await collapseRepositoryBoundaries(this.workspaceRoot, [
+                    ...parseStatusPaths(status.stdout),
+                    ...parseNulPaths(shadowDifference.stdout),
+                ]);
+                signal?.throwIfAborted();
+                const watcherPaths = await collapseRepositoryBoundaries(this.workspaceRoot, watcherHints);
+                const eligibleWatcherPaths = await removeIgnoredPaths(
+                    this.userGit,
+                    this.workspaceRoot,
+                    watcherPaths,
+                    signal
+                );
+                const validation = await this.feed.drain();
+                signal?.throwIfAborted();
+                if (validation.status === "unavailable") return validation;
+                if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
+                if (validation.changedPaths.length > 0) {
+                    if (attempt === 1) return { status: "unavailable", reason: "watcher-error" };
+                    watcherHints = canonicalPaths([...watcherHints, ...validation.changedPaths]);
+                    continue;
+                }
+                const paths = canonicalPaths([...gitPaths, ...eligibleWatcherPaths]);
+                this.gitBaseline = true;
+                return { status: "complete", paths, reconciled };
+            }
+            return { status: "unavailable", reason: "watcher-error" };
         } catch {
             signal?.throwIfAborted();
             return { status: "unavailable", reason: "git-query-failed" };

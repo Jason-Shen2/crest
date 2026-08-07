@@ -153,17 +153,20 @@ describe("WorkspaceCandidates Git discovery", () => {
         expect(result).toEqual({ status: "complete", paths: ["linked"], reconciled: false });
     });
 
-    test("detects a clean checkout or reset through source HEAD and Shadow tree divergence", async () => {
-        const shadowTree = await revParse(workspaceRoot, "HEAD^{tree}");
+    test("detects a clean reset through a separate pre-populated private object database", async () => {
         await writeFile(join(workspaceRoot, "branch-only.txt"), "branch\n");
         await git(workspaceRoot, "add", "branch-only.txt");
         await git(workspaceRoot, "commit", "-qm", "branch state");
+        const shadowTree = await revParse(workspaceRoot, "HEAD^{tree}");
+        const shadowGitDir = join(root, "shadow.git");
+        await git(root, "clone", "--bare", "-q", workspaceRoot, shadowGitDir);
+        await git(workspaceRoot, "reset", "--hard", "HEAD^");
         const sourceHeadTree = await revParse(workspaceRoot, "HEAD^{tree}");
         expect(await gitStatus(workspaceRoot)).toBe("");
 
         const result = await candidates.collect({
             kind: "git",
-            shadowGitDir: join(workspaceRoot, ".git"),
+            shadowGitDir,
             sourceHeadTree,
             shadowTree,
         });
@@ -242,6 +245,51 @@ describe("WorkspaceCandidates Git discovery", () => {
 
         expect(result).toEqual({ status: "complete", paths: ["tracked.txt"], reconciled: true });
         expect(feed.startCalls).toBe(2);
+    });
+
+    test("merges a watcher event arriving during candidate post-processing", async () => {
+        let ignoreCalls = 0;
+        const userGit = fakeCandidateUserGit(() => {
+            ignoreCalls++;
+            if (ignoreCalls === 1) feed.hint("during-check-ignore.txt");
+        });
+        const racingCandidates = new WorkspaceCandidates({
+            workspaceRoot,
+            feed,
+            userGit,
+            shadowGit: fakeCandidateShadowGit(),
+        });
+        await feed.start();
+        feed.hint("initial.txt");
+
+        await expect(racingCandidates.collect(fakeGitBoundary(root))).resolves.toEqual({
+            status: "complete",
+            paths: ["during-check-ignore.txt", "initial.txt"],
+            reconciled: false,
+        });
+        expect(ignoreCalls).toBe(2);
+    });
+
+    test("fails closed when watcher events continue through the bounded post-processing retry", async () => {
+        let ignoreCalls = 0;
+        const userGit = fakeCandidateUserGit(() => {
+            ignoreCalls++;
+            feed.hint(`during-check-ignore-${ignoreCalls}.txt`);
+        });
+        const racingCandidates = new WorkspaceCandidates({
+            workspaceRoot,
+            feed,
+            userGit,
+            shadowGit: fakeCandidateShadowGit(),
+        });
+        await feed.start();
+        feed.hint("initial.txt");
+
+        await expect(racingCandidates.collect(fakeGitBoundary(root))).resolves.toEqual({
+            status: "unavailable",
+            reason: "watcher-error",
+        });
+        expect(ignoreCalls).toBe(2);
     });
 });
 
@@ -388,6 +436,37 @@ async function currentGitBoundary(workspaceRoot: string): Promise<GitWorkspaceCa
         shadowGitDir: join(workspaceRoot, ".git"),
         sourceHeadTree: tree,
         shadowTree: tree,
+    };
+}
+
+function fakeCandidateUserGit(onCheckIgnore: () => void): WorkspaceGitRunner {
+    return {
+        run: vi.fn(async (args: readonly string[]) => {
+            if (args[0] === "status") return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+            if (args[0] === "check-ignore") {
+                onCheckIgnore();
+                return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+            }
+            throw new Error(`Unexpected user Git command: ${args.join(" ")}`);
+        }),
+    } as unknown as WorkspaceGitRunner;
+}
+
+function fakeCandidateShadowGit(): WorkspaceGitRunner {
+    return {
+        run: vi.fn(async (args: readonly string[]) => {
+            if (args[0] === "diff") return { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+            throw new Error(`Unexpected Shadow Git command: ${args.join(" ")}`);
+        }),
+    } as unknown as WorkspaceGitRunner;
+}
+
+function fakeGitBoundary(root: string): GitWorkspaceCandidateBoundary {
+    return {
+        kind: "git",
+        shadowGitDir: join(root, "shadow.git"),
+        sourceHeadTree: "1".repeat(40),
+        shadowTree: "2".repeat(40),
     };
 }
 
