@@ -25,6 +25,7 @@ class MemoryChangeFeed implements WorkspaceChangeFeed {
     startCalls = 0;
     disposeCalls = 0;
     unavailable?: Extract<WorkspaceChangeDrain, { status: "unavailable" }>["reason"];
+    loseTrustAfterDrain?: Extract<WorkspaceChangeDrain, { status: "unavailable" }>["reason"];
 
     async start(): Promise<void> {
         this.startCalls++;
@@ -38,6 +39,11 @@ class MemoryChangeFeed implements WorkspaceChangeFeed {
         }
         const changedPaths = this.paths;
         this.paths = [];
+        if (this.loseTrustAfterDrain) {
+            const reason = this.loseTrustAfterDrain;
+            this.loseTrustAfterDrain = undefined;
+            this.loseTrust(reason);
+        }
         return { status: "complete", changedPaths };
     }
 
@@ -57,6 +63,10 @@ class MemoryChangeFeed implements WorkspaceChangeFeed {
     loseTrust(reason: Extract<WorkspaceChangeDrain, { status: "unavailable" }>["reason"]): void {
         this.trusted = false;
         this.unavailable = reason;
+    }
+
+    loseTrustOnNextCompleteDrain(reason: Extract<WorkspaceChangeDrain, { status: "unavailable" }>["reason"]): void {
+        this.loseTrustAfterDrain = reason;
     }
 }
 
@@ -159,6 +169,29 @@ describe("WorkspaceCandidates Git discovery", () => {
         });
 
         expect(result).toEqual({ status: "complete", paths: ["branch-only.txt"], reconciled: false });
+    });
+
+    test("preserves a private tree difference hidden by current ignore rules", async () => {
+        const shadowTree = await revParse(workspaceRoot, "HEAD^{tree}");
+        await git(workspaceRoot, "rm", "-q", "tracked.txt");
+        await writeFile(join(workspaceRoot, ".gitignore"), "*.ignored\ntracked.txt\n");
+        await git(workspaceRoot, "add", ".gitignore");
+        await git(workspaceRoot, "commit", "-qm", "delete and ignore tracked path");
+        const sourceHeadTree = await revParse(workspaceRoot, "HEAD^{tree}");
+        expect(await gitStatus(workspaceRoot)).toBe("");
+
+        const result = await candidates.collect({
+            kind: "git",
+            shadowGitDir: join(workspaceRoot, ".git"),
+            sourceHeadTree,
+            shadowTree,
+        });
+
+        expect(result).toEqual({
+            status: "complete",
+            paths: [".gitignore", "tracked.txt"],
+            reconciled: false,
+        });
     });
 
     test("fails closed when the Shadow boundary is not readable in the private object database", async () => {
@@ -265,6 +298,35 @@ describe("WorkspaceCandidates non-Git discovery", () => {
         });
         expect(reconcile).toHaveBeenCalledTimes(2);
         expect(feed.startCalls).toBe(2);
+    });
+
+    test("rejects warm hints when the feed loses trust immediately after a complete drain", async () => {
+        await candidates.collect({ kind: "non-git" });
+        feed.hint("racy.txt");
+        feed.loseTrustOnNextCompleteDrain("overflow");
+
+        await expect(candidates.collect({ kind: "non-git" })).resolves.toEqual({
+            status: "unavailable",
+            reason: "watcher-error",
+        });
+        expect(reconcile).toHaveBeenCalledTimes(1);
+    });
+
+    test("does not publish a baseline when the feed loses trust immediately after its drain", async () => {
+        feed.loseTrustOnNextCompleteDrain("overflow");
+
+        await expect(candidates.collect({ kind: "non-git" })).resolves.toEqual({
+            status: "unavailable",
+            reason: "watcher-error",
+        });
+        expect(reconcile).toHaveBeenCalledTimes(1);
+
+        await expect(candidates.collect({ kind: "non-git" })).resolves.toEqual({
+            status: "complete",
+            paths: ["a.txt", "z.txt"],
+            reconciled: true,
+        });
+        expect(reconcile).toHaveBeenCalledTimes(2);
     });
 
     test("a runtime restart always establishes a new baseline and ignores old cursor artifacts", async () => {

@@ -106,15 +106,20 @@ export class WorkspaceCandidates {
             const hints = await this.feed.drain();
             if (hints.status === "unavailable") return hints;
             if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
-            const paths = canonicalPaths([
+            const gitPaths = await collapseRepositoryBoundaries(this.workspaceRoot, [
                 ...parseStatusPaths(status.stdout),
                 ...parseNulPaths(shadowDifference.stdout),
-                ...hints.changedPaths,
             ]);
-            const bounded = await collapseRepositoryBoundaries(this.workspaceRoot, paths);
-            const eligible = await removeIgnoredPaths(this.userGit, this.workspaceRoot, bounded, signal);
+            const watcherPaths = await collapseRepositoryBoundaries(this.workspaceRoot, hints.changedPaths);
+            const eligibleWatcherPaths = await removeIgnoredPaths(
+                this.userGit,
+                this.workspaceRoot,
+                watcherPaths,
+                signal
+            );
+            const paths = canonicalPaths([...gitPaths, ...eligibleWatcherPaths]);
             this.gitBaseline = true;
-            return { status: "complete", paths: eligible, reconciled };
+            return { status: "complete", paths, reconciled };
         } catch {
             signal?.throwIfAborted();
             return { status: "unavailable", reason: "git-query-failed" };
@@ -126,6 +131,7 @@ export class WorkspaceCandidates {
         if (!reconcile) {
             const hints = await this.feed.drain();
             if (hints.status === "unavailable") return hints;
+            if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
             return { status: "complete", paths: canonicalPaths(hints.changedPaths), reconciled: false };
         }
         if (!this.reconcile) return { status: "unavailable", reason: "reconcile-failed" };
@@ -135,6 +141,7 @@ export class WorkspaceCandidates {
             const baseline = await this.reconcile(signal);
             const hints = await this.feed.drain();
             if (hints.status === "unavailable") return hints;
+            if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
             const paths = canonicalPaths([...baseline, ...hints.changedPaths]);
             this.nonGitBaseline = true;
             return { status: "complete", paths, reconciled: true };
