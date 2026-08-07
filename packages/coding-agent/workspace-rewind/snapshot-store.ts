@@ -188,6 +188,7 @@ const BootstrapWaitTimeoutMs = 10_000;
 const InitializationPromises = new Map<string, Promise<void>>();
 const SnapshotFingerprints = new WeakMap<WorkspaceSnapshotStore, Map<string, FileFingerprint>>();
 const TrustedSnapshotDescriptors = new WeakMap<WorkspaceSnapshotStore, Set<string>>();
+const TrustedCommitSnapshots = new WeakMap<WorkspaceSnapshotStore, Set<string>>();
 export async function initializePrivateStore(input: {
     storeRoot: string;
     git: WorkspaceGitRunner;
@@ -248,6 +249,7 @@ export class WorkspaceSnapshotStore {
         });
         SnapshotFingerprints.set(this, new Map());
         TrustedSnapshotDescriptors.set(this, new Set());
+        TrustedCommitSnapshots.set(this, new Set());
     }
 
     static async open(input: {
@@ -391,10 +393,11 @@ export class WorkspaceSnapshotStore {
         if (manifest.manifest.schemaversion !== 3) {
             throw new Error("Commit-backed snapshot requires a v3 scope manifest");
         }
-        await this.verifyWorkspaceTree(ref, manifest);
+        // The mutation commit and tree were built inside this private store. Publication is a candidate-bound
+        // hot path; recursive object/path/count validation belongs exclusively to explicit verify().
         await this.#ensureObjectsDurableUnlocked([ref.id, ref.tree, ref.scopeManifest], runtime);
         await this.#publishSnapshotAssociation(ref, ref.scopeManifest, runtime);
-        markSnapshotTrusted(this, ref);
+        markSnapshotTrusted(this, ref, true);
         return ref;
     }
 
@@ -413,6 +416,7 @@ export class WorkspaceSnapshotStore {
         if (manifest.manifest.schemaversion !== 3) {
             throw new Error("Commit-backed snapshot association does not reference a v3 manifest");
         }
+        // Association reconstruction is intentionally not a recursive integrity audit.
         return ref;
     }
 
@@ -828,28 +832,40 @@ export class WorkspaceSnapshotStore {
         | { kind: "leaf"; state: Extract<CapturedPathStateV1, { state: "file" | "symlink" }> }
         | undefined
     > {
-        const result = await this.git.run(["ls-tree", "-z", "--full-tree", tree, "--", path], {
-            gitDir: this.storeRoot,
-            timeoutMs: StoreGitTimeoutMs,
-            signal,
-        });
-        const entry = parseExactLsTreeEntry(result.stdout, path);
+        const segments = path.split("/");
+        let treeOid = tree;
+        let entry: { mode: string; oid: string } | undefined;
+        for (let index = 0; index < segments.length; index++) {
+            const result = await this.git.run(["cat-file", "tree", treeOid], {
+                gitDir: this.storeRoot,
+                timeoutMs: StoreGitTimeoutMs,
+                signal,
+            });
+            entry = parseRawTreeEntries(result.stdout, treeOid.length / 2).get(segments[index]!);
+            if (!entry) return undefined;
+            if (index < segments.length - 1) {
+                if (entry.mode !== "40000") return undefined;
+                treeOid = entry.oid;
+            }
+        }
         if (!entry) return undefined;
-        if (entry.mode === "040000") return { kind: "tree" };
+        if (entry.mode !== "40000" && entry.mode !== "100644" && entry.mode !== "100755" && entry.mode !== "120000") {
+            throw new Error("Workspace tree path has an invalid mode");
+        }
         const type = await this.git.run(["cat-file", "-t", entry.oid], {
             gitDir: this.storeRoot,
             timeoutMs: StoreGitTimeoutMs,
             maxStdoutBytes: 16,
             signal,
         });
-        if (!type.stdout.equals(Buffer.from("blob\n"))) {
+        const expectedType = entry.mode === "40000" ? "tree" : "blob";
+        if (!type.stdout.equals(Buffer.from(`${expectedType}\n`))) {
+            if (expectedType === "tree") throw new Error("Workspace tree path is missing or is not a tree");
             throw new Error("Workspace tree leaf is missing or is not a blob");
         }
+        if (entry.mode === "40000") return { kind: "tree" };
         if (entry.mode === "120000") {
             return { kind: "leaf", state: { state: "symlink", oid: entry.oid } };
-        }
-        if (entry.mode !== "100644" && entry.mode !== "100755") {
-            throw new Error("Workspace tree leaf has an invalid mode");
         }
         return {
             kind: "leaf",
@@ -953,14 +969,24 @@ export class WorkspaceSnapshotStore {
 
     verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         return this.withWorkspaceLock(async () => {
+            // A V3 ref created or fully audited in this process is immutable; repeated owner checks only need
+            // the association CAS authority. Legacy snapshots retain their existing full-verification behavior.
+            if (isTrustedCommitSnapshot(this, snapshot)) {
+                this.assertSnapshotIdentity(snapshot);
+                await this.#assertSnapshotOwnerRef(snapshot, true);
+                return;
+            }
             await this.#verifyUnlocked(snapshot);
-            await this.#assertSnapshotOwnerRef(snapshot);
+            await this.#assertSnapshotOwnerRef(snapshot, isTrustedCommitSnapshot(this, snapshot));
         });
     }
 
-    async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
-        const manifest = await this.#readStoredManifestBlob(snapshot);
-        const expected = manifest.manifest.schemaversion === 3 ? snapshot.scopeManifest : snapshot.id;
+    async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1, trustedCommitSnapshot = false): Promise<void> {
+        let expected = snapshot.scopeManifest;
+        if (!trustedCommitSnapshot) {
+            const manifest = await this.#readStoredManifestBlob(snapshot);
+            expected = manifest.manifest.schemaversion === 3 ? snapshot.scopeManifest : snapshot.id;
+        }
         const owner = await this.#readSnapshotAssociation(this.ownerRefName(snapshot.id));
         if (owner !== expected) {
             throw new Error("Workspace snapshot owner ref is missing or changed");
@@ -984,7 +1010,7 @@ export class WorkspaceSnapshotStore {
             this.assertSnapshotIdentity(snapshot);
             const manifest = await this.#readStoredManifest(snapshot);
             await this.verifyWorkspaceTree(snapshot, manifest);
-            markSnapshotTrusted(this, snapshot);
+            markSnapshotTrusted(this, snapshot, manifest.manifest.schemaversion === 3);
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -2754,6 +2780,9 @@ function cloneCommitSnapshotInput(input: {
         throw new Error("Invalid commit-backed snapshot input");
     }
     const exclusions = input.coverage.exclusions.map(cloneCoverageExclusion).sort(compareCoverageExclusions);
+    if (input.coverage.complete !== (exclusions.length === 0)) {
+        throw new Error("Commit-backed snapshot coverage completeness is inconsistent");
+    }
     for (let index = 1; index < exclusions.length; index++) {
         if (compareCoverageExclusions(exclusions[index - 1]!, exclusions[index]!) === 0) {
             throw new Error("Duplicate commit-backed snapshot coverage exclusion");
@@ -2903,8 +2932,17 @@ function snapshotTrustKey(snapshot: WorkspaceSnapshotRefV1): string {
     return encodeDurableJson(snapshot).toString("utf8");
 }
 
-function markSnapshotTrusted(store: WorkspaceSnapshotStore, snapshot: WorkspaceSnapshotRefV1): void {
+function markSnapshotTrusted(
+    store: WorkspaceSnapshotStore,
+    snapshot: WorkspaceSnapshotRefV1,
+    commitBacked = false
+): void {
     TrustedSnapshotDescriptors.get(store)!.add(snapshotTrustKey(snapshot));
+    if (commitBacked) TrustedCommitSnapshots.get(store)!.add(snapshotTrustKey(snapshot));
+}
+
+function isTrustedCommitSnapshot(store: WorkspaceSnapshotStore, snapshot: WorkspaceSnapshotRefV1): boolean {
+    return TrustedCommitSnapshots.get(store)!.has(snapshotTrustKey(snapshot));
 }
 
 function validateRefToken(value: string, label: string): void {
@@ -3260,6 +3298,7 @@ function parseRawTreeEntries(value: Buffer, hashBytes: number): Map<string, { mo
         throw new Error("Unsupported Git object format");
     }
     const entries = new Map<string, { mode: string; oid: string }>();
+    let previous: { name: Buffer; mode: string } | undefined;
     let offset = 0;
     while (offset < value.length) {
         const space = value.indexOf(0x20, offset);
@@ -3267,44 +3306,47 @@ function parseRawTreeEntries(value: Buffer, hashBytes: number): Map<string, { mo
         if (space <= offset || nul < space + 2 || nul + 1 + hashBytes > value.length) {
             throw new Error("Invalid raw Git tree object");
         }
-        const mode = value.subarray(offset, space).toString("ascii");
-        if (!/^[0-7]{5,6}$/.test(mode)) {
+        const modeBytes = value.subarray(offset, space);
+        if (
+            (modeBytes.length !== 5 && modeBytes.length !== 6) ||
+            modeBytes.some((byte) => byte < 0x30 || byte > 0x37)
+        ) {
             throw new Error("Invalid raw Git tree mode");
         }
+        const mode = modeBytes.toString("ascii");
         const nameBytes = value.subarray(space + 1, nul);
         const name = nameBytes.toString("utf8");
-        if (!Buffer.from(name).equals(nameBytes) || entries.has(name)) {
+        if (!Buffer.from(name).equals(nameBytes) || name.includes("/")) {
             throw new Error("Invalid raw Git tree name");
+        }
+        validateRelativePath(name);
+        if (previous && compareGitTreeBaseNames(previous.name, previous.mode, nameBytes, mode) >= 0) {
+            throw new Error("Raw Git tree entries are not strictly ordered");
         }
         entries.set(name, {
             mode,
             oid: value.subarray(nul + 1, nul + 1 + hashBytes).toString("hex"),
         });
+        previous = { name: nameBytes, mode };
         offset = nul + 1 + hashBytes;
     }
     return entries;
 }
 
-function parseExactLsTreeEntry(
-    value: Buffer,
-    expectedPath: string
-): { mode: "040000" | "100644" | "100755" | "120000"; oid: string } | undefined {
-    if (value.length === 0) return undefined;
-    if (value.at(-1) !== 0) throw new Error("Invalid Git tree path output");
-    const records = value.subarray(0, -1).toString("utf8").split("\0");
-    if (records.length !== 1 || !Buffer.from(records[0]!).equals(value.subarray(0, -1))) {
-        throw new Error("Invalid Git tree path output");
+function compareGitTreeBaseNames(left: Buffer, leftMode: string, right: Buffer, rightMode: string): number {
+    const shared = Math.min(left.length, right.length);
+    for (let index = 0; index < shared; index++) {
+        if (left[index] !== right[index]) return left[index]! - right[index]!;
     }
-    const match =
-        /^(040000) tree ([0-9a-f]{40})\t([\s\S]+)$|^(100644|100755|120000) blob ([0-9a-f]{40})\t([\s\S]+)$/.exec(
-            records[0]!
-        );
-    if (!match) throw new Error("Invalid Git tree path entry");
-    const mode = (match[1] ?? match[4]) as "040000" | "100644" | "100755" | "120000";
-    const oid = match[2] ?? match[5]!;
-    const path = match[3] ?? match[6]!;
-    if (path !== expectedPath) throw new Error("Git tree path lookup returned a different path");
-    return { mode, oid };
+    if (left.length === right.length) return 0;
+    if (left.length < right.length) {
+        return (isGitDirectoryMode(leftMode) ? 0x2f : 0) - right[shared]!;
+    }
+    return left[shared]! - (isGitDirectoryMode(rightMode) ? 0x2f : 0);
+}
+
+function isGitDirectoryMode(mode: string): boolean {
+    return (Number.parseInt(mode, 8) & 0o170000) === 0o040000;
 }
 
 function parseNulWorkspacePaths(value: Buffer): string[] {
