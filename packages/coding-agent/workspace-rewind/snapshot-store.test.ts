@@ -1285,6 +1285,27 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.readPathState(ref, "mode.txt")).rejects.toThrow(/mode|tree/i);
     });
 
+    test("rejects a noncanonical sibling mode during a touched-path read", async () => {
+        const fixture = await makeStoreFixture();
+        const blob = await writeTestBlob(fixture, Buffer.from("value"));
+        const tree = await writeRawTree(
+            fixture,
+            Buffer.concat([
+                rawTestTreeEntry("100640", "bad-mode.txt", blob),
+                rawTestTreeEntry("100644", "valid.txt", blob),
+            ]),
+            true
+        );
+        const commit = await appendTestMutation(fixture, tree);
+        const ref = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(2),
+        });
+
+        await expect(fixture.store.readPathState(ref, "valid.txt")).rejects.toThrow(/mode|tree/i);
+    });
+
     test("reads v3 tree modes before coverage exclusions and derives node kinds", async () => {
         const fixture = await makeStoreFixture();
         const regular = await testFileState(fixture, Buffer.from("regular"));

@@ -3314,6 +3314,9 @@ function parseRawTreeEntries(value: Buffer, hashBytes: number): Map<string, { mo
             throw new Error("Invalid raw Git tree mode");
         }
         const mode = modeBytes.toString("ascii");
+        if (mode !== "40000" && mode !== "100644" && mode !== "100755" && mode !== "120000") {
+            throw new Error("Invalid raw Git tree mode");
+        }
         const nameBytes = value.subarray(space + 1, nul);
         const name = nameBytes.toString("utf8");
         if (!Buffer.from(name).equals(nameBytes) || name.includes("/")) {
