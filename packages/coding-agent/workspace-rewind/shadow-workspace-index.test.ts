@@ -103,25 +103,43 @@ describe.sequential("ShadowWorkspaceIndex", () => {
         });
         await next.load(baseTree);
 
+        fixture.git.updateIndexInputs.length = 0;
         await next.apply([await rawState(fixture, "dir", Buffer.from("file"))]);
+        expect(fixture.git.updateIndexInputs).toHaveLength(1);
         expect([...(await readTree(fixture, await next.writeTree())).keys()]).toEqual(["dir", "other.txt"]);
 
+        fixture.git.updateIndexInputs.length = 0;
         await next.apply([await rawState(fixture, "dir/recreated.txt", Buffer.from("recreated"))]);
+        expect(fixture.git.updateIndexInputs).toHaveLength(1);
         expect([...(await readTree(fixture, await next.writeTree())).keys()]).toEqual([
             "dir/recreated.txt",
             "other.txt",
         ]);
     });
 
-    test("queries only mutation paths and ancestors when resolving conflicts", async () => {
+    test("queries only deep mutation candidates without enumerating sibling subtrees", async () => {
         const fixture = await makeFixture(roots);
         await fixture.index.load();
+        await fixture.index.apply([await rawState(fixture, "parent/sibling/keep.txt", Buffer.from("sibling"))]);
         fixture.git.calls.length = 0;
+        fixture.git.updateIndexInputs.length = 0;
 
-        await fixture.index.apply([await rawState(fixture, "parent/child/file.txt", Buffer.from("candidate"))]);
+        const candidate = await rawState(fixture, "parent/child/file.txt", Buffer.from("candidate"));
+        await fixture.index.apply([candidate]);
 
         expect(fixture.git.calls.filter((args) => args[0] === "ls-files")).toEqual([
-            ["ls-files", "--stage", "-z", "--", "parent", "parent/child", "parent/child/file.txt"],
+            ["ls-files", "--stage", "-z", "--", "parent/child/file.txt"],
+        ]);
+        expect(fixture.git.updateIndexInputs).toEqual([
+            Buffer.concat([
+                indexInfoRecord("0", "0".repeat(40), "parent"),
+                indexInfoRecord("0", "0".repeat(40), "parent/child"),
+                indexInfoRecord("100644", candidate.state.state === "file" ? candidate.state.oid : "", candidate.path),
+            ]),
+        ]);
+        expect([...(await readTree(fixture, await fixture.index.writeTree())).keys()]).toEqual([
+            "parent/child/file.txt",
+            "parent/sibling/keep.txt",
         ]);
     });
 
@@ -209,6 +227,43 @@ describe.sequential("ShadowWorkspaceIndex", () => {
         });
         await expect(unloaded.writeTree()).rejects.toThrow(/load/i);
     });
+
+    test("fails closed after an update-index failure until authority is reloaded", async () => {
+        const fixture = await makeFixture(roots);
+        await fixture.index.load();
+        const baseTree = await fixture.index.writeTree();
+        const candidate = await rawState(fixture, "candidate.txt", Buffer.from("candidate"));
+
+        fixture.git.failNextCommand = "update-index";
+        await expect(fixture.index.apply([candidate])).rejects.toThrow(/injected update-index/i);
+        expect(fixture.index.loaded).toBe(false);
+        await expect(fixture.index.writeTree()).rejects.toThrow(/load/i);
+        await expect(fixture.index.apply([candidate])).rejects.toThrow(/load/i);
+
+        await fixture.index.load(baseTree);
+        await fixture.index.apply([candidate]);
+        expect([...(await readTree(fixture, await fixture.index.writeTree())).keys()]).toEqual(["candidate.txt"]);
+    });
+
+    test("fails closed after read-tree or write-tree failures until authority is reloaded", async () => {
+        const fixture = await makeFixture(roots);
+        await fixture.index.load();
+        const baseTree = await fixture.index.writeTree();
+
+        fixture.git.failNextCommand = "read-tree";
+        await expect(fixture.index.load(baseTree)).rejects.toThrow(/injected read-tree/i);
+        expect(fixture.index.loaded).toBe(false);
+        await expect(fixture.index.writeTree()).rejects.toThrow(/load/i);
+
+        await fixture.index.load(baseTree);
+        fixture.git.failNextCommand = "write-tree";
+        await expect(fixture.index.writeTree()).rejects.toThrow(/injected write-tree/i);
+        expect(fixture.index.loaded).toBe(false);
+        await expect(fixture.index.apply([])).rejects.toThrow(/load/i);
+
+        await fixture.index.load(baseTree);
+        await expect(fixture.index.writeTree()).resolves.toBe(baseTree);
+    });
 });
 
 async function makeFixture(roots: string[]): Promise<Fixture> {
@@ -279,9 +334,23 @@ async function readTree(fixture: Fixture, tree: string): Promise<Map<string, { m
 
 class RecordingGitRunner extends WorkspaceGitRunner {
     readonly calls: string[][] = [];
+    readonly updateIndexInputs: Buffer[] = [];
+    failNextCommand = "";
 
     override async run(...input: Parameters<WorkspaceGitRunner["run"]>) {
         this.calls.push([...input[0]]);
+        if (input[0][0] === "update-index" && Buffer.isBuffer(input[1]?.stdin)) {
+            this.updateIndexInputs.push(Buffer.from(input[1].stdin));
+        }
+        if (this.failNextCommand === input[0][0]) {
+            const command = this.failNextCommand;
+            this.failNextCommand = "";
+            throw new Error(`Injected ${command} failure`);
+        }
         return await super.run(...input);
     }
+}
+
+function indexInfoRecord(mode: string, oid: string, path: string): Buffer {
+    return Buffer.concat([Buffer.from(`${mode} ${oid}\t${path}`), Buffer.of(0)]);
 }

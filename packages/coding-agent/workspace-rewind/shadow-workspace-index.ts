@@ -64,6 +64,7 @@ export class ShadowWorkspaceIndex {
                 throw new Error("Shadow Workspace index base must be a tree");
             }
         }
+        this.loaded = false;
         await this.git.run(["read-tree", tree ?? "--empty"], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
@@ -83,19 +84,19 @@ export class ShadowWorkspaceIndex {
         );
         const existing = await this.readCandidateEntries(mutations.map((mutation) => mutation.path));
         const removals = collectRemovals(existing, mutations);
-        if (removals.length > 0) {
-            await this.updateIndex(removals.map((path) => ({ path, mode: "0", oid: ZeroOid })));
-        }
         const additions = mutations
             .flatMap((mutation) => (mutation.addition ? [mutation.addition] : []))
             .sort((left, right) => comparePathBytes(left.path, right.path));
-        if (additions.length > 0) {
-            await this.updateIndex(additions);
-        }
+        const updates = [...removals.map((path) => ({ path, mode: "0", oid: ZeroOid })), ...additions];
+        if (updates.length === 0) return;
+        this.loaded = false;
+        await this.updateIndex(updates);
+        this.loaded = true;
     }
 
     async writeTree(): Promise<string> {
         this.requireLoaded();
+        this.loaded = false;
         const result = await this.git.run(["write-tree"], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
@@ -104,6 +105,7 @@ export class ShadowWorkspaceIndex {
         });
         const match = /^([0-9a-f]{40})\n$/.exec(result.stdout.toString("ascii"));
         if (!match) throw new Error("Git returned an invalid Shadow Workspace tree id");
+        this.loaded = true;
         return match[1]!;
     }
 
@@ -221,14 +223,7 @@ function toIndexEntry(path: string, state: CapturedPathStateV1): IndexEntry | un
 }
 
 function collectPathspecs(paths: string[]): string[] {
-    const pathspecs = new Set<string>();
-    for (const path of paths) {
-        const segments = path.split("/");
-        for (let index = 1; index <= segments.length; index++) {
-            pathspecs.add(segments.slice(0, index).join("/"));
-        }
-    }
-    return [...pathspecs].sort(comparePathBytes);
+    return [...new Set(paths)].sort(comparePathBytes);
 }
 
 function parseIndexEntries(value: Buffer): IndexEntry[] {
@@ -259,6 +254,13 @@ function parseIndexEntries(value: Buffer): IndexEntry[] {
 function collectRemovals(existing: IndexEntry[], mutations: ValidatedMutation[]): string[] {
     const removals = new Set<string>();
     for (const mutation of mutations) {
+        if (mutation.addition) {
+            let parent = mutation.path;
+            while (parent.includes("/")) {
+                parent = parent.slice(0, parent.lastIndexOf("/"));
+                removals.add(parent);
+            }
+        }
         const prefix = `${mutation.path}/`;
         for (const entry of existing) {
             if (entry.path === mutation.path || entry.path.startsWith(prefix)) {
