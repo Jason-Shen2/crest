@@ -127,17 +127,17 @@ git commit -m "feat(agent): add shadow workspace mutation log"
 - Create: `packages/coding-agent/workspace-rewind/workspace-writer-lease.ts`
 - Create: `packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts`
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Cover one holder per Workspace, FIFO waiters, same-turn idempotence, wrong-owner release rejection, aborted waiters, and independent Workspaces proceeding concurrently.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts
 ```
 
-- [ ] **Step 3: Implement the process-local registry**
+- [x] **Step 3: Implement the process-local registry**
 
 ```ts
 export interface WorkspaceWriterLease {
@@ -159,7 +159,7 @@ export class WorkspaceWriterLeaseRegistry {
 
 The Electron main process is the sole Agent runtime owner. Continue using `WorkspaceMutationLock` only for short filesystem/ref transactions; do not hold it for an LLM turn.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts
