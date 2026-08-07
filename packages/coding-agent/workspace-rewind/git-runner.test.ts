@@ -281,6 +281,58 @@ describe.sequential("WorkspaceGitRunner", () => {
         }
     });
 
+    test("uses current commit dates instead of ambient Git dates", async () => {
+        const runner = new WorkspaceGitRunner();
+        const gitDir = join(root, "identity-dates.git");
+        await runner.run(["init", "--bare", gitDir], { cwd: root, timeoutMs: 5_000 });
+        const tree = (await runner.run(["mktree"], { gitDir, stdin: Buffer.alloc(0), timeoutMs: 5_000 })).stdout
+            .toString("ascii")
+            .trim();
+        const inherited = {
+            GIT_AUTHOR_DATE: process.env.GIT_AUTHOR_DATE,
+            GIT_COMMITTER_DATE: process.env.GIT_COMMITTER_DATE,
+        };
+        Object.assign(process.env, {
+            GIT_AUTHOR_DATE: "2000-01-01T00:00:00Z",
+            GIT_COMMITTER_DATE: "2000-01-01T00:00:00Z",
+        });
+
+        try {
+            const startedAt = Date.now();
+            const commit = (
+                await runner.run(["commit-tree", tree], {
+                    gitDir,
+                    stdin: Buffer.from("{}"),
+                    timeoutMs: 5_000,
+                })
+            ).stdout
+                .toString("ascii")
+                .trim();
+            const finishedAt = Date.now();
+            const stored = (await runner.run(["cat-file", "-p", commit], { gitDir, timeoutMs: 5_000 })).stdout.toString(
+                "utf8"
+            );
+            const authorTimestamp = /^author .* (\d+) [+-]\d{4}$/m.exec(stored)?.[1];
+            const committerTimestamp = /^committer .* (\d+) [+-]\d{4}$/m.exec(stored)?.[1];
+
+            expect(authorTimestamp).toBeDefined();
+            expect(committerTimestamp).toBeDefined();
+            for (const timestamp of [authorTimestamp, committerTimestamp]) {
+                const milliseconds = Number(timestamp) * 1_000;
+                expect(milliseconds).toBeGreaterThanOrEqual(startedAt - 60_000);
+                expect(milliseconds).toBeLessThanOrEqual(finishedAt + 60_000);
+            }
+        } finally {
+            for (const [key, value] of Object.entries(inherited)) {
+                if (value == null) {
+                    delete process.env[key];
+                } else {
+                    process.env[key] = value;
+                }
+            }
+        }
+    });
+
     test.each([
         ["leading -c", ["-c", "core.hooksPath=/user/hooks", "rev-parse"]],
         ["leading --config-env=", ["--config-env=core.hooksPath=ATTACKER", "rev-parse"]],

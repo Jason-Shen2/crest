@@ -136,6 +136,10 @@ export class WorkspaceMutationLog {
         const parent = parentHeaders[0]?.slice("parent ".length);
         validateSha1(tree);
         if (parent != null) validateSha1(parent);
+        await requireObjectType(this.git, this.gitDir, tree, "tree", "tree");
+        if (parent != null) {
+            await requireObjectType(this.git, this.gitDir, parent, "commit", "parent");
+        }
         const message = result.stdout.subarray(separator + 2);
         const metadata = decodeMetadata(message, this.workspaceIdentity, this.workspaceIncarnation);
         return { ...(parent == null ? {} : { parent }), tree, metadata };
@@ -169,6 +173,7 @@ export class WorkspaceMutationLog {
             validateSha1(commit);
             includedCommits.add(commit);
         }
+        const remainingIncluded = new Set(includedCommits);
         await this.read(input.afterCommit);
         const head = await this.readHead();
         if (!head) {
@@ -189,6 +194,7 @@ export class WorkspaceMutationLog {
                 if (entry.metadata.kind === "external" || entry.metadata.sessionid !== input.ownerSessionId) {
                     throw new Error("Included commit is not owned by the owner Session");
                 }
+                remainingIncluded.delete(cursor);
             } else {
                 for (const path of changedPaths) {
                     if (!pathSet.has(path)) continue;
@@ -206,10 +212,30 @@ export class WorkspaceMutationLog {
             }
             cursor = entry.parent;
         }
+        if (remainingIncluded.size !== 0) {
+            throw new Error("Included commit is outside the requested mutation suffix");
+        }
         if ((await this.readHead()) !== head) {
             throw new Error("Workspace mutation head moved during overlap inspection");
         }
         return overlaps;
+    }
+}
+
+async function requireObjectType(
+    git: WorkspaceGitRunner,
+    gitDir: string,
+    oid: string,
+    expectedType: "tree" | "commit",
+    label: "tree" | "parent"
+): Promise<void> {
+    const result = await git.run(["cat-file", "-t", oid], {
+        gitDir,
+        timeoutMs: GitTimeoutMs,
+        maxStdoutBytes: 16,
+    });
+    if (!result.stdout.equals(Buffer.from(`${expectedType}\n`))) {
+        throw new Error(`Invalid workspace mutation ${label} object`);
     }
 }
 

@@ -220,6 +220,89 @@ describe.sequential("WorkspaceMutationLog", () => {
         ).rejects.toThrow(/included commit|owner Session/i);
     });
 
+    test.each([
+        ["at the boundary", "boundary"],
+        ["before the boundary", "before"],
+    ] as const)("rejects an included commit %s", async (_label, includedPosition) => {
+        const fixture = await makeFixture(roots);
+        const beforeBoundary = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "before" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        const boundary = await fixture.log.append({
+            expectedHead: beforeBoundary,
+            tree: await writeTree(fixture, { "shared.txt": "boundary" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        await fixture.log.append({
+            expectedHead: boundary,
+            tree: await writeTree(fixture, { "shared.txt": "boundary" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+
+        await expect(
+            fixture.log.findForeignOverlap({
+                afterCommit: boundary,
+                paths: ["shared.txt"],
+                includedCommits: new Set([includedPosition === "boundary" ? boundary : beforeBoundary]),
+                ownerSessionId: "session-a",
+            })
+        ).rejects.toThrow(/included commit|suffix/i);
+    });
+
+    test.each([
+        ["foreign", makeMetadata("agent-turn", "session-b")],
+        ["external", makeMetadata("external")],
+    ] as const)("rejects an included %s side-branch commit", async (_label, metadata) => {
+        const fixture = await makeFixture(roots);
+        const boundary = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "boundary" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        await fixture.log.append({
+            expectedHead: boundary,
+            tree: await writeTree(fixture, { "shared.txt": "head" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        const sideBranch = await writeRawCommit(
+            fixture,
+            await writeTree(fixture, { "shared.txt": "side branch" }),
+            canonicalJson(metadata),
+            boundary
+        );
+
+        await expect(
+            fixture.log.findForeignOverlap({
+                afterCommit: boundary,
+                paths: ["other.txt"],
+                includedCommits: new Set([sideBranch]),
+                ownerSessionId: "session-a",
+            })
+        ).rejects.toThrow(/included commit|suffix/i);
+    });
+
+    test("rejects an included unknown object", async () => {
+        const fixture = await makeFixture(roots);
+        const boundary = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "boundary" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        await fixture.log.append({
+            expectedHead: boundary,
+            tree: await writeTree(fixture, { "shared.txt": "head" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+
+        await expect(
+            fixture.log.findForeignOverlap({
+                afterCommit: boundary,
+                paths: ["other.txt"],
+                includedCommits: new Set(["f".repeat(40)]),
+                ownerSessionId: "session-a",
+            })
+        ).rejects.toThrow(/included commit|suffix/i);
+    });
+
     test("reports external overlap without a Session owner", async () => {
         const fixture = await makeFixture(roots);
         const owner = await fixture.log.append({
@@ -272,6 +355,22 @@ describe.sequential("WorkspaceMutationLog", () => {
                 ownerSessionId: "session-a",
             })
         ).rejects.toThrow(/metadata|workspace|canonical/i);
+    });
+
+    test("rejects a commit whose tree OID names a blob", async () => {
+        const fixture = await makeFixture(roots);
+        const blob = await writeBlob(fixture, "not a tree");
+        const malformed = await writeRawCommitObject(fixture, blob, canonicalJson(makeMetadata("external")));
+
+        await expect(fixture.log.read(malformed)).rejects.toThrow(/tree object/i);
+    });
+
+    test("rejects a commit whose parent OID names a tree", async () => {
+        const fixture = await makeFixture(roots);
+        const tree = await writeTree(fixture, { "shared.txt": "value" });
+        const malformed = await writeRawCommitObject(fixture, tree, canonicalJson(makeMetadata("external")), tree);
+
+        await expect(fixture.log.read(malformed)).rejects.toThrow(/parent object/i);
     });
 
     test("rejects non-SHA-1 object ids and noncanonical input paths", async () => {
@@ -355,10 +454,37 @@ async function writeTree(fixture: Fixture, entries: Readonly<Record<string, stri
     return result.stdout.toString("ascii").trim();
 }
 
+async function writeBlob(fixture: Fixture, contents: string): Promise<string> {
+    const result = await fixture.git.run(["hash-object", "-w", "--stdin"], {
+        gitDir: fixture.gitDir,
+        stdin: Buffer.from(contents),
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
 async function writeRawCommit(fixture: Fixture, tree: string, message: string, parent?: string): Promise<string> {
     const result = await fixture.git.run(["commit-tree", tree, ...(parent == null ? [] : ["-p", parent])], {
         gitDir: fixture.gitDir,
         stdin: Buffer.from(message),
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
+async function writeRawCommitObject(fixture: Fixture, tree: string, message: string, parent?: string): Promise<string> {
+    const timestamp = "1700000000 +0000";
+    const contents = [
+        `tree ${tree}`,
+        ...(parent == null ? [] : [`parent ${parent}`]),
+        `author Test Author <author@example.test> ${timestamp}`,
+        `committer Test Committer <committer@example.test> ${timestamp}`,
+        "",
+        message,
+    ].join("\n");
+    const result = await fixture.git.run(["hash-object", "-t", "commit", "-w", "--stdin"], {
+        gitDir: fixture.gitDir,
+        stdin: Buffer.from(contents),
         timeoutMs: 5_000,
     });
     return result.stdout.toString("ascii").trim();
