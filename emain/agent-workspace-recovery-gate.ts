@@ -9,7 +9,7 @@ export type AgentWorkspaceRecoveryAction = "retry";
 
 type AgentWorkspaceRecoveryResolver = Pick<
     WorkspaceRecovery,
-    "resolvePending" | "assertWorkspaceWritable"
+    "inspectPending" | "resolvePending" | "assertWorkspaceWritable"
 >;
 
 export interface AgentWorkspaceRecoveryGate {
@@ -39,7 +39,7 @@ export function makeAgentWorkspaceRecoveryGate(
 
     const getRecovery = async (workspace: CanonicalWorkspaceIdentity) => {
         const recovery = await dependencies.recoveryFor(workspace);
-        const decision = await recovery.resolvePending();
+        const decision = await recovery.inspectPending();
         return decision.state === "needs-user" ? decision.view : undefined;
     };
 
@@ -47,7 +47,12 @@ export function makeAgentWorkspaceRecoveryGate(
         scanBeforeIpcRegistration() {
             scanPromise ??= dependencies.scanPendingWorkspaces().then(async (workspaces) => {
                 for (const workspace of workspaces) {
-                    await getRecovery(workspace);
+                    try {
+                        const recovery = await dependencies.recoveryFor(workspace);
+                        await recovery.resolvePending();
+                    } catch {
+                        // One damaged workspace must not block IPC registration or recovery for other workspaces.
+                    }
                 }
             });
             return scanPromise;

@@ -163,18 +163,25 @@ export class WorkspaceRecovery {
         }
         if (candidate.kind === "corrupt") return this.corruptDecision(candidate);
         if (!resolve) return this.resolveRecord(candidate.record, false, expectedOperationId);
-        return this.withSessionMutation(candidate.record.sessionPath, async () => {
-            const lease = await this.writerLeases.acquire({
-                workspaceKey: `${this.workspace.workspaceIdentity}:${this.workspace.workspaceIncarnation}`,
-                sessionId: candidate.record.sessionId,
-                boundaryToken: `recovery-${candidate.record.operationId}`,
-            });
-            try {
-                return await this.resolveRecord(candidate.record, resolve, expectedOperationId, true);
-            } finally {
-                lease.release();
-            }
+
+        const discovery = await this.withWriterLease(candidate.record, async () => {
+            const facts = await this.readFacts(candidate.record, expectedOperationId);
+            if (!facts) return { kind: "decision" as const, decision: { state: "none" as const } };
+            if (facts.head === facts.record.plannedCommit) return { kind: "planned" as const };
+            return {
+                kind: "decision" as const,
+                decision: await this.resolveFacts(facts, true, false),
+            };
         });
+        if (discovery.kind === "decision") return discovery.decision;
+
+        return this.withSessionMutation(candidate.record.sessionPath, () =>
+            this.withWriterLease(candidate.record, async () => {
+                const facts = await this.readFacts(candidate.record, expectedOperationId);
+                if (!facts) return { state: "none" };
+                return this.resolveFacts(facts, true, true);
+            })
+        );
     }
 
     async resolveRecord(
@@ -185,6 +192,14 @@ export class WorkspaceRecovery {
     ): Promise<WorkspaceRecoveryDecision> {
         const facts = await this.readFacts(candidate, expectedOperationId);
         if (!facts) return { state: "none" };
+        return this.resolveFacts(facts, resolve, sessionMutationHeld);
+    }
+
+    async resolveFacts(
+        facts: RecoveryFacts,
+        resolve: boolean,
+        sessionMutationHeld: boolean
+    ): Promise<WorkspaceRecoveryDecision> {
         if (facts.head === facts.record.sourceCommit) {
             if (resolve) await this.reconcileInterruptedArtifacts(facts);
             const paths = await this.classifyPaths(facts);
@@ -231,8 +246,9 @@ export class WorkspaceRecovery {
         candidate: PendingWorkspaceRestoreV2,
         expectedOperationId?: string
     ): Promise<RecoveryFacts | undefined> {
-        return this.withWorkspaceLock(async () => {
-            await this.assertCurrent();
+        await this.assertCurrent();
+        await this.verifyWorkspace(this.workspace);
+        const captured = await this.withWorkspaceLock(async () => {
             const current = await this.pending.readLocked();
             if (current.kind === "none" && expectedOperationId == null) return undefined;
             if (current.kind !== "valid" || current.record.operationId !== candidate.operationId) {
@@ -241,19 +257,33 @@ export class WorkspaceRecovery {
             if (expectedOperationId && current.record.operationId !== expectedOperationId) {
                 throw new Error("Pending restore belongs to another operation");
             }
-            await this.verifyWorkspace(this.workspace);
-            const [head, derived] = await Promise.all([
-                this.store.mutationLog.readHead(),
-                deriveWorkspaceRestoreState(this.store as never, current.record),
-            ]);
-            return { record: current.record, head, derived };
+            return { record: current.record, head: await this.store.mutationLog.readHead() };
         });
+        if (!captured) return undefined;
+        await this.pending.validateCommitFacts(captured.record);
+        const derived = await deriveWorkspaceRestoreState(this.store as never, captured.record);
+        return { ...captured, derived };
+    }
+
+    async withWriterLease<T>(record: PendingWorkspaceRestoreV2, operation: () => Promise<T>): Promise<T> {
+        const lease = await this.writerLeases.acquire({
+            workspaceKey: `${this.workspace.workspaceIdentity}:${this.workspace.workspaceIncarnation}`,
+            sessionId: record.sessionId,
+            boundaryToken: `recovery-${record.operationId}`,
+        });
+        try {
+            return await operation();
+        } finally {
+            lease.release();
+        }
     }
 
     async reconcileInterruptedArtifacts(facts: RecoveryFacts): Promise<void> {
         if (!this.reconcileArtifacts) return;
-        const desired = facts.head === facts.record.plannedCommit ? facts.derived.plannedStates : facts.derived.sourceStates;
-        const alternate = facts.head === facts.record.plannedCommit ? facts.derived.sourceStates : facts.derived.plannedStates;
+        const desired =
+            facts.head === facts.record.plannedCommit ? facts.derived.plannedStates : facts.derived.sourceStates;
+        const alternate =
+            facts.head === facts.record.plannedCommit ? facts.derived.sourceStates : facts.derived.plannedStates;
         for (let index = 0; index < facts.record.affectedPaths.length; index++) {
             const live = await this.inspectPath(facts.record.affectedPaths[index]!);
             if (live === "unknown" || live.state === "excluded") continue;

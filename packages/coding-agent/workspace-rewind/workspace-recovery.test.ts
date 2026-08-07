@@ -26,6 +26,8 @@ test("source head rolls partial application back without locating the owning Ses
     });
 
     expect(fixture.locateSession).not.toHaveBeenCalled();
+    expect(fixture.withSessionMutation).not.toHaveBeenCalled();
+    expect(fixture.acquireWriter).toHaveBeenCalledOnce();
     expect(fixture.applyPath).toHaveBeenCalledWith({
         operationId: fixture.record.operationId,
         path: "file.txt",
@@ -62,7 +64,7 @@ test("resolvePending leaves unknown head and path facts untouched", async () => 
     expect(fixture.locateSession).not.toHaveBeenCalled();
 });
 
-test("planned head appends the exact marker under Session then writer lease and clears pending", async () => {
+test("planned head releases discovery writer before taking Session then reacquires writer", async () => {
     const fixture = makeFixture({ head: PlannedCommit, live: Planned, leaf: "old-leaf" });
 
     await expect(fixture.recovery.resolvePending()).resolves.toEqual({
@@ -80,8 +82,21 @@ test("planned head appends the exact marker under Session then writer lease and 
         timestamp: fixture.record.workspaceStateTimestamp,
         customType: WorkspaceControlCustomTypes.state,
     });
-    expect(fixture.order.indexOf("session-mutation")).toBeLessThan(fixture.order.indexOf("writer"));
+    const writerIndexes = fixture.order.flatMap((item, index) => (item === "writer" ? [index] : []));
+    expect(writerIndexes).toHaveLength(2);
+    expect(writerIndexes[0]).toBeLessThan(fixture.order.indexOf("session-mutation"));
+    expect(fixture.order.indexOf("session-mutation")).toBeLessThan(writerIndexes[1]!);
     expect(fixture.removeLocked).toHaveBeenCalledWith(fixture.record.operationId);
+});
+
+test("durable pending commit facts are revalidated before any recovery write", async () => {
+    const fixture = makeFixture({ head: SourceCommit, live: Planned, invalidCommitFacts: true });
+
+    await expect(fixture.recovery.resolvePending()).rejects.toThrow(/invalid durable commit facts/i);
+
+    expect(fixture.validateCommitFacts).toHaveBeenCalledOnce();
+    expect(fixture.applyPath).not.toHaveBeenCalled();
+    expect(fixture.removeLocked).not.toHaveBeenCalled();
 });
 
 test("planned head with the exact existing marker clears pending idempotently", async () => {
@@ -122,11 +137,7 @@ test("classifies only exact source and planned states", () => {
     expect(classifyWorkspaceRecoveryPath(Source, Source, Planned)).toBe("before");
     expect(classifyWorkspaceRecoveryPath(Planned, Source, Planned)).toBe("target");
     expect(
-        classifyWorkspaceRecoveryPath(
-            { state: "file", oid: "c".repeat(40), executable: false },
-            Source,
-            Planned
-        )
+        classifyWorkspaceRecoveryPath({ state: "file", oid: "c".repeat(40), executable: false }, Source, Planned)
     ).toBe("unknown");
     expect(classifyWorkspaceRecoveryPath("unknown", Source, Planned)).toBe("unknown");
 });
@@ -142,6 +153,7 @@ interface Fixture {
     applyPath: ReturnType<typeof vi.fn>;
     appendEntries: ReturnType<typeof vi.fn>;
     removeLocked: ReturnType<typeof vi.fn>;
+    validateCommitFacts: ReturnType<typeof vi.fn>;
     entry?: SessionTreeEntry;
 }
 
@@ -151,6 +163,7 @@ function makeFixture(input: {
     leaf?: string | null;
     sessionMissing?: boolean;
     corrupt?: boolean;
+    invalidCommitFacts?: boolean;
 }): Fixture {
     const record = pendingRecord();
     const order: string[] = [];
@@ -161,7 +174,12 @@ function makeFixture(input: {
     const candidate = (): ScannedPendingWorkspaceRestore => {
         if (!active) return { kind: "none" };
         if (input.corrupt) {
-            return { kind: "corrupt", operationId: record.operationId, message: "corrupt pending", bytes: Buffer.from("{") };
+            return {
+                kind: "corrupt",
+                operationId: record.operationId,
+                message: "corrupt pending",
+                bytes: Buffer.from("{"),
+            };
         }
         return { kind: "valid", record: structuredClone(record) };
     };
@@ -172,6 +190,9 @@ function makeFixture(input: {
     const pending = {
         readCandidate: vi.fn(async () => candidate()),
         readLocked: vi.fn(async () => candidate()),
+        validateCommitFacts: vi.fn(async () => {
+            if (input.invalidCommitFacts) throw new Error("invalid durable commit facts");
+        }),
         removeLocked,
     };
     const store = makeStore(input.head, order);
@@ -220,6 +241,7 @@ function makeFixture(input: {
         applyPath,
         appendEntries,
         removeLocked,
+        validateCommitFacts: pending.validateCommitFacts,
     });
     return fixture;
 }
@@ -227,6 +249,7 @@ function makeFixture(input: {
 function makeStore(head: string, order: string[]) {
     const source = snapshot(SourceCommit, "6".repeat(40));
     const planned = snapshot(PlannedCommit, "7".repeat(40));
+    let workspaceLockHeld = false;
     return {
         storeRoot: "/private/tmp/crest-recovery-store",
         identity: {
@@ -238,20 +261,32 @@ function makeStore(head: string, order: string[]) {
         },
         mutationLog: { readHead: vi.fn(async () => head) },
         readCommitSnapshot: vi.fn(async (commit: string) => {
+            if (workspaceLockHeld) throw new Error("commit association read held the workspace lock");
             if (commit === SourceCommit) return source;
             if (commit === PlannedCommit) return planned;
             throw new Error("unknown commit");
         }),
-        readPathState: vi.fn(async (ref: WorkspaceSnapshotRefV1) => (ref.id === SourceCommit ? Source : Planned)),
+        readPathState: vi.fn(async (ref: WorkspaceSnapshotRefV1) => {
+            if (workspaceLockHeld) throw new Error("path derivation held the workspace lock");
+            return ref.id === SourceCommit ? Source : Planned;
+        }),
         readBlob: vi.fn(),
         withWorkspaceLock: vi.fn(async (operation: () => Promise<unknown>) => {
             order.push("workspace-lock");
-            return operation();
+            workspaceLockHeld = true;
+            try {
+                return await operation();
+            } finally {
+                workspaceLockHeld = false;
+            }
         }),
     };
 }
 
-async function exactMarker(store: ReturnType<typeof makeStore>, record: PendingWorkspaceRestoreV2): Promise<SessionTreeEntry> {
+async function exactMarker(
+    store: ReturnType<typeof makeStore>,
+    record: PendingWorkspaceRestoreV2
+): Promise<SessionTreeEntry> {
     const derived = await deriveWorkspaceRestoreState(store as never, record);
     return {
         type: "custom",

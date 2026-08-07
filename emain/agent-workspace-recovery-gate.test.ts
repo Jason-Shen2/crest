@@ -20,10 +20,9 @@ const Workspace = {
 function makeResolver(decision: WorkspaceRecoveryDecision = { state: "none" }) {
     return {
         resolvePending: vi.fn(async () => decision),
+        inspectPending: vi.fn(async () => decision),
         assertWorkspaceWritable: vi.fn(async () => {}),
-        keepCurrent: vi.fn(async () => {}),
-        quarantine: vi.fn(async () => {}),
-    } satisfies Pick<WorkspaceRecovery, "resolvePending" | "assertWorkspaceWritable" | "keepCurrent" | "quarantine">;
+    } satisfies Pick<WorkspaceRecovery, "resolvePending" | "inspectPending" | "assertWorkspaceWritable">;
 }
 
 describe("AgentWorkspaceRecoveryGate", () => {
@@ -44,7 +43,7 @@ describe("AgentWorkspaceRecoveryGate", () => {
         expect("ignoreCompletedOperationId" in gate).toBe(false);
     });
 
-    it("delegates startup, writes, queries, and actions to the same resolver", async () => {
+    it("resolves at startup but keeps renderer queries read-only", async () => {
         const resolver = makeResolver({
             state: "needs-user",
             view: {
@@ -52,7 +51,7 @@ describe("AgentWorkspaceRecoveryGate", () => {
                 corrupt: false,
                 message: "choose",
                 paths: [],
-                allowedActions: ["retry", "abandon-current"],
+                allowedActions: ["retry"],
             },
         });
         const recoveryFor = vi.fn(async () => resolver);
@@ -65,26 +64,12 @@ describe("AgentWorkspaceRecoveryGate", () => {
         await gate.assertWorkspaceWritable(Workspace);
         await expect(gate.getRecovery(Workspace)).resolves.toMatchObject({ operationId: "operation-1" });
         await gate.resolveRecovery(Workspace, "operation-1", "retry", async () => {});
-        await gate.resolveRecovery(Workspace, "operation-1", "abandon-current", async () => {});
-        resolver.resolvePending.mockResolvedValue({
-            state: "needs-user",
-            view: {
-                operationId: "operation-corrupt",
-                corrupt: true,
-                message: "corrupt",
-                paths: [],
-                allowedActions: ["quarantine-corrupt"],
-            },
-        });
-        await gate.resolveRecovery(Workspace, "operation-corrupt", "quarantine-corrupt", async () => {});
 
-        expect(recoveryFor).toHaveBeenCalledTimes(6);
+        expect(recoveryFor).toHaveBeenCalledTimes(4);
         expect(resolver.resolvePending).toHaveBeenNthCalledWith(1);
         expect(resolver.assertWorkspaceWritable).toHaveBeenCalledOnce();
-        expect(resolver.resolvePending).toHaveBeenNthCalledWith(2);
-        expect(resolver.resolvePending).toHaveBeenNthCalledWith(3, "operation-1");
-        expect(resolver.keepCurrent).toHaveBeenCalledWith("operation-1", expect.any(Function));
-        expect(resolver.quarantine).toHaveBeenCalledWith("operation-corrupt", expect.any(Function));
+        expect(resolver.inspectPending).toHaveBeenCalledOnce();
+        expect(resolver.resolvePending).toHaveBeenNthCalledWith(2, "operation-1");
     });
 
     it("waits for the resolver workspace lock and authoritatively rereads no pending", async () => {
@@ -92,18 +77,18 @@ describe("AgentWorkspaceRecoveryGate", () => {
         const lockReleased = new Promise<void>((resolve) => {
             releaseLock = resolve;
         });
-        const resolvePending = vi.fn(async () => {
+        const inspectPending = vi.fn(async () => {
             await lockReleased;
             return { state: "none" } as const;
         });
         const gate = makeAgentWorkspaceRecoveryGate({
             scanPendingWorkspaces: async () => [],
-            recoveryFor: async () => ({ ...makeResolver(), resolvePending }),
+            recoveryFor: async () => ({ ...makeResolver(), inspectPending }),
         });
 
         const query = gate.getRecovery(Workspace);
         await Promise.resolve();
-        expect(resolvePending).toHaveBeenCalledOnce();
+        expect(inspectPending).toHaveBeenCalledOnce();
         let settled = false;
         void query.finally(() => {
             settled = true;
@@ -115,7 +100,7 @@ describe("AgentWorkspaceRecoveryGate", () => {
         await expect(query).resolves.toBeUndefined();
     });
 
-    it("resolves auto-recoverable pending before returning a renderer view", async () => {
+    it("does not resolve auto-recoverable pending while answering a renderer query", async () => {
         const resolver = makeResolver({ state: "committed", operationId: "operation-1" });
         const gate = makeAgentWorkspaceRecoveryGate({
             scanPendingWorkspaces: async () => [],
@@ -123,7 +108,27 @@ describe("AgentWorkspaceRecoveryGate", () => {
         });
 
         await expect(gate.getRecovery(Workspace)).resolves.toBeUndefined();
-        expect(resolver.resolvePending).toHaveBeenCalledOnce();
+        expect(resolver.inspectPending).toHaveBeenCalledOnce();
+        expect(resolver.resolvePending).not.toHaveBeenCalled();
+    });
+
+    it("isolates startup recovery failures per workspace", async () => {
+        const second = { ...Workspace, workspaceIdentity: "workspace-2", storeKey: "workspace-2" };
+        const firstResolver = makeResolver();
+        firstResolver.resolvePending.mockRejectedValue(new Error("broken workspace"));
+        const secondResolver = makeResolver();
+        const recoveryFor = vi.fn(async (workspace: CanonicalWorkspaceIdentity) =>
+            workspace.workspaceIdentity === Workspace.workspaceIdentity ? firstResolver : secondResolver
+        );
+        const gate = makeAgentWorkspaceRecoveryGate({
+            scanPendingWorkspaces: async () => [Workspace, second],
+            recoveryFor,
+        });
+
+        await expect(gate.scanBeforeIpcRegistration()).resolves.toBeUndefined();
+
+        expect(firstResolver.resolvePending).toHaveBeenCalledOnce();
+        expect(secondResolver.resolvePending).toHaveBeenCalledOnce();
     });
 
     it("passes operationId into the locked resolver guard so stale actions cannot affect newer pending", async () => {
