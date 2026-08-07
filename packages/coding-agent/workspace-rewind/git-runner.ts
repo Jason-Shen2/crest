@@ -26,6 +26,7 @@ export interface GitRunOptions {
     cwd?: string;
     gitDir?: string;
     workTree?: string;
+    indexFile?: string;
     stdin?: Buffer;
     timeoutMs: number;
     maxStdoutBytes?: number;
@@ -62,6 +63,12 @@ export class WorkspaceGitRunnerError extends Error {
 }
 
 const MaxTimeoutMs = 2 ** 31 - 1;
+const InternalCommitIdentity = {
+    GIT_AUTHOR_NAME: "Crest Workspace",
+    GIT_AUTHOR_EMAIL: "workspace@crest.invalid",
+    GIT_COMMITTER_NAME: "Crest Workspace",
+    GIT_COMMITTER_EMAIL: "workspace@crest.invalid",
+} as const;
 const ApprovedGitSubcommands = new Set([
     "init",
     "config",
@@ -70,7 +77,14 @@ const ApprovedGitSubcommands = new Set([
     "check-ignore",
     "hash-object",
     "mktree",
+    "commit-tree",
+    "write-tree",
+    "read-tree",
+    "update-index",
     "cat-file",
+    "ls-tree",
+    "status",
+    "log",
     "diff",
     "diff-tree",
     "update-ref",
@@ -124,7 +138,13 @@ export class WorkspaceGitRunner {
             ...(options.workTree == null ? [] : [`--work-tree=${options.workTree}`]),
             ...args,
         ];
-        const env = makeIsolatedEnv(options.gitDir == null, securePaths.globalConfig, !checkIgnoreStdin);
+        const env = makeIsolatedEnv(
+            options.gitDir == null,
+            securePaths.globalConfig,
+            !checkIgnoreStdin,
+            options.indexFile,
+            args[0] === "commit-tree"
+        );
         let child;
 
         try {
@@ -271,10 +291,16 @@ function validateOptions(
     if (options.workTree != null && (typeof options.workTree !== "string" || !isAbsolute(options.workTree))) {
         throw makeError("invalid_options");
     }
+    if (options.indexFile != null && (typeof options.indexFile !== "string" || !isAbsolute(options.indexFile))) {
+        throw makeError("invalid_options");
+    }
     if (options.stdin != null && !Buffer.isBuffer(options.stdin)) {
         throw makeError("invalid_options");
     }
     if (isCheckIgnoreStdin(args) && !isValidNulDelimitedPaths(options.stdin)) {
+        throw makeError("invalid_options");
+    }
+    if (!isSafeApprovedInvocation(args, options)) {
         throw makeError("invalid_options");
     }
 
@@ -312,7 +338,198 @@ function isValidNulDelimitedPaths(value: Buffer | undefined): boolean {
     return true;
 }
 
-function makeIsolatedEnv(discovery: boolean, globalConfigPath: string, literalPathspecs: boolean): NodeJS.ProcessEnv {
+function isSafeApprovedInvocation(args: readonly string[], options: GitRunOptions): boolean {
+    const commandArgs = args.slice(1);
+    switch (args[0]) {
+        case "commit-tree":
+            return isSafeCommitTreeArgs(commandArgs);
+        case "write-tree":
+            return commandArgs.length === 0 && options.indexFile != null;
+        case "read-tree":
+            return isSafeReadTreeArgs(commandArgs, options.indexFile);
+        case "update-index":
+            return isSafeUpdateIndexArgs(commandArgs, options.indexFile, options.stdin);
+        case "ls-tree":
+            return isSafeLsTreeArgs(commandArgs);
+        case "status":
+            return isSafeStatusArgs(commandArgs, options);
+        case "log":
+            return isSafeLogArgs(commandArgs);
+        default:
+            return true;
+    }
+}
+
+function isSafeCommitTreeArgs(args: readonly string[]): boolean {
+    if (!isSha1(args[0])) return false;
+    return args.length === 1 || (args.length === 3 && args[1] === "-p" && isSha1(args[2]));
+}
+
+function isSafeReadTreeArgs(args: readonly string[], indexFile?: string): boolean {
+    return indexFile != null && args.length === 1 && (args[0] === "--empty" || isSha1(args[0]));
+}
+
+function isSafeUpdateIndexArgs(args: readonly string[], indexFile?: string, stdin?: Buffer): boolean {
+    if (indexFile == null || !Buffer.isBuffer(stdin)) return false;
+    return (
+        (args.length === 1 && args[0] === "--index-info") ||
+        (args.length === 2 && args.includes("-z") && args.includes("--index-info"))
+    );
+}
+
+function isSafeLsTreeArgs(args: readonly string[]): boolean {
+    const safeOptions = new Set([
+        "-r",
+        "-d",
+        "-t",
+        "-l",
+        "--long",
+        "-z",
+        "--name-only",
+        "--name-status",
+        "--object-only",
+        "--full-name",
+        "--full-tree",
+        "--abbrev",
+    ]);
+    let sawTree = false;
+    let paths = false;
+    for (const arg of args) {
+        if (paths) {
+            if (!isSafeLiteralArgument(arg)) return false;
+            continue;
+        }
+        if (arg === "--") {
+            if (!sawTree) return false;
+            paths = true;
+            continue;
+        }
+        if (!sawTree && (safeOptions.has(arg) || /^--abbrev=\d+$/.test(arg) || arg.startsWith("--format="))) {
+            continue;
+        }
+        if (!sawTree && !arg.startsWith("-") && isSafeLiteralArgument(arg)) {
+            sawTree = true;
+            continue;
+        }
+        return false;
+    }
+    return sawTree;
+}
+
+function isSafeStatusArgs(args: readonly string[], options: GitRunOptions): boolean {
+    if ((options.gitDir != null || options.workTree != null) && options.indexFile == null) return false;
+    const safeOptions = new Set([
+        "--porcelain",
+        "--short",
+        "-s",
+        "--branch",
+        "-b",
+        "--show-stash",
+        "--ahead-behind",
+        "--no-ahead-behind",
+        "-z",
+        "--null",
+        "--untracked-files",
+        "-uno",
+        "-unormal",
+        "-uall",
+        "--ignored",
+        "--ignore-submodules",
+        "--renames",
+        "--no-renames",
+    ]);
+    let paths = false;
+    for (const arg of args) {
+        if (paths) {
+            if (!isSafeLiteralArgument(arg)) return false;
+            continue;
+        }
+        if (arg === "--") {
+            paths = true;
+            continue;
+        }
+        if (
+            safeOptions.has(arg) ||
+            /^--porcelain=(?:v1|v2)$/.test(arg) ||
+            /^--untracked-files=(?:no|normal|all)$/.test(arg) ||
+            /^--ignored=(?:traditional|matching|no)$/.test(arg) ||
+            /^--ignore-submodules=(?:none|untracked|dirty|all)$/.test(arg) ||
+            /^--find-renames(?:=\d+%?)?$/.test(arg)
+        ) {
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
+function isSafeLogArgs(args: readonly string[]): boolean {
+    const safeOptions = new Set([
+        "--format=%H",
+        "--pretty=%H",
+        "--no-decorate",
+        "--first-parent",
+        "--reverse",
+        "--topo-order",
+        "--date-order",
+        "--author-date-order",
+        "--ancestry-path",
+        "--full-history",
+        "--simplify-merges",
+        "--no-walk",
+        "--no-walk=sorted",
+        "--no-walk=unsorted",
+        "-z",
+    ]);
+    let paths = false;
+    let countValue = false;
+    for (const arg of args) {
+        if (countValue) {
+            if (!/^\d+$/.test(arg)) return false;
+            countValue = false;
+            continue;
+        }
+        if (paths) {
+            if (!isSafeLiteralArgument(arg)) return false;
+            continue;
+        }
+        if (arg === "--") {
+            paths = true;
+            continue;
+        }
+        if (arg === "-n") {
+            countValue = true;
+            continue;
+        }
+        if (
+            safeOptions.has(arg) ||
+            /^--(?:max-count|skip)=\d+$/.test(arg) ||
+            /^-n\d+$/.test(arg) ||
+            /^--format=(?:format:|tformat:)?%H(?:%x00)?$/.test(arg)
+        ) {
+            continue;
+        }
+        if (!arg.startsWith("-") && isSafeLiteralArgument(arg)) continue;
+        return false;
+    }
+    return !countValue;
+}
+
+function isSafeLiteralArgument(value: string): boolean {
+    return value.length > 0 && !value.includes("\0");
+}
+
+function isSha1(value: string): boolean {
+    return /^[0-9a-f]{40}$/.test(value);
+}
+
+function makeIsolatedEnv(
+    discovery: boolean,
+    globalConfigPath: string,
+    literalPathspecs: boolean,
+    indexFile: string | undefined,
+    commitTree: boolean
+): NodeJS.ProcessEnv {
     const env = Object.fromEntries(
         Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))
     );
@@ -323,6 +540,8 @@ function makeIsolatedEnv(discovery: boolean, globalConfigPath: string, literalPa
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: globalConfigPath,
         GIT_ATTR_NOSYSTEM: "1",
+        ...(indexFile == null ? {} : { GIT_INDEX_FILE: indexFile }),
+        ...(commitTree ? InternalCommitIdentity : {}),
         ...(discovery ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
         LC_ALL: "C",
     };

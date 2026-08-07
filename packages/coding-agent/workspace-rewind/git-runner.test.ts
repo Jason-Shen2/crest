@@ -46,6 +46,8 @@ if (command === "report") {
 }
 `;
 
+const TestSha1 = "f".repeat(40);
+
 interface Report {
     argv: string[];
     cwd: string;
@@ -72,6 +74,7 @@ describe.sequential("WorkspaceGitRunner", () => {
         const runner = new WorkspaceGitRunner(executable);
         const gitDir = join(root, "shadow.git");
         const workTree = join(root, "worktree");
+        const indexFile = join(root, "private-index");
         const shellMarker = join(root, "shell-expanded");
         const originalArgs = [
             "hash-object",
@@ -126,6 +129,7 @@ describe.sequential("WorkspaceGitRunner", () => {
                 cwd: root,
                 gitDir,
                 workTree,
+                indexFile,
                 timeoutMs: 10_000,
             });
             const report = JSON.parse(result.stdout.toString()) as Report;
@@ -137,10 +141,10 @@ describe.sequential("WorkspaceGitRunner", () => {
             expect(report.gitEnv).not.toMatchObject({
                 GIT_DIR: "/user/repo.git",
                 GIT_WORK_TREE: "/user/worktree",
-                GIT_INDEX_FILE: "/user/index",
                 GIT_OBJECT_DIRECTORY: "/user/objects",
                 GIT_ALTERNATE_OBJECT_DIRECTORIES: "/user/alternates",
             });
+            expect(report.gitEnv.GIT_INDEX_FILE).toBe(indexFile);
             expect(report.gitEnv.GIT_CONFIG_COUNT).toBeUndefined();
             expect(report.gitEnv.GIT_CONFIG_KEY_0).toBeUndefined();
             expect(report.gitEnv.GIT_CONFIG_VALUE_0).toBeUndefined();
@@ -204,6 +208,79 @@ describe.sequential("WorkspaceGitRunner", () => {
         }
     });
 
+    test("uses a runner-owned commit identity instead of ambient Git identity", async () => {
+        const runner = new WorkspaceGitRunner();
+        const gitDir = join(root, "identity.git");
+        await runner.run(["init", "--bare", gitDir], { cwd: root, timeoutMs: 5_000 });
+        await runner.run(["config", "--local", "user.name", "Ambient Local"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        await runner.run(["config", "--local", "user.email", "ambient-local@example.test"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        await runner.run(["config", "--local", "author.name", "Ambient Config Author"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        await runner.run(["config", "--local", "author.email", "author-config@example.test"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        await runner.run(["config", "--local", "committer.name", "Ambient Config Committer"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        await runner.run(["config", "--local", "committer.email", "committer-config@example.test"], {
+            gitDir,
+            timeoutMs: 5_000,
+        });
+        const tree = (await runner.run(["mktree"], { gitDir, stdin: Buffer.alloc(0), timeoutMs: 5_000 })).stdout
+            .toString("ascii")
+            .trim();
+        const inherited = {
+            GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME,
+            GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL,
+            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME,
+            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL,
+        };
+        Object.assign(process.env, {
+            GIT_AUTHOR_NAME: "Ambient Author",
+            GIT_AUTHOR_EMAIL: "ambient-author@example.test",
+            GIT_COMMITTER_NAME: "Ambient Committer",
+            GIT_COMMITTER_EMAIL: "ambient-committer@example.test",
+        });
+
+        try {
+            const commit = (
+                await runner.run(["commit-tree", tree], {
+                    gitDir,
+                    stdin: Buffer.from("{}"),
+                    timeoutMs: 5_000,
+                })
+            ).stdout
+                .toString("ascii")
+                .trim();
+            const stored = (await runner.run(["cat-file", "-p", commit], { gitDir, timeoutMs: 5_000 })).stdout.toString(
+                "utf8"
+            );
+
+            expect(stored).toMatch(/^author Crest Workspace <workspace@crest\.invalid> /m);
+            expect(stored).toMatch(/^committer Crest Workspace <workspace@crest\.invalid> /m);
+            expect(stored).not.toContain("Ambient");
+            expect(stored).not.toContain("ambient-");
+        } finally {
+            for (const [key, value] of Object.entries(inherited)) {
+                if (value == null) {
+                    delete process.env[key];
+                } else {
+                    process.env[key] = value;
+                }
+            }
+        }
+    });
+
     test.each([
         ["leading -c", ["-c", "core.hooksPath=/user/hooks", "rev-parse"]],
         ["leading --config-env=", ["--config-env=core.hooksPath=ATTACKER", "rev-parse"]],
@@ -249,6 +326,60 @@ describe.sequential("WorkspaceGitRunner", () => {
         });
     });
 
+    test.each([
+        ["commit-tree", ["commit-tree", TestSha1], false, false],
+        ["write-tree", ["write-tree"], true, false],
+        ["read-tree", ["read-tree", TestSha1], true, false],
+        ["update-index", ["update-index", "-z", "--index-info"], true, true],
+        ["ls-tree", ["ls-tree", "-r", TestSha1], false, false],
+        ["status", ["status", "--porcelain=v2", "-z"], false, false],
+        ["log", ["log", "--format=%H", `${TestSha1}..${TestSha1}`, "--", "shared.txt"], false, false],
+    ] as const)("allows secure %s form through validation", async (_name, args, withIndex, withStdin) => {
+        const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
+
+        await expect(
+            runner.run(args, {
+                ...(withIndex ? { indexFile: join(root, "private-index") } : {}),
+                ...(withStdin ? { stdin: Buffer.alloc(0) } : {}),
+                timeoutMs: 100,
+            })
+        ).rejects.toMatchObject({ code: "spawn_failed" });
+    });
+
+    test.each([
+        ["commit-tree without a tree", () => ["commit-tree"], false],
+        ["commit signing", () => ["commit-tree", TestSha1, "-S"], true],
+        ["write-tree without a private index", () => ["write-tree"], false],
+        ["read-tree without a tree", () => ["read-tree"], true],
+        ["read-tree worktree update", () => ["read-tree", "--reset", "-u", TestSha1], true],
+        [
+            "read-tree alternate index output",
+            () => ["read-tree", `--index-output=${join(root, "victim")}`, TestSha1],
+            true,
+        ],
+        ["read-tree without a private index", () => ["read-tree", TestSha1], false],
+        ["update-index without an index operation", () => ["update-index"], true],
+        ["update-index worktree refresh", () => ["update-index", "--refresh"], true],
+        ["ls-tree without a tree", () => ["ls-tree"], false],
+        ["log external diff", () => ["log", "-p", "--ext-diff"], false],
+        ["log signature verification", () => ["log", "--show-signature"], false],
+    ] as const)("rejects unsafe %s before spawning", async (_name, makeArgs, withIndex) => {
+        const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
+
+        await expect(
+            runner.run(makeArgs(), {
+                ...(withIndex
+                    ? {
+                          gitDir: join(root, "shadow.git"),
+                          workTree: join(root, "worktree"),
+                          indexFile: join(root, "private-index"),
+                      }
+                    : {}),
+                timeoutMs: 100,
+            })
+        ).rejects.toMatchObject({ code: "invalid_options" });
+    });
+
     test("supports only the NUL-delimited check-ignore stdin form without Git literal pathspec injection", async () => {
         const repository = join(root, "repository");
         await mkdir(repository);
@@ -269,7 +400,7 @@ describe.sequential("WorkspaceGitRunner", () => {
         ).rejects.toMatchObject({ code: "invalid_options" });
     });
 
-    test.each(["read-tree", "checkout-index", "reset", "clean"])(
+    test.each(["checkout-index", "reset", "clean"])(
         "rejects forbidden builtin %s before spawning",
         async (subcommand) => {
             const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
@@ -283,6 +414,7 @@ describe.sequential("WorkspaceGitRunner", () => {
     test.each([
         ["relative gitDir", { gitDir: "relative.git" }],
         ["relative workTree", { workTree: "relative-worktree" }],
+        ["relative indexFile", { indexFile: "relative-index" }],
     ])("rejects %s before spawning", async (_name, invalidOptions) => {
         const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
 
