@@ -174,18 +174,20 @@ git commit -m "feat(agent): serialize workspace-writing turns"
 - Create: `packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts`
 - Modify: `packages/coding-agent/workspace-rewind/snapshot-store.ts`
 - Test: `packages/coding-agent/workspace-rewind/snapshot-store.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/stored-manifest.ts`
+- Test: `packages/coding-agent/workspace-rewind/stored-manifest.test.ts`
 
-- [ ] **Step 1: Write failing raw-state tests**
+- [x] **Step 1: Write failing raw-state tests**
 
 Cover regular/executable files, symlink target bytes, create/delete, binary data, whitespace paths, and a `.gitattributes` clean filter. Repository filters and hooks must not execute.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts
 ```
 
-- [ ] **Step 3: Implement candidate-only index updates**
+- [x] **Step 3: Implement candidate-only index updates**
 
 ```ts
 export class ShadowWorkspaceIndex {
@@ -195,19 +197,27 @@ export class ShadowWorkspaceIndex {
 }
 ```
 
-Hash raw bytes with `hash-object -w --stdin` without `--path`; update a private index using modes `100644`, `100755`, `120000`; remove via `update-index --force-remove`.
+Hash raw bytes with `hash-object -w --stdin` without `--path`; update a private index using modes `100644`, `100755`, `120000`; encode exact removals as mode-0 entries in the same `update-index --index-info` transaction.
 
-- [ ] **Step 4: Make snapshot refs commit-backed**
+- [x] **Step 4: Make snapshot refs commit-backed**
 
 Teach `snapshot-store.ts` to verify/read refs whose `id` is the mutation commit and `tree` is its tree. Preserve `readBlob`, `readPathState`, `diff`, and selective restore without a custom path-state tree.
 
-- [ ] **Step 5: Run GREEN and commit**
+- [x] **Step 5: Run GREEN and commit**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts
 git add packages/coding-agent/workspace-rewind/shadow-workspace-index.ts packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts
 git commit -m "feat(agent): build commit-backed workspace snapshots"
 ```
+
+**Implementation note (2026-08-08):** V3 stores only Workspace identity, scope, and coverage beside the
+mutation commit. Publication, association reads, and repeated trusted-owner checks do not traverse the
+Workspace tree; explicit verification or the first cold-process owner check performs the complete audit and
+then caches trust. The private index queries only candidate paths. Exact ancestor D/F removals and candidate
+updates are sent through one atomic `update-index`, and any load or mutation failure invalidates the warm
+index until it is reloaded from the authoritative tree. This keeps one-file warm work independent of an
+ancestor subtree's size without adding another durable index or recovery state machine.
 
 ### Task 4: Candidate discovery without a durable event WAL
 
