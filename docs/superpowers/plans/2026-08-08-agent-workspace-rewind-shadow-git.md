@@ -281,24 +281,33 @@ the transitional tracker keeps no durable cursor state and will be deleted at th
 
 **Files:**
 - Modify: `packages/coding-agent/workspace-rewind/snapshot-source.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-source.test.ts`
 - Modify: `packages/coding-agent/workspace-rewind/checkpoint-manager.ts`
 - Test: `packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts`
 - Modify: `packages/coding-agent/agent-session-runtime.ts`
 - Test: `packages/coding-agent/agent-session-runtime.test.ts`
 - Modify: `emain/agent-ipc.ts`
+- Test: `emain/agent-ipc.test.ts`
 - Test: `emain/agent-rewind.e2e.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/snapshot-store.ts`
+- Regression: `packages/coding-agent/workspace-rewind/workspace-mutation-log.ts`
+- Regression: `packages/coding-agent/workspace-rewind/workspace-snapshot-tracker.ts`
+- Regression tests: `packages/coding-agent/workspace-rewind/multi-session.integration.test.ts`
+- Regression tests: `packages/coding-agent/workspace-rewind/tool-independent.integration.test.ts`
+- Retention: `packages/coding-agent/workspace-rewind/snapshot-retention.ts`
+- Retention tests: `packages/coding-agent/workspace-rewind/snapshot-retention.test.ts`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Prove no-tool turns write one available `before == after` checkpoint without capture; the first allowed mutating tool acquires once; blocked tools do not acquire; unknown future tools default to write-capable; terminal capture releases on success/failure.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.test.ts
 ```
 
-- [ ] **Step 3: Add manager entry points**
+- [x] **Step 3: Add manager entry points**
 
 ```ts
 export interface WorkspaceCheckpointManager {
@@ -312,21 +321,31 @@ export interface WorkspaceCheckpointManager {
 
 Use a safe read-only allowlist (`read`, `grep`, `find`, `ls`, `web_fetch`); unknown tools may write. Acquisition first synchronizes external drift, then stores the base ref and lease on the active boundary.
 
-- [ ] **Step 4: Wire runtime after permission approval**
+- [x] **Step 4: Wire runtime after permission approval**
 
 Call permissions first. If allowed, call `beforeWorkspaceTool`; call `beforeHostedCommand` before hosted PTY start/write. Harness terminal remains the release point.
 
-- [ ] **Step 5: Replace pre-turn capture**
+- [x] **Step 5: Replace pre-turn capture**
 
 `session_before_user_turn` creates only boundary metadata. No-tool terminal reads the current head once for both refs. A writing terminal captures candidates and appends one owned `agent-turn` commit.
 
-- [ ] **Step 6: Run GREEN, E2E, and commit**
+- [x] **Step 6: Run GREEN, E2E, and commit**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.test.ts emain/agent-rewind.e2e.test.ts
 git add packages/coding-agent/workspace-rewind/snapshot-source.ts packages/coding-agent/workspace-rewind/checkpoint-manager.ts packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.ts packages/coding-agent/agent-session-runtime.test.ts emain/agent-ipc.ts emain/agent-rewind.e2e.test.ts
 git commit -m "feat(agent): checkpoint only workspace-writing turns"
 ```
+
+**Implementation note (2026-08-08):** User-turn start now records only in-memory boundary metadata.
+Permission-denied tools never acquire the Workspace writer lease; the first allowed mutating or unknown tool
+acquires it once, synchronizes external drift, and holds it until terminal finalization. Read-only turns reuse
+the current commit-backed head for both checkpoint sides without a second capture or physical commit. Writing
+turns publish the snapshot association before the CAS head update, append one owned `agent-turn` commit for a
+net state or coverage change, and release pending state and leases on every success/failure/dispose path.
+Initialization remains behind the `LegacyWorkspaceSnapshotCapture` seam until Task 8 replaces that transitional
+bootstrap with the shared Workspace resource. Retention validates and keeps the current authority-head
+association live even when no Session owns it; older unowned associations still expire normally.
 
 ### Task 6: Commit-history cross-Session conflicts
 
