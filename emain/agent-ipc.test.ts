@@ -1136,11 +1136,17 @@ describe("agent-ipc command helpers", () => {
         expect(release).toHaveBeenCalledTimes(2);
     });
 
-    it("preserves a manager failure across release retry and aggregates both first-attempt errors", async () => {
+    it("retries manager cleanup before releasing the tracker and shares each attempt", async () => {
+        const managerGate = deferred<void>();
         const managerFailure = new Error("manager dispose failed");
-        const releaseFailure = new Error("tracker release failed");
-        const managerDispose = vi.fn(async () => Promise.reject(managerFailure));
-        const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
+        const managerDispose = vi
+            .fn()
+            .mockImplementationOnce(async () => {
+                await managerGate.promise;
+                throw managerFailure;
+            })
+            .mockResolvedValueOnce(undefined);
+        const release = vi.fn(async () => undefined);
         const owned = releaseTrackerAfterCheckpointManager(
             {
                 isBusy: () => false,
@@ -1152,15 +1158,23 @@ describe("agent-ipc command helpers", () => {
             release
         );
 
-        const firstFailure = await owned.dispose().catch((error) => error);
-        expect(firstFailure).toBeInstanceOf(AggregateError);
-        expect((firstFailure as AggregateError).errors).toEqual([managerFailure, releaseFailure]);
+        const first = owned.dispose();
+        const firstConcurrent = owned.dispose();
+        expect(firstConcurrent).toBe(first);
+        expect(managerDispose).toHaveBeenCalledOnce();
+        expect(release).not.toHaveBeenCalled();
+
+        managerGate.resolve();
+        await expect(first).rejects.toBe(managerFailure);
+        expect(release).not.toHaveBeenCalled();
 
         const retry = owned.dispose();
-        await expect(retry).rejects.toBe(managerFailure);
+        const retryConcurrent = owned.dispose();
+        expect(retryConcurrent).toBe(retry);
+        await expect(retry).resolves.toBeUndefined();
+        expect(managerDispose).toHaveBeenCalledTimes(2);
+        expect(release).toHaveBeenCalledOnce();
         expect(owned.dispose()).toBe(retry);
-        expect(managerDispose).toHaveBeenCalledOnce();
-        expect(release).toHaveBeenCalledTimes(2);
     });
 
     it("quarantines a live runtime after tracker release failure and retries cleanup before mutation", async () => {

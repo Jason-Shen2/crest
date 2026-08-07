@@ -1244,9 +1244,7 @@ export function releaseTrackerAfterCheckpointManager(
     manager: WorkspaceCheckpointManager,
     release: () => Promise<void>
 ): WorkspaceCheckpointManager {
-    let managerDisposeAttempted = false;
-    let managerDisposeFailed = false;
-    let managerDisposeFailure: unknown;
+    let managerDisposed = false;
     let released = false;
     let currentAttempt: Promise<void> | undefined;
     return {
@@ -1257,32 +1255,19 @@ export function releaseTrackerAfterCheckpointManager(
         dispose: () => {
             if (currentAttempt) return currentAttempt;
             const attempt = (async () => {
-                const failures: unknown[] = [];
-                if (!managerDisposeAttempted) {
-                    managerDisposeAttempted = true;
-                    try {
-                        await manager.dispose();
-                    } catch (error) {
-                        managerDisposeFailed = true;
-                        managerDisposeFailure = error;
-                    }
+                if (!managerDisposed) {
+                    await manager.dispose();
+                    managerDisposed = true;
                 }
-                if (managerDisposeFailed) failures.push(managerDisposeFailure);
-                try {
+                if (!released) {
                     await release();
                     released = true;
-                } catch (error) {
-                    failures.push(error);
                 }
-                if (failures.length === 1) throw failures[0];
-                if (failures.length > 1) {
-                    throw new AggregateError(failures, "Agent rewind checkpoint and tracker cleanup failed");
-                }
-            })().catch((error) => {
-                if (!released && currentAttempt === attempt) currentAttempt = undefined;
-                throw error;
-            });
+            })();
             currentAttempt = attempt;
+            void attempt.catch(() => {
+                if (currentAttempt === attempt) currentAttempt = undefined;
+            });
             return attempt;
         },
     };
