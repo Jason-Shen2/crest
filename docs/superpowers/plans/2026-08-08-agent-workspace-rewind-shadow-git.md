@@ -1,0 +1,479 @@
+# Agent Workspace Rewind Shared Shadow Git Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Replace per-boundary custom incremental snapshots with one Workspace-level Shadow Git mutation log that provides exact turn ownership, monorepo-scale hot paths, and cross-Session-safe selective rewind.
+
+**Architecture:** Preserve the existing checkpoint, preview, and selective file-apply API while changing physical authority. A private Git ref becomes the only durable Workspace history; a generic runtime writer lease attributes mutating turns; restore planning rejects later same-path commits from other Sessions. Migration is staged inside this branch, but the final cutover deletes the persistent cursor and custom path-state authority.
+
+**Tech Stack:** TypeScript, Node.js filesystem APIs, Git plumbing through `WorkspaceGitRunner`, pi `AgentHarness`, Vitest, Electron main IPC.
+
+---
+
+## File structure
+
+- Create `workspace-mutation-log.ts` for append/read/CAS and ownership history queries.
+- Create `workspace-writer-lease.ts` for the canonical Workspace FIFO writer lease.
+- Create `workspace-candidates.ts` for non-authoritative Git/non-Git candidate discovery.
+- Create `shadow-workspace-index.ts` for raw-byte candidate updates to a private Git index/tree.
+- Keep `snapshot-store.ts` as the private object/read/restore facade while replacing its capture internals.
+- Keep `checkpoint-manager.ts` as turn lifecycle owner and `workspace-restore-executor.ts` as mutation executor.
+- Convert `workspace-tracker-registry.ts` into the shared Shadow Workspace resource registry.
+
+### Task 1: Shadow Git mutation log
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/git-runner.ts`
+- Test: `packages/coding-agent/workspace-rewind/git-runner.test.ts`
+- Create: `packages/coding-agent/workspace-rewind/workspace-mutation-log.ts`
+- Create: `packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts`
+
+- [ ] **Step 1: Write failing Git-runner tests**
+
+Prove `commit-tree`, `write-tree`, `read-tree`, `update-index`, `ls-tree`, `status`, and `log` are accepted; arbitrary subcommands remain rejected; a private absolute `indexFile` is accepted without exposing arbitrary environment variables.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts
+```
+
+Expected: FAIL on unsupported subcommands/options.
+
+- [ ] **Step 3: Add minimal secure plumbing**
+
+Add `indexFile?: string` to `GitRunOptions`, validate it as absolute, and set only `GIT_INDEX_FILE` internally. Keep hooks, external fsmonitor hooks, prompts, global config, and caller-provided `GIT_*` variables disabled.
+
+- [ ] **Step 4: Write failing mutation-log tests**
+
+```ts
+it("appends one CAS-ordered commit with canonical owner metadata", async () => {});
+it("rejects append when workspace head moved", async () => {});
+it("finds foreign same-path ABA history", async () => {});
+it("ignores later different-path commits", async () => {});
+it("rejects malformed or foreign-workspace metadata", async () => {});
+```
+
+- [ ] **Step 5: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts
+```
+
+Expected: FAIL because the module is absent.
+
+- [ ] **Step 6: Implement the log**
+
+```ts
+export type WorkspaceMutationKind =
+    | "external"
+    | "agent-turn"
+    | "turn-undo"
+    | "turn-redo"
+    | "rewind"
+    | "redo";
+
+export interface WorkspaceMutationMetadataV1 {
+    schemaversion: 1;
+    workspaceidentity: string;
+    workspaceincarnation: string;
+    kind: WorkspaceMutationKind;
+    sessionid?: string;
+    turnid?: string;
+    operationid?: string;
+}
+
+export interface ForeignOverlapInput {
+    afterCommit: string;
+    paths: readonly string[];
+    includedCommits: ReadonlySet<string>;
+    ownerSessionId: string;
+}
+
+export interface ForeignOverlap {
+    commit: string;
+    path: string;
+    sessionId?: string;
+}
+
+export class WorkspaceMutationLog {
+    constructor(input: {
+        git: WorkspaceGitRunner;
+        gitDir: string;
+        workspaceIdentity: string;
+        workspaceIncarnation: string;
+    });
+    readHead(): Promise<string | undefined>;
+    append(input: { expectedHead?: string; tree: string; metadata: WorkspaceMutationMetadataV1 }): Promise<string>;
+    read(commit: string): Promise<{ parent?: string; tree: string; metadata: WorkspaceMutationMetadataV1 }>;
+    changedPaths(commit: string): Promise<string[]>;
+    findForeignOverlap(input: ForeignOverlapInput): Promise<ForeignOverlap[]>;
+}
+```
+
+Use canonical JSON as the full commit message, `commit-tree` for creation, and CAS `update-ref` as the only head publication.
+
+- [ ] **Step 7: Run GREEN and commit**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts
+git add packages/coding-agent/workspace-rewind/git-runner.ts packages/coding-agent/workspace-rewind/git-runner.test.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts
+git commit -m "feat(agent): add shadow workspace mutation log"
+```
+
+### Task 2: Canonical Workspace writer lease
+
+**Files:**
+- Create: `packages/coding-agent/workspace-rewind/workspace-writer-lease.ts`
+- Create: `packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Cover one holder per Workspace, FIFO waiters, same-turn idempotence, wrong-owner release rejection, aborted waiters, and independent Workspaces proceeding concurrently.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts
+```
+
+- [ ] **Step 3: Implement the process-local registry**
+
+```ts
+export interface WorkspaceWriterLease {
+    workspaceKey: string;
+    sessionId: string;
+    boundaryToken: string;
+    release(): void;
+}
+
+export class WorkspaceWriterLeaseRegistry {
+    acquire(input: {
+        workspaceKey: string;
+        sessionId: string;
+        boundaryToken: string;
+        signal?: AbortSignal;
+    }): Promise<WorkspaceWriterLease>;
+}
+```
+
+The Electron main process is the sole Agent runtime owner. Continue using `WorkspaceMutationLock` only for short filesystem/ref transactions; do not hold it for an LLM turn.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts
+git add packages/coding-agent/workspace-rewind/workspace-writer-lease.ts packages/coding-agent/workspace-rewind/workspace-writer-lease.test.ts
+git commit -m "feat(agent): serialize workspace-writing turns"
+```
+
+### Task 3: Raw Shadow Git tree updates
+
+**Files:**
+- Create: `packages/coding-agent/workspace-rewind/shadow-workspace-index.ts`
+- Create: `packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-store.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-store.test.ts`
+
+- [ ] **Step 1: Write failing raw-state tests**
+
+Cover regular/executable files, symlink target bytes, create/delete, binary data, whitespace paths, and a `.gitattributes` clean filter. Repository filters and hooks must not execute.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts
+```
+
+- [ ] **Step 3: Implement candidate-only index updates**
+
+```ts
+export class ShadowWorkspaceIndex {
+    load(tree?: string): Promise<void>;
+    apply(states: readonly Array<{ path: string; state: CapturedPathStateV1 }>): Promise<void>;
+    writeTree(): Promise<string>;
+}
+```
+
+Hash raw bytes with `hash-object -w --stdin` without `--path`; update a private index using modes `100644`, `100755`, `120000`; remove via `update-index --force-remove`.
+
+- [ ] **Step 4: Make snapshot refs commit-backed**
+
+Teach `snapshot-store.ts` to verify/read refs whose `id` is the mutation commit and `tree` is its tree. Preserve `readBlob`, `readPathState`, `diff`, and selective restore without a custom path-state tree.
+
+- [ ] **Step 5: Run GREEN and commit**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts
+git add packages/coding-agent/workspace-rewind/shadow-workspace-index.ts packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts
+git commit -m "feat(agent): build commit-backed workspace snapshots"
+```
+
+### Task 4: Candidate discovery without a durable event WAL
+
+**Files:**
+- Create: `packages/coding-agent/workspace-rewind/workspace-candidates.ts`
+- Create: `packages/coding-agent/workspace-rewind/workspace-candidates.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/workspace-change-feed.ts`
+- Test: `packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts`
+
+- [ ] **Step 1: Write failing Git tests**
+
+Cover dirty tracked, staged, untracked, deleted, checkout/reset to clean, ignored, nested repository, and Shadow head differing from source HEAD. Output is canonical, unique, byte-order sorted.
+
+- [ ] **Step 2: Write failing non-Git tests**
+
+Cover one cold full baseline, warm dirty hints, overflow reconciliation, and restart ignoring old cursor artifacts.
+
+- [ ] **Step 3: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
+```
+
+- [ ] **Step 4: Implement candidates**
+
+Git candidates are the union of user Git status, Shadow-tree/source-HEAD differences, and warm in-memory hints. Non-Git uses one baseline then in-memory hints. Every hint is re-read and validated; gap/overflow reconciles or returns unavailable.
+
+- [ ] **Step 5: Remove cursor authority from the feed API**
+
+Expose only `start()`, `drain()`, `isTrusted()`, and `dispose()`. Leave the old storage file until Task 9 proves no callers remain.
+
+- [ ] **Step 6: Run GREEN and commit**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
+git add packages/coding-agent/workspace-rewind/workspace-candidates.ts packages/coding-agent/workspace-rewind/workspace-candidates.test.ts packages/coding-agent/workspace-rewind/workspace-change-feed.ts packages/coding-agent/workspace-rewind/workspace-change-feed.test.ts
+git commit -m "feat(agent): discover workspace delta candidates"
+```
+
+### Task 5: Tool-independent turn lifecycle
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-source.ts`
+- Modify: `packages/coding-agent/workspace-rewind/checkpoint-manager.ts`
+- Test: `packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts`
+- Modify: `packages/coding-agent/agent-session-runtime.ts`
+- Test: `packages/coding-agent/agent-session-runtime.test.ts`
+- Modify: `emain/agent-ipc.ts`
+- Test: `emain/agent-rewind.e2e.test.ts`
+
+- [ ] **Step 1: Write failing lifecycle tests**
+
+Prove no-tool turns write one available `before == after` checkpoint without capture; the first allowed mutating tool acquires once; blocked tools do not acquire; unknown future tools default to write-capable; terminal capture releases on success/failure.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.test.ts
+```
+
+- [ ] **Step 3: Add manager entry points**
+
+```ts
+export interface WorkspaceCheckpointManager {
+    isBusy(): boolean;
+    beforeWorkspaceTool(toolName: string, signal?: AbortSignal): Promise<void>;
+    beforeHostedCommand(signal?: AbortSignal): Promise<void>;
+    recover(): Promise<void>;
+    dispose(): Promise<void>;
+}
+```
+
+Use a safe read-only allowlist (`read`, `grep`, `find`, `ls`, `web_fetch`); unknown tools may write. Acquisition first synchronizes external drift, then stores the base ref and lease on the active boundary.
+
+- [ ] **Step 4: Wire runtime after permission approval**
+
+Call permissions first. If allowed, call `beforeWorkspaceTool`; call `beforeHostedCommand` before hosted PTY start/write. Harness terminal remains the release point.
+
+- [ ] **Step 5: Replace pre-turn capture**
+
+`session_before_user_turn` creates only boundary metadata. No-tool terminal reads the current head once for both refs. A writing terminal captures candidates and appends one owned `agent-turn` commit.
+
+- [ ] **Step 6: Run GREEN, E2E, and commit**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.test.ts emain/agent-rewind.e2e.test.ts
+git add packages/coding-agent/workspace-rewind/snapshot-source.ts packages/coding-agent/workspace-rewind/checkpoint-manager.ts packages/coding-agent/workspace-rewind/checkpoint-manager.test.ts packages/coding-agent/agent-session-runtime.ts packages/coding-agent/agent-session-runtime.test.ts emain/agent-ipc.ts emain/agent-rewind.e2e.test.ts
+git commit -m "feat(agent): checkpoint only workspace-writing turns"
+```
+
+### Task 6: Commit-history cross-Session conflicts
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/restore-plan.ts`
+- Test: `packages/coding-agent/workspace-rewind/restore-plan.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/turn-restore-plan.ts`
+- Test: `packages/coding-agent/workspace-rewind/turn-restore-plan.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/rewind-engine.ts`
+- Test: `packages/coding-agent/workspace-rewind/multi-session.integration.test.ts`
+
+- [ ] **Step 1: Write failing ownership tests**
+
+Cover different paths allowed; same path blocked; same path then same bytes still blocked; suffix-owned commits folded; external drift forceable only when previewed; Crest-owned overlap never forceable.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/restore-plan.test.ts packages/coding-agent/workspace-rewind/turn-restore-plan.test.ts packages/coding-agent/workspace-rewind/multi-session.integration.test.ts
+```
+
+- [ ] **Step 3: Add history authority**
+
+Validate each changed checkpoint's `after.id` as an `agent-turn` commit owned by its Session/turn and parented by `before.id`. Ask `findForeignOverlap()` before live-byte drift classification; foreign Crest overlap is a hard blocker.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+Run the same suites plus `rewind-engine.integration.test.ts`, then commit planner/engine changes.
+
+### Task 7: Result commits and minimal pending restore
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/pending-restore-store.ts`
+- Test: `packages/coding-agent/workspace-rewind/pending-restore-store.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/workspace-restore-executor.ts`
+- Test: `packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/workspace-recovery.ts`
+- Test: `packages/coding-agent/workspace-rewind/workspace-recovery.test.ts`
+- Test: `packages/coding-agent/workspace-rewind/restore-crash.test.ts`
+
+- [ ] **Step 1: Write failing crash tests**
+
+Cover pending absent, head at source with partial paths, head at planned with leaf pending, and unknown head/path state. Only the affected Workspace is gated.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/pending-restore-store.test.ts packages/coding-agent/workspace-rewind/workspace-recovery.test.ts packages/coding-agent/workspace-rewind/restore-crash.test.ts
+```
+
+- [ ] **Step 3: Reduce pending to one intent**
+
+Persist operation ID, source/planned commits, affected paths, Session ID, expected leaf, and target leaf. Persist no phases and no second frozen registry.
+
+- [ ] **Step 4: Append result commits**
+
+After file verification, CAS the Shadow head to `turn-undo`, `turn-redo`, `rewind`, or `redo`; move conversation only after the file commit; clear pending last.
+
+- [ ] **Step 5: Implement three-way recovery**
+
+Source head restores source paths; planned head completes leaf CAS; any other state emits one manual diagnostic without Force.
+
+- [ ] **Step 6: Run GREEN and commit**
+
+Run pending/executor/recovery/crash suites and commit.
+
+### Task 8: Registry cutover
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/workspace-tracker-registry.ts`
+- Test: `packages/coding-agent/workspace-rewind/workspace-tracker-registry.test.ts`
+- Modify: `emain/agent-rewind-feature.ts`
+- Test: `emain/agent-rewind-feature.test.ts`
+- Modify: `emain/agent-rewind-service.ts`
+- Test: `emain/agent-rewind-service.test.ts`
+
+- [ ] **Step 1: Write failing sharing tests**
+
+All Sessions in one canonical Workspace share store, mutation log, candidates, and writer leases; different incarnations remain isolated; last release disposes only in-memory hints.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/workspace-tracker-registry.test.ts emain/agent-rewind-feature.test.ts emain/agent-rewind-service.test.ts
+```
+
+- [ ] **Step 3: Replace tracker resources**
+
+Return `store`, `mutationLog`, `candidates`, and `writerLeases` from the shared resource. Wire checkpoint and rewind services to those exact objects.
+
+- [ ] **Step 4: Run GREEN and commit**
+
+Run the same suites and commit.
+
+### Task 9: Delete the superseded durable authority
+
+**Files:**
+- Delete: `packages/coding-agent/workspace-rewind/workspace-snapshot-tracker.ts`
+- Delete: `packages/coding-agent/workspace-rewind/workspace-snapshot-tracker.test.ts`
+- Delete: `packages/coding-agent/workspace-rewind/workspace-tracker-state.ts`
+- Delete: `packages/coding-agent/workspace-rewind/workspace-tracker-state.test.ts`
+- Delete: `packages/coding-agent/workspace-rewind/workspace-change-feed-storage.ts`
+- Delete: `packages/coding-agent/workspace-rewind/incremental-path-capture.ts`
+- Delete: `packages/coding-agent/workspace-rewind/incremental-path-capture.test.ts`
+- Delete: `packages/coding-agent/workspace-rewind/incremental-tree.ts`
+- Delete: `packages/coding-agent/workspace-rewind/incremental-tree.test.ts`
+- Delete: `packages/coding-agent/workspace-rewind/anchored-reader.ts`
+- Delete: `packages/coding-agent/workspace-rewind/anchored-reader.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/stored-manifest.ts`
+- Test: `packages/coding-agent/workspace-rewind/stored-manifest.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-store.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-store.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-retention.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-retention.test.ts`
+
+- [ ] **Step 1: Find stale production imports**
+
+```bash
+rg -n "WorkspaceSnapshotTracker|workspace-tracker-state|workspace-change-feed-storage|statetree" packages/coding-agent emain frontend
+```
+
+- [ ] **Step 2: Delete tracker/cursor/custom-state authority**
+
+Keep compact coverage metadata, Git tree/blob readers, candidate hints, one mutation ref, and pending/session-owned reachability only.
+
+- [ ] **Step 3: Run cutover verification**
+
+```bash
+rg -n "WorkspaceSnapshotTracker|workspace-tracker-state|workspace-change-feed-storage|statetree" packages/coding-agent emain frontend
+npx vitest run packages/coding-agent/workspace-rewind emain/agent-rewind-feature.test.ts emain/agent-rewind-service.test.ts emain/agent-rewind.e2e.test.ts
+```
+
+Expected: no production matches and all selected tests PASS.
+
+- [ ] **Step 4: Commit the atomic authority cutover**
+
+Commit deletions and retention/store simplification together so no shipped revision has two durable authorities.
+
+### Task 10: Production-scale gates and documentation
+
+**Files:**
+- Modify: `scripts/benchmark-agent-rewind-snapshots.ts`
+- Modify: `scripts/benchmark-agent-rewind-snapshots.test.ts`
+- Modify: `scripts/validate-agent-rewind-production-scale.ts`
+- Modify: `docs/agent-architecture.md`
+- Modify: `docs/agent-runtime-architecture.md`
+- Modify: `docs/superpowers/specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md`
+- Create: `docs/superpowers/reports/2026-08-08-agent-rewind-shadow-git-validation.md`
+
+- [ ] **Step 1: Write failing benchmark contract tests**
+
+Require cold, no-tool, warm no-change, 1/10/100 dirty paths, 1/2/4 Session contention, overlap, and restore rows with candidate count, bytes read, commits traversed, p50/p95, and pass/fallback/unavailable.
+
+- [ ] **Step 2: Run RED then update scripts**
+
+```bash
+npx vitest run scripts/benchmark-agent-rewind-snapshots.test.ts
+```
+
+- [ ] **Step 3: Run correctness gates**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind emain/agent-rewind-feature.test.ts emain/agent-rewind-service.test.ts emain/agent-rewind.e2e.test.ts frontend/app/agent/rewind
+npx tsc --noEmit
+git diff --check
+```
+
+- [ ] **Step 4: Run scale gates without raising limits**
+
+```bash
+npm run benchmark:agent-rewind-snapshots -- --entries=10000 --iterations=10
+npm run benchmark:agent-rewind-snapshots -- --entries=50000 --iterations=10
+npm run benchmark:agent-rewind-snapshots -- --entries=200000 --iterations=10
+```
+
+Record timeout/fallback as a failure or explicit limitation; never replace it with zero latency.
+
+- [ ] **Step 5: Close docs and commit evidence**
+
+Mark the design implemented only if correctness gates pass and old authority modules are gone. Force-add the ignored design, plan, and report files, then commit measured results.

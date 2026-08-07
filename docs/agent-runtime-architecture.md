@@ -446,6 +446,15 @@ quota, and one-step Redo are Crest-owned hardening. The deleted Go
 `CheckpointStore`/`filebackup` and tool-level `FileChange` semantics are
 historical and are not authoritative for this implementation.
 
+The approved next physical-state architecture replaces the custom durable
+incremental tracker with one Shared Shadow Git commit log per Workspace and a
+generic Agent Runtime Workspace Writer Lease. Git commit history becomes the
+single snapshot, ordering, ownership, and ABA authority; no persistent watcher
+event log or separate Path MVCC database is added. See
+[`2026-08-08-agent-workspace-rewind-shadow-git-design.md`](superpowers/specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md).
+This paragraph records the accepted successor design, not current runtime
+behavior.
+
 ---
 
 ## 8. Open questions and v2 candidates

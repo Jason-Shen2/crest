@@ -1,0 +1,300 @@
+# Agent Workspace Rewind Shared Shadow Git 设计
+
+**日期：** 2026-08-08
+
+**状态：** 已批准，待实施
+
+**上游设计：**
+
+- `2026-07-28-agent-workspace-rewind-design.md`
+- `2026-08-02-agent-rewind-recovery-simplification-design.md`
+- `2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`
+
+本文是 2026-08-04 增量快照设计的后继方案。旧设计和 benchmark 保留为问题发现、
+优化过程和历史证据；本文替代其下一阶段目标架构，不表示当前代码已经完成迁移。
+
+## 结论
+
+Workspace Rewind 的物理状态层收敛为：
+
+```text
+一个 Workspace 级 Shared Shadow Git commit log
++ Agent Runtime Workspace Writer Lease
++ Turn 到 owned commit 的逻辑 checkpoint
++ 基于 commit 历史的路径级冲突检查和选择性恢复
++ 一条 pending restore intent
+```
+
+不再建设持久化 watcher event log、独立 Path MVCC 数据库、自定义 Merkle tree 和复杂
+Recovery 状态机。Git object、tree、commit 和 ref 已经分别提供内容寻址、结构共享、版本
+历史和原子 head 更新；重复实现这些能力只会增加状态同步和故障恢复成本。
+
+## 为什么再次简化
+
+2026-08-04 方案正确地把每个 Session、每个边界的全量扫描改成 Workspace 级共享增量
+tracker，但目标架构仍同时维护 snapshot Git object store、自定义 path-state tree、
+watcher cursor/continuity、tracker state、fingerprint cache 和 restore journal。
+
+这些机制分别合理，但组合后出现了多个近似事实来源：Git tree 记录文件状态，自定义
+state tree 也记录文件状态；Git commit 可以记录修改顺序，Path MVCC 又记录一遍修改顺序；
+filesystem watcher 既是 hint，又逐渐承担持久连续性证明。任何一次 crash、cursor gap 或
+publication failure 都需要回答“哪一份状态才是真的”。
+
+新的判断标准是：只有直接满足以下硬约束的组件才进入核心架构。
+
+## 必须满足的硬约束
+
+1. **工具无关。** shell、PTY、CLI Agent 和未来工具的修改与 write/edit 一样可覆盖。
+2. **Monorepo 热路径按变化量工作。** 正常 turn 成本不能随 Workspace 总文件数线性增长。
+3. **Crest Session 互不覆盖。** Session A 回退不能静默覆盖 Session B 后续修改。
+4. **精确 Turn diff。** Review、Undo、Redo 使用该 turn 实际产生的 before → after。
+5. **选择性恢复。** 永不执行 `reset --hard`、`clean -fd` 或全树 checkout。
+6. **崩溃后可判定。** 多文件恢复中途崩溃不能留下无法识别的静默半完成状态。
+
+## 方案比较
+
+### A. Shared Shadow Git commit log + Writer Lease
+
+选定方案。一个 Workspace 只有一条物理版本历史，所有 Session checkpoint 只引用其中
+属于自己的 commit。Git 同时承担 snapshot、结构共享和路径历史职责。
+
+### B. Shadow Git + 持久 event log + 独立 Path MVCC
+
+热路径理论上可以更快，但存在三套状态和三种恢复协议。只有 production profiling 证明
+Git 候选发现或历史查询无法满足目标后，才允许增加可重建缓存；不提前建设第二事实源。
+
+### C. 每个 Session 独立 worktree
+
+能提供 Crest Session、用户编辑器和外部进程之间最强的并行隔离，但不再是“同一个物理
+Workspace”。它保留为用户显式选择的隔离模式，不由 Rewind 自动创建或切换。
+
+## 单一物理事实源
+
+每个 canonical Workspace 使用一个私有 bare Git repository：
+
+```text
+<wave-data>/agent-checkpoints/workspaces/<identity>-<incarnation>/repo.git
+```
+
+它不修改用户仓库的 HEAD、index、branch、stash、hook 或 reflog。内部只有一条权威 ref：
+
+```text
+refs/crest/workspace-head
+```
+
+每个 commit tree 表示一次已确认的 eligible Workspace 状态。commit metadata 至少包含
+schema、Workspace identity/incarnation、kind、Session、turn 和 operation identity。
+`kind` 只允许 `external`、`agent-turn`、`turn-undo`、`turn-redo`、`rewind` 和 `redo`。
+
+修改顺序、owner 和 ABA 历史都来自这条 commit chain。第一版不增加独立 `path_head` 或
+version table；若 profiling 证明 `git log -- <paths>` 成为瓶颈，可以增加完全可从 commit
+chain 重建的索引缓存，但缓存永远不参与正确性判定。
+
+## Workspace Writer Lease
+
+Git history 能记录修改顺序，但不能判断两个同时运行的进程各自写了哪些字节。因此严格
+的 Crest Session 归属需要一个 canonical Workspace Writer Lease。
+
+Lease 位于 Agent Runtime 的通用工具执行边界，不位于 write/edit 工具内部：
+
+1. 第一个可能写 Workspace 的工具执行前获取 lease；
+2. shell、PTY、CLI Agent 和未来工具自动经过同一入口；
+3. lease 保持到该 user turn terminal；
+4. 其他 Session 可以继续对话和推理，但 Workspace 写工具等待；
+5. 没有调用 Workspace-capable tool 的 turn 不获取 lease。
+
+无法可靠证明只读的 shell 命令按“可能写入”处理。脱离父进程继续写文件的后台任务，在
+退出或完成前不得生成 available terminal checkpoint；第一版不为 detached writer 建设
+进程归属系统。
+
+Lease 解决的是 Crest Session 之间的归属。用户编辑器或外部进程仍可绕过 lease；如果它
+们在 Agent 持有 lease 时写同一路径，系统无法从普通文件系统事件中可靠区分 owner。
+严格隔离这类 actor 必须使用独立 worktree，不在核心算法里伪造保证。
+
+## 候选路径发现
+
+Shadow Git 是状态 authority；候选发现只决定“需要检查哪些路径”，不能直接宣告状态。
+
+### Git Workspace
+
+使用 Git 自身的 index、built-in fsmonitor、untracked cache 和 status/diff plumbing 发现
+tracked、deleted 和 untracked candidate。正常热路径只读取候选路径并构造新 tree。
+
+首次初始化优先复用用户仓库的 clean tracked tree/object database，只物化 dirty 和
+untracked 内容。具有非确定性 clean/smudge filter、特殊 attributes 或无法证明 round-trip
+的路径不能宣称 raw-byte 精确；这些路径必须额外捕获，或明确标为 unavailable。
+
+### Non-Git Workspace
+
+首次使用必须建立一次完整 baseline，这是没有现有 index 时不可消除的成本。warm runtime
+使用内存 dirty set；watcher 只提供 hint，不保存 cursor WAL，也不成为 durable authority。
+overflow、runtime 重启或 watcher trust 丢失后执行 full reconcile；无法在预算内完成时
+checkpoint unavailable。
+
+### 稳定性
+
+候选读取必须验证 path identity、type 和内容稳定性。捕获完成后再查询一次候选；若出现
+新变化，合并后重试一次。仍持续变化的 turn 标为 unavailable，不引入无限重试或新状态机。
+
+## Turn checkpoint
+
+逻辑 checkpoint 与物理 commit 分离，但不增加新的 checkpoint wire schema。继续复用现有
+`before`、`after`、`changes` 和 `coverage`：`before.id` 是本 turn 获取 writer lease 后的
+base commit，`after.id` 是该 Session、该 turn 拥有的 result commit。owner 直接从 after
+commit metadata 验证，不在 checkpoint 中重复保存 `mutationcommit`。其他 Session 在同一段
+墙钟时间内产生的 commit 不会被算进本 turn 的 `changes`。
+
+### 没有 Workspace 工具
+
+```text
+changes = []
+basecommit = resultcommit = 当前可见 workspace head
+```
+
+不扫描 Workspace，不创建物理 commit。即使另一 Session 同时推进全局 head，也不会把
+对方的变化归入本 turn。
+
+### 有工具但没有净变化
+
+获取 lease 后验证候选；如果最终 tree 与 base 相同，`before == after`。仍写一个轻量
+available checkpoint，但不创建空 Git commit。
+
+### 有净变化
+
+1. 获取 lease 后先把 lease 之前的 live drift 写成 `external` commit；
+2. 该 commit 之后的 head 成为 turn `basecommit`；
+3. terminal 只捕获候选路径；
+4. 创建 `agent-turn` commit，metadata 记录 Session 和 turn；
+5. checkpoint 的 `after.id` 指向该 commit，`before.id` 指向它的 parent；
+6. 释放 lease。
+
+## Turn Undo/Redo
+
+Turn Undo 使用 `after commit parent → after commit` 得到精确 before → after，然后：
+
+1. 获取 Workspace Writer Lease；
+2. 将当前 live drift 同步成 `external` commit；
+3. 得到 target turn 的 changed paths；
+4. 检查 target commit 之后是否有不属于本次 Undo 集合的 commit 修改同一路径；
+5. 有 overlap 时 fail closed，即使最终 bytes 又相同；
+6. 只把目标路径恢复到 target parent 的状态；
+7. 追加 `turn-undo` commit，不移动任何对话节点。
+
+Redo 只允许紧接对应 Undo 的精确逆操作，追加 `turn-redo` commit。任何 overlap 或 live
+drift 都使 Redo 失效，不提供 Force。
+
+## 会话 Rewind/Redo
+
+会话 Rewind 收集被移除 conversation suffix 中由该 Session 拥有的所有 mutation commit。
+它不把整个 Workspace 重置到旧 head：
+
+1. 合并这些 commit 的 changed paths；
+2. 同一 target path 恢复到集合中最早 commit 的 parent 状态；
+3. 集合内部的后续覆盖属于本次 Rewind，可以一起折叠；
+4. 集合之外任一 commit 修改相同路径都视为冲突；
+5. 非重叠路径永远保留；
+6. 文件 commit 成功后才移动 conversation leaf。
+
+Redo 保存被 Rewind 撤销的 exact commit set，并按相同 overlap 规则应用逆变化。它追加新的
+`redo` commit，不移动 Shadow Git head 回到历史位置。
+
+## 多 Session 安全
+
+```text
+C10 external
+C11 Session A / Turn A1 / README.md
+C12 Session B / Turn B1 / package.json
+C13 Session B / Turn B2 / README.md
+```
+
+- A 回退 A1 时，C12 不重叠，`package.json` 保留；
+- C13 修改了同一路径，A1 回退被阻止；
+- 即使 C13 最后把 README 改回 C11 的 bytes，历史仍证明 B 写过该路径，避免 ABA；
+- 不需要第二套 Path MVCC 数据库。
+
+Force 只可用于明确归类为 external drift 的精确预览路径；任何 Crest Session-owned overlap
+都不可 Force。
+
+## 最小崩溃保护
+
+多文件 Workspace 写入和 Session SQLite leaf 更新无法成为同一个原子事务，因此不能完全
+删除 crash intent。但只保留一条存在/不存在的 pending record。它记录 operation、source
+commit、planned commit、affected paths、Session 和可选 conversation leaf CAS。
+
+正常流程是：计算 planned tree/commit、持久化 pending、原子替换目标文件、验证、CAS 推进
+Shadow Git ref、需要时 CAS 移动 conversation leaf、删除 pending。
+
+重启后只比较 pending、Shadow Git head、Session leaf 和目标路径：
+
+- head 仍是 source：恢复 source paths，删除 pending；
+- head 已是 planned 且文件匹配：补完 conversation leaf，删除 pending；
+- 其他状态：只阻止该 Workspace 的新写入并要求人工处理。
+
+它不是长期 Recovery registry，不缓存 `frozen` 状态，不广播多层 recovery phase，也不影响
+其他 Workspace。
+
+## 性能模型
+
+| 场景 | 目标复杂度 |
+| --- | --- |
+| 没有 Workspace 工具的 turn | O(1) |
+| warm、无净变化 | 接近 O(candidate paths)，Git fallback 可能扫描 metadata |
+| 修改 k 个文件 | O(k + changed bytes + affected tree depth) |
+| Turn Undo | O(changed paths + restored bytes + checkpoint 后 overlap history) |
+| 会话 Rewind | O(unique affected paths + restored bytes + suffix 后 overlap history) |
+| 存储 | O(unique changed content + small commits/trees) |
+
+大规模生成、依赖安装或 branch checkout 本身修改大量路径时，成本必然随变化量增长；算法
+不能把真实的 100k 文件变化伪装成 O(1)。首次 non-Git baseline、Git fsmonitor 无效后的
+fallback 和故障 reconcile 也可能扫描目录 metadata，但不再是每 turn 默认路径。
+
+## 明确删除和延期
+
+### 从目标架构删除
+
+- persistent watcher event WAL/cursor publication；
+- 独立 Path MVCC/version database；
+- 自定义 path-state Merkle tree；
+- per-Session physical snapshot store；
+- 每个 turn 的 full Workspace capture；
+- 多阶段 Recovery journal 和长期 frozen registry。
+
+### 只有测量后才能增加
+
+- 可从 commit chain 重建的 `path_head` 查询缓存；
+- live UI 使用的非权威 watcher；
+- Git maintenance/pack 调优；
+- background integrity audit；
+- 自动 retention tuning。
+
+### 保留为显式产品模式
+
+- 每 Session 独立 worktree；
+- 外部进程与 Agent 的严格并行隔离。
+
+## 验收条件
+
+1. 一个 canonical Workspace 只有一个 Shadow Git head 和一条 mutation chain。
+2. checkpoint 的变化只能来自其 owned after commit，不能来自墙钟边界的全局 tree diff。
+3. 两个 Crest Session 的 Workspace-capable tools 不能并行持有 writer lease。
+4. 无 Workspace 工具 turn 不枚举 Workspace、不创建 commit。
+5. 1/10/100 个文件的 warm 成本与 Workspace 总规模近似无关。
+6. Session A 的 Undo/Rewind 永不覆盖 Session B 的同路径 commit，包括 ABA。
+7. 非重叠 Session 修改在 Undo/Rewind 后逐字节保留。
+8. shell、PTY 和 CLI Agent 的净修改与 write/edit 一样进入 owned commit。
+9. crash matrix 只围绕 pending absent/source/planned/unknown 四种事实状态，不出现 phase
+   transition 测试。
+10. 10k、50k、200k Git monorepo 分别验证 cold、warm no-op、1/10/100 dirty paths 和
+    1/2/4 Session contention。
+11. Git attributes/filter、symlink、executable、binary、rename、nested repository 和 ignored
+    scope 都有明确覆盖或 unavailable 结果。
+
+## 决策摘要
+
+2026-08-04 设计证明了“逻辑 checkpoint 不等于物理全量扫描”，但实现复杂度继续增长的
+根因是尝试在 Git 之外维护另一套 durable 增量状态系统。本设计进一步把 Git commit chain
+提升为唯一物理事实源，并通过 Runtime Writer Lease 解决 Git 无法判断 Session ownership 的
+问题。
+
+最终保留的复杂度都直接对应一个不可删除的硬约束；任何新缓存或索引都必须先有 production
+profiling 证据，并保持可从 Shadow Git 完全重建。

@@ -373,6 +373,14 @@ baseline within production capture limits, so warm performance remains
 unproven. Linux results are not yet measured; Windows remains unsupported.
 These are recorded limits, not timeout-adjusted passes.
 
+The approved successor architecture is a single Shared Shadow Git commit log
+plus an Agent Runtime Workspace Writer Lease. It removes the durable watcher
+event log and custom path-state authority, and derives cross-Session path
+ownership from Git commit metadata and history rather than a second Path MVCC
+database. It is specified in
+[`2026-08-08-agent-workspace-rewind-shadow-git-design.md`](superpowers/specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md)
+and is not yet the current implementation.
+
 Revert restores only paths in the selected active-branch suffix. Normal mode
 does no mutation on drift. `Force revert` may overwrite only previewed red
 drift rows and shows the exact warning

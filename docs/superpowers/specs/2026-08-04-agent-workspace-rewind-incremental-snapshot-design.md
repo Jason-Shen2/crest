@@ -6,6 +6,11 @@
 
 **上游设计：** `2026-07-28-agent-workspace-rewind-design.md`
 
+> **后继设计：** `2026-08-08-agent-workspace-rewind-shadow-git-design.md` 已批准，待实施。
+> 本文保留为增量 tracker 的问题分析、实现记录和 benchmark 证据；后继设计删除持久化
+> watcher event log、独立 Path MVCC 设想和自定义 path-state 事实层，改用单一 Shared
+> Shadow Git commit log 与 Agent Runtime Writer Lease。
+
 ## 背景
 
 现有 Workspace Rewind 采用工具无关的 turn 边界快照：每个 durable user turn
