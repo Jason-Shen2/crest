@@ -5,15 +5,17 @@ import { describe, expect, it, vi } from "vitest";
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import { planRedo, planRewind } from "./restore-plan";
+import { planRedo, planRewind as planRewindImpl, type PlanRewindInput } from "./restore-plan";
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateBaseV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import type { WorkspaceMutationLog } from "./workspace-mutation-log";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
 const OidC = "c".repeat(40);
 const OidD = "d".repeat(40);
+const OidE = "e".repeat(40);
 
 const Workspace = {
     canonicalRoot: "/workspace",
@@ -79,7 +81,150 @@ function live(state: CapturedPathStateV1) {
     return { state: "absent" as const, fingerprint: "absent" };
 }
 
+type TestMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
+type TestPlanRewindInput = Omit<PlanRewindInput, "mutationLog"> & { mutationLog?: TestMutationLog };
+
+function mutationLog(
+    overrides: Partial<{
+        read: WorkspaceMutationLog["read"];
+        overlaps: Awaited<ReturnType<WorkspaceMutationLog["findForeignOverlap"]>>;
+    }> = {}
+): TestMutationLog {
+    return {
+        read:
+            overrides.read ??
+            vi.fn(async (commit: string) => {
+                const turnId = commit.endsWith("1") ? "u1" : "u2";
+                return {
+                    parent: `${OidA.slice(0, -1)}${commit.at(-1)}`,
+                    tree: OidA,
+                    metadata: {
+                        schemaversion: 1 as const,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "agent-turn" as const,
+                        sessionid: "session-1",
+                        turnid: turnId,
+                    },
+                };
+            }),
+        findForeignOverlap: vi.fn(async () => overrides.overlaps ?? []),
+    };
+}
+
+function planRewind(input: TestPlanRewindInput) {
+    return planRewindImpl({ ...input, mutationLog: input.mutationLog ?? mutationLog() } as PlanRewindInput);
+}
+
 describe("restore planning", () => {
+    it.each([
+        ["kind", { kind: "external" }],
+        ["owner", { sessionid: "session-2" }],
+        ["turn", { turnid: "u2" }],
+        ["parent", { parent: OidE }],
+    ] as const)(
+        "hard-blocks full rewind when a changed checkpoint has malformed %s authority",
+        async (_label, override) => {
+            const cp = checkpoint("u1", [
+                { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+            ]);
+            const read = vi.fn(async () => ({
+                parent: cp.before.id,
+                tree: cp.after.tree,
+                metadata: {
+                    schemaversion: 1 as const,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: "agent-turn" as const,
+                    sessionid: "session-1",
+                    turnid: "u1",
+                    ...("parent" in override ? {} : override),
+                },
+                ...("parent" in override ? { parent: override.parent } : {}),
+            }));
+            const history = mutationLog({ read });
+            const user = message("u1", null, "user");
+            const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, cp);
+            const inspectLivePath = vi.fn(async () => live(cp.changes[0]!.after));
+
+            const plan = await planRewind({
+                sessionId: "session-1",
+                workspace: Workspace,
+                rawEntries: [user, checkpointEntry],
+                semanticLeafId: checkpointEntry.id,
+                targetTurnId: user.id,
+                inspectLivePath,
+                verifySnapshot: async () => {},
+                mutationLog: history,
+            });
+
+            expect(plan.hardBlocked).toBe(true);
+            expect(inspectLivePath).not.toHaveBeenCalled();
+            expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        }
+    );
+
+    it("folds later selected checkpoint commits into full-rewind overlap inspection", async () => {
+        const first = checkpoint("u1", [
+            { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+        ]);
+        const second = checkpoint("u2", [
+            {
+                path: "a.ts",
+                before: { state: "file", oid: OidA, executable: false },
+                after: { state: "file", oid: OidB, executable: false },
+            },
+        ]);
+        const u1 = message("u1", null, "user");
+        const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, first);
+        const u2 = message("u2", c1.id, "user");
+        const c2 = custom("c2", u2.id, WorkspaceControlCustomTypes.checkpoint, second);
+        const history = mutationLog();
+
+        await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [u1, c1, u2, c2],
+            semanticLeafId: c2.id,
+            targetTurnId: u1.id,
+            inspectLivePath: async () => live(first.changes[0]!.after),
+            verifySnapshot: async () => {},
+            mutationLog: history,
+        });
+
+        expect(history.findForeignOverlap).toHaveBeenCalledWith({
+            afterCommit: first.after.id,
+            paths: ["a.ts"],
+            includedCommits: new Set([second.after.id]),
+            ownerSessionId: "session-1",
+        });
+    });
+
+    it("hard-blocks same-path Crest ABA history even when live bytes already match the rewind target", async () => {
+        const cp = checkpoint("u1", [
+            { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+        ]);
+        const history = mutationLog({
+            overlaps: [{ commit: OidE, path: "a.ts", sessionId: "session-2" }],
+        });
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, cp);
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [user, checkpointEntry],
+            semanticLeafId: checkpointEntry.id,
+            targetTurnId: user.id,
+            inspectLivePath: async () => live(cp.changes[0]!.before),
+            verifySnapshot: async () => {},
+            mutationLog: history,
+        });
+
+        expect(plan).toMatchObject({ hardBlocked: true, forceRequired: false });
+        expect(plan.paths).toEqual([expect.objectContaining({ path: "a.ts", conflict: "hard-blocker" })]);
+    });
+
     it("uses the active suffix, earliest before, latest after, hidden override, exclusions, and no-ops", async () => {
         const first = checkpoint("u1", [
             {
@@ -238,6 +383,20 @@ describe("restore planning", () => {
         const turn = transaction.at(-1)!;
         const cp = checkpoint(turn.id, []);
         const checkpointEntry = custom("checkpoint", turn.id, WorkspaceControlCustomTypes.checkpoint, cp);
+        const history = mutationLog({
+            read: vi.fn(async () => ({
+                parent: cp.before.id,
+                tree: cp.after.tree,
+                metadata: {
+                    schemaversion: 1 as const,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: "agent-turn" as const,
+                    sessionid: "session-1",
+                    turnid: turn.id,
+                },
+            })),
+        });
 
         const plan = await planRewind({
             sessionId: "session-1",
@@ -247,6 +406,7 @@ describe("restore planning", () => {
             targetTurnId: turn.id,
             inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
             verifySnapshot: async () => {},
+            mutationLog: history,
         });
 
         expect(plan.commitParentId).toBe("root");

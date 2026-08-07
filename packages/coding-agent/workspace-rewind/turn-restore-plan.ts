@@ -7,9 +7,12 @@ import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import type { LiveCapturedPathState } from "./live-path-state";
 import {
     classifyRestoreTransitions,
+    findCrestHistoryBlockers,
+    type RestoreMutationLog,
     type RestorePathTransitionV1,
     type RestorePlanV1,
     type RestoreTargetV1,
+    validateCheckpointMutationAuthority,
 } from "./restore-plan";
 import {
     advanceTurnMutationAuthority,
@@ -31,6 +34,7 @@ interface PlanTurnRestoreBaseInput {
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
+    mutationLog: RestoreMutationLog;
 }
 
 export type PlanTurnUndoInput = PlanTurnRestoreBaseInput;
@@ -294,6 +298,7 @@ async function prepare(
     const selected = terminalCheckpoint(active.branch, visibleEntries, sourceIndex, input.sessionId);
     if (!selected.checkpoint) return { plan: hardBlock(plan, selected.reason!, input.sourceTurnId) };
     if (!(await verifyCheckpoint(plan, selected.checkpoint, input))) return { plan };
+    if (!(await validateCheckpointMutationAuthority(plan, selected.checkpoint, input.mutationLog))) return { plan };
     if (!projectCoverage(plan, selected.checkpoint)) return { plan };
     return {
         plan,
@@ -302,6 +307,34 @@ async function prepare(
         checkpoint: selected.checkpoint,
         checkpointIndex: selected.entryIndex,
     };
+}
+
+async function classifyTurnTransitions(
+    plan: RestorePlanV1,
+    checkpoint: AvailableCheckpoint,
+    transitions: ReadonlyMap<string, RestorePathTransitionV1>,
+    input: PlanTurnRestoreBaseInput,
+    redo: boolean
+): Promise<RestorePlanV1> {
+    if (checkpoint.before.id === checkpoint.after.id) {
+        return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, redo);
+    }
+    const historyBlockers = await findCrestHistoryBlockers(plan, {
+        mutationLog: input.mutationLog,
+        afterCommit: checkpoint.after.id,
+        paths: [...transitions.keys()].sort(),
+        includedCommits: new Set(),
+        ownerSessionId: input.sessionId,
+    });
+    if (!historyBlockers) return plan;
+    return classifyRestoreTransitions(
+        plan,
+        transitions,
+        input.inspectLivePath,
+        input.inspectLivePaths,
+        redo,
+        historyBlockers
+    );
 }
 
 export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePlanV1> {
@@ -318,7 +351,7 @@ export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePla
     }
     const transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "undo");
     if (!transitions) return prepared.plan;
-    return classifyRestoreTransitions(prepared.plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
+    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, false);
 }
 
 export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePlanV1> {
@@ -342,5 +375,5 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
     }
     const transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "redo");
     if (!transitions) return prepared.plan;
-    return classifyRestoreTransitions(prepared.plan, transitions, input.inspectLivePath, input.inspectLivePaths, true);
+    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, true);
 }

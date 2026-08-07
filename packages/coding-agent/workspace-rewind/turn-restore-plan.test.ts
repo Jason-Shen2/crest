@@ -10,10 +10,12 @@ import { planTurnRedo, planTurnUndo } from "./turn-restore-plan";
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import type { WorkspaceMutationLog } from "./workspace-mutation-log";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
 const OidC = "c".repeat(40);
+const OidD = "d".repeat(40);
 
 const Workspace = {
     canonicalRoot: "/workspace",
@@ -107,7 +109,39 @@ function live(state: CapturedPathStateV1) {
     return { state: "absent" as const, fingerprint: "absent" };
 }
 
-function baseInput(entries: SessionTreeEntry[], liveStates: Record<string, ReturnType<typeof live>>) {
+type TestMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
+
+function mutationLog(
+    overrides: Partial<{
+        mutation: Awaited<ReturnType<WorkspaceMutationLog["read"]>>;
+        overlaps: Awaited<ReturnType<WorkspaceMutationLog["findForeignOverlap"]>>;
+    }> = {}
+): TestMutationLog {
+    return {
+        read: vi.fn(
+            async () =>
+                overrides.mutation ?? {
+                    parent: `${OidA.slice(0, -1)}1`,
+                    tree: OidA,
+                    metadata: {
+                        schemaversion: 1 as const,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "agent-turn" as const,
+                        sessionid: "session-1",
+                        turnid: "u1",
+                    },
+                }
+        ),
+        findForeignOverlap: vi.fn(async () => overrides.overlaps ?? []),
+    };
+}
+
+function baseInput(
+    entries: SessionTreeEntry[],
+    liveStates: Record<string, ReturnType<typeof live>>,
+    history: TestMutationLog = mutationLog()
+) {
     return {
         sessionId: "session-1",
         workspace: Workspace,
@@ -116,10 +150,136 @@ function baseInput(entries: SessionTreeEntry[], liveStates: Record<string, Retur
         sourceTurnId: "u1",
         inspectLivePath: vi.fn(async (path: string) => liveStates[path]!),
         verifySnapshot: vi.fn(async () => {}),
+        mutationLog: history,
     };
 }
 
 describe("per-turn restore planning", () => {
+    it.each([
+        ["kind", { kind: "external" }],
+        ["owner", { sessionid: "session-2" }],
+        ["turn", { turnid: "u2" }],
+        ["parent", { parent: OidD }],
+    ] as const)("hard-blocks changed checkpoints with malformed %s authority", async (_label, override) => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const history = mutationLog();
+        vi.mocked(history.read).mockResolvedValueOnce({
+            parent: `${OidA.slice(0, -1)}1`,
+            tree: OidA,
+            metadata: {
+                schemaversion: 1,
+                workspaceidentity: Workspace.workspaceIdentity,
+                workspaceincarnation: Workspace.workspaceIncarnation,
+                kind: "agent-turn",
+                sessionid: "session-1",
+                turnid: "u1",
+            },
+            ...("parent" in override ? { parent: override.parent } : {}),
+            ...("parent" in override
+                ? {}
+                : {
+                      metadata: {
+                          schemaversion: 1,
+                          workspaceidentity: Workspace.workspaceIdentity,
+                          workspaceincarnation: Workspace.workspaceIncarnation,
+                          kind: "agent-turn",
+                          sessionid: "session-1",
+                          turnid: "u1",
+                          ...override,
+                      },
+                  }),
+        });
+        const input = baseInput(branch(checkpoint([change])), { "a.ts": live(change.after) }, history);
+
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(input.inspectLivePath).not.toHaveBeenCalled();
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+    });
+
+    it("accepts a no-change checkpoint without requiring an agent-turn commit", async () => {
+        const unchanged = checkpoint([], { after: snapshot(`${OidA.slice(0, -1)}1`) });
+        const history = mutationLog();
+        vi.mocked(history.read).mockRejectedValue(new Error("must not read a no-change mutation"));
+
+        const plan = await planTurnUndo(baseInput(branch(unchanged), {}, history));
+
+        expect(plan.hardBlocked).toBe(false);
+        expect(history.read).not.toHaveBeenCalled();
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+    });
+
+    it("validates an agent-turn commit when only snapshot semantics changed", async () => {
+        const history = mutationLog({
+            mutation: {
+                parent: `${OidA.slice(0, -1)}1`,
+                tree: OidA,
+                metadata: {
+                    schemaversion: 1,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: "external",
+                },
+            },
+        });
+
+        const plan = await planTurnUndo(baseInput(branch(checkpoint([])), {}, history));
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(history.read).toHaveBeenCalledWith(`${OidB.slice(0, -1)}1`);
+    });
+
+    it("hard-blocks a later Crest-owned same-path mutation before inspecting live bytes", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const history = mutationLog({
+            overlaps: [{ commit: OidD, path: "a.ts", sessionId: "session-2" }],
+        });
+        const input = baseInput(branch(checkpoint([change])), { "a.ts": live(change.before) }, history);
+
+        const plan = await planTurnUndo(input);
+
+        expect(history.findForeignOverlap).toHaveBeenCalledWith({
+            afterCommit: `${OidB.slice(0, -1)}1`,
+            paths: ["a.ts"],
+            includedCommits: new Set(),
+            ownerSessionId: "session-1",
+        });
+        expect(vi.mocked(history.findForeignOverlap).mock.invocationCallOrder[0]).toBeLessThan(
+            input.inspectLivePath.mock.invocationCallOrder[0]
+        );
+        expect(plan).toMatchObject({ hardBlocked: true, forceRequired: false });
+        expect(plan.paths).toEqual([expect.objectContaining({ path: "a.ts", conflict: "hard-blocker" })]);
+    });
+
+    it("keeps external same-path drift forceable when the path is present in the preview", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const history = mutationLog({ overlaps: [{ commit: OidD, path: "a.ts" }] });
+
+        const plan = await planTurnUndo(
+            baseInput(
+                branch(checkpoint([change])),
+                { "a.ts": live({ state: "file", oid: OidC, executable: false }) },
+                history
+            )
+        );
+
+        expect(plan).toMatchObject({ hardBlocked: false, forceRequired: true });
+        expect(plan.paths).toEqual([expect.objectContaining({ path: "a.ts", conflict: "forceable-drift" })]);
+    });
+
     it("plans Undo from checkpoint after to before and Redo from before to after", async () => {
         const change = {
             path: "a.ts",

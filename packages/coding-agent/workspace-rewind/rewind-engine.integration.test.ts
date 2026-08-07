@@ -26,6 +26,7 @@ import { WorkspaceGitRunner } from "./git-runner";
 import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import { decodeWorkspaceStateEntry } from "./session-state";
+import { initializeWorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
 import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
@@ -131,14 +132,22 @@ async function appendAvailableCheckpoint(
     prompt: string,
     mutate: () => Promise<void>
 ) {
-    const before = await value.store.capture({ profile: "pre-turn" });
+    const source = await initializeWorkspaceCheckpointSnapshotSource({
+        store: value.store,
+        legacyCapture: value.store,
+    });
+    const before = await source.synchronizeExternal();
     const turnId = await value.session.appendMessage({
         role: "user",
         content: prompt,
         timestamp: Date.now(),
     } as never);
     await mutate();
-    const after = await value.store.capture({ profile: "terminal" });
+    const after = await source.captureOwnedTurn({
+        base: before.ref,
+        sessionId: value.metadata.id,
+        turnId,
+    });
     const checkpoint: WorkspaceCheckpointV1 = {
         schemaVersion: 1,
         status: "available",
@@ -147,8 +156,8 @@ async function appendAvailableCheckpoint(
         workspaceIdentity: value.identity.workspaceIdentity,
         workspaceIncarnation: value.identity.workspaceIncarnation,
         before: before.ref,
-        after: after.ref,
-        changes: await value.store.diff(before.ref, after.ref),
+        after: after.after,
+        changes: after.changes,
         coverage: after.coverage,
     };
     const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpoint);
@@ -171,6 +180,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             },
         });
         try {
+            const source = await initializeWorkspaceCheckpointSnapshotSource({
+                store: value.store,
+                legacyCapture: value.store,
+            });
+            const checkpointBefore = await source.synchronizeExternal();
             const before = await tracker.capture({ profile: "pre-turn" });
             const turnId = await value.session.appendMessage({
                 role: "user",
@@ -181,6 +195,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             feed.record(["old-dir", "new-dir"]);
             const after = await tracker.capture({ profile: "terminal" });
             const changes = await tracker.diff(before.ref, after.ref);
+            const checkpointAfter = await source.captureOwnedTurn({
+                base: checkpointBefore.ref,
+                sessionId: value.metadata.id,
+                turnId,
+            });
             const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
                 schemaVersion: 1,
                 status: "available",
@@ -188,10 +207,10 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
                 turnId,
                 workspaceIdentity: value.identity.workspaceIdentity,
                 workspaceIncarnation: value.identity.workspaceIncarnation,
-                before: before.ref,
-                after: after.ref,
-                changes,
-                coverage: after.coverage,
+                before: checkpointBefore.ref,
+                after: checkpointAfter.after,
+                changes: checkpointAfter.changes,
+                coverage: checkpointAfter.coverage,
             } satisfies WorkspaceCheckpointV1);
 
             expect(changes.map((change) => change.path)).toEqual([
@@ -284,7 +303,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         await writeFile(join(value.workspaceRoot, "run.sh"), "#!/bin/sh\necho before\n");
         await chmod(join(value.workspaceRoot, "run.sh"), 0o755);
         await symlink("before-target", join(value.workspaceRoot, "link"));
-        const before = await value.store.capture({ profile: "pre-turn" });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store: value.store,
+            legacyCapture: value.store,
+        });
+        const before = await source.synchronizeExternal();
 
         const turnId = await value.session.appendMessage({
             role: "user",
@@ -302,7 +325,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         await unlink(join(value.workspaceRoot, "link"));
         await symlink("after-target", join(value.workspaceRoot, "link"));
         await writeFile(join(value.workspaceRoot, "created.txt"), "created after");
-        const after = await value.store.capture({ profile: "terminal" });
+        const after = await source.captureOwnedTurn({
+            base: before.ref,
+            sessionId: value.metadata.id,
+            turnId,
+        });
         const checkpoint: WorkspaceCheckpointV1 = {
             schemaVersion: 1,
             status: "available",
@@ -311,8 +338,8 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             workspaceIdentity: value.identity.workspaceIdentity,
             workspaceIncarnation: value.identity.workspaceIncarnation,
             before: before.ref,
-            after: after.ref,
-            changes: await value.store.diff(before.ref, after.ref),
+            after: after.after,
+            changes: after.changes,
             coverage: after.coverage,
         };
         const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpoint);
@@ -392,14 +419,22 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
     it("blocks redo drift without issuing Force authority", async () => {
         const value = await fixture();
         await writeFile(join(value.workspaceRoot, "file.txt"), "before");
-        const before = await value.store.capture({ profile: "pre-turn" });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store: value.store,
+            legacyCapture: value.store,
+        });
+        const before = await source.synchronizeExternal();
         const turnId = await value.session.appendMessage({
             role: "user",
             content: "change",
             timestamp: Date.now(),
         } as never);
         await writeFile(join(value.workspaceRoot, "file.txt"), "after");
-        const after = await value.store.capture({ profile: "terminal" });
+        const after = await source.captureOwnedTurn({
+            base: before.ref,
+            sessionId: value.metadata.id,
+            turnId,
+        });
         const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
             schemaVersion: 1,
             status: "available",
@@ -408,8 +443,8 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             workspaceIdentity: value.identity.workspaceIdentity,
             workspaceIncarnation: value.identity.workspaceIncarnation,
             before: before.ref,
-            after: after.ref,
-            changes: await value.store.diff(before.ref, after.ref),
+            after: after.after,
+            changes: after.changes,
             coverage: after.coverage,
         } satisfies WorkspaceCheckpointV1);
         const preview = await value.engine.previewRewind({
@@ -457,7 +492,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             });
             await writeFile(join(value.workspaceRoot, "a.txt"), "before a");
             await writeFile(join(value.workspaceRoot, "b.txt"), "before b");
-            const before = await value.store.capture({ profile: "pre-turn" });
+            const source = await initializeWorkspaceCheckpointSnapshotSource({
+                store: value.store,
+                legacyCapture: value.store,
+            });
+            const before = await source.synchronizeExternal();
             const turnId = await value.session.appendMessage({
                 role: "user",
                 content: "change both",
@@ -465,7 +504,11 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             } as never);
             await writeFile(join(value.workspaceRoot, "a.txt"), "after a");
             await writeFile(join(value.workspaceRoot, "b.txt"), "after b");
-            const after = await value.store.capture({ profile: "terminal" });
+            const after = await source.captureOwnedTurn({
+                base: before.ref,
+                sessionId: value.metadata.id,
+                turnId,
+            });
             const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
                 schemaVersion: 1,
                 status: "available",
@@ -474,8 +517,8 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
                 workspaceIdentity: value.identity.workspaceIdentity,
                 workspaceIncarnation: value.identity.workspaceIncarnation,
                 before: before.ref,
-                after: after.ref,
-                changes: await value.store.diff(before.ref, after.ref),
+                after: after.after,
+                changes: after.changes,
                 coverage: after.coverage,
             } satisfies WorkspaceCheckpointV1);
             if (mode === "force-drift") {

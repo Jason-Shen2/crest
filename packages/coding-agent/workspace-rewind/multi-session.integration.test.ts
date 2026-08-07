@@ -111,10 +111,18 @@ async function checkpoint(
     prompt: string,
     mutate: () => Promise<void>
 ) {
-    const before = await value.store.capture({ profile: "pre-turn" });
+    const source = await initializeWorkspaceCheckpointSnapshotSource({
+        store: value.store,
+        legacyCapture: value.store,
+    });
+    const before = await source.synchronizeExternal();
     const turnId = await session.appendMessage({ role: "user", content: prompt, timestamp: Date.now() } as never);
     await mutate();
-    const after = await value.store.capture({ profile: "terminal" });
+    const after = await source.captureOwnedTurn({
+        base: before.ref,
+        sessionId: (await session.getMetadata()).id,
+        turnId,
+    });
     const metadata = await session.getMetadata();
     const data: WorkspaceCheckpointV1 = {
         schemaVersion: 1,
@@ -124,8 +132,8 @@ async function checkpoint(
         workspaceIdentity: value.identity.workspaceIdentity,
         workspaceIncarnation: value.identity.workspaceIncarnation,
         before: before.ref,
-        after: after.ref,
-        changes: await value.store.diff(before.ref, after.ref),
+        after: after.after,
+        changes: after.changes,
         coverage: after.coverage,
     };
     const checkpointId = await session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, data);
@@ -347,7 +355,7 @@ describe("workspace rewind across sessions", () => {
         expect(await readFile(join(value.workspaceRoot, "b.txt"), "utf8")).toBe("session-b");
     }, 30_000);
 
-    it("blocks normal turn Undo when another session replaced the same path", async () => {
+    it("hard-blocks turn Undo when another Session changed the same path", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
         const a = await checkpoint(value, value.sessions.a, "change shared in A", async () => {
@@ -364,20 +372,56 @@ describe("workspace rewind across sessions", () => {
             semanticLeafId: a.checkpointId,
             sourceTurnId: a.turnId,
         });
+        expect(planned).toMatchObject({ forceRequired: false, hardBlocked: true });
+        expect(planned.confirmationToken).toBeUndefined();
+        expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "hard-blocker" })]);
+        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b");
+    }, 30_000);
+
+    it("hard-blocks another Session's same-path ABA even when live bytes match the checkpoint", async () => {
+        const value = await makeFixture();
+        await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
+        const a = await checkpoint(value, value.sessions.a, "change shared in A", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-a");
+        });
+        await checkpoint(value, value.sessions.b, "replace shared", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b");
+        });
+        await checkpoint(value, value.sessions.b, "restore A bytes", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-a");
+        });
+
+        const planned = await value.engine.previewTurnUndo({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            sourceTurnId: a.turnId,
+        });
+
+        expect(planned).toMatchObject({ forceRequired: false, hardBlocked: true });
+        expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "hard-blocker" })]);
+        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-a");
+    }, 30_000);
+
+    it("keeps unowned disk drift forceable only on the previewed path", async () => {
+        const value = await makeFixture();
+        await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
+        const a = await checkpoint(value, value.sessions.a, "change shared in A", async () => {
+            await writeFile(join(value.workspaceRoot, "shared.txt"), "session-a");
+        });
+        await writeFile(join(value.workspaceRoot, "shared.txt"), "external");
+
+        const planned = await value.engine.previewTurnUndo({
+            session: value.sessions.a,
+            sessionId: a.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: a.checkpointId,
+            sourceTurnId: a.turnId,
+        });
+
         expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
         expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" })]);
-        await expect(
-            value.engine.applyTurnUndo({
-                session: value.sessions.a,
-                sessionId: a.metadata.id,
-                workspace: value.identity,
-                semanticLeafId: a.checkpointId,
-                sourceTurnId: a.turnId,
-                mode: "normal",
-                confirmation: value.confirmations.take(planned.confirmationToken!),
-            })
-        ).rejects.toThrow(/force/i);
-        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b");
     }, 30_000);
 
     it("rewinds only session A paths while preserving later session B bytes", async () => {
@@ -443,7 +487,7 @@ describe("workspace rewind across sessions", () => {
         expect(await value.sessions.b.getLeafId()).toBe(sessionBLeaf);
     }, 30_000);
 
-    it("requires Force for overlapping later writes and overwrites only the confirmed red-list", async () => {
+    it("never offers Force for another Session's overlapping later writes", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
         await writeFile(join(value.workspaceRoot, "b-only.txt"), "base-b");
@@ -455,40 +499,11 @@ describe("workspace rewind across sessions", () => {
             await writeFile(join(value.workspaceRoot, "b-only.txt"), "session-b-only");
         });
 
-        const normalPreview = await preview(value, a);
-        expect(normalPreview.forceRequired).toBe(true);
-        expect(normalPreview.files).toEqual([
-            expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" }),
-        ]);
-        const beforeNormal = {
-            shared: await readFile(join(value.workspaceRoot, "shared.txt"), "utf8"),
-            private: await readFile(join(value.workspaceRoot, "b-only.txt"), "utf8"),
-        };
-        await expect(
-            value.engine.applyRewind({
-                session: value.sessions.a,
-                sessionId: a.metadata.id,
-                workspace: value.identity,
-                semanticLeafId: a.checkpointId,
-                targetTurnId: a.turnId,
-                mode: "normal",
-                confirmation: value.confirmations.take(normalPreview.confirmationToken!),
-            })
-        ).rejects.toThrow(/force/i);
-        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe(beforeNormal.shared);
-        expect(await readFile(join(value.workspaceRoot, "b-only.txt"), "utf8")).toBe(beforeNormal.private);
-
-        const forcePreview = await preview(value, a);
-        await value.engine.applyRewind({
-            session: value.sessions.a,
-            sessionId: a.metadata.id,
-            workspace: value.identity,
-            semanticLeafId: a.checkpointId,
-            targetTurnId: a.turnId,
-            mode: "force-drift",
-            confirmation: value.confirmations.take(forcePreview.confirmationToken!),
-        });
-        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("base");
+        const planned = await preview(value, a);
+        expect(planned).toMatchObject({ forceRequired: false, hardBlocked: true });
+        expect(planned.confirmationToken).toBeUndefined();
+        expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "hard-blocker" })]);
+        expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b");
         expect(await readFile(join(value.workspaceRoot, "b-only.txt"), "utf8")).toBe("session-b-only");
     }, 30_000);
 

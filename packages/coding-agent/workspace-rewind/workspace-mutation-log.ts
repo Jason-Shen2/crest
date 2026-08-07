@@ -234,6 +234,9 @@ export class WorkspaceMutationLog {
             } else {
                 for (const path of changedPaths) {
                     if (!pathSet.has(path)) continue;
+                    if (entry.metadata.kind !== "external" && entry.metadata.sessionid == null) {
+                        throw new Error("Overlapping Crest mutation is missing its owner Session");
+                    }
                     overlaps.push({
                         commit: cursor,
                         path,

@@ -17,6 +17,7 @@ import { decodeWorkspaceCheckpointEntry, decodeWorkspaceStateEntry, isWorkspaceC
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import type { WorkspaceMutationLog } from "./workspace-mutation-log";
 
 const RestorePlanMaxInspectedPaths = 4_096;
 const RestorePlanFallbackInspectionConcurrency = 8;
@@ -61,6 +62,7 @@ export interface PlanRewindInput {
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
+    mutationLog: RestoreMutationLog;
 }
 
 export interface PlanRedoInput {
@@ -74,6 +76,8 @@ export interface PlanRedoInput {
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
 }
 
+export type RestoreMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
+
 interface ActiveBranchResult {
     branch?: SessionTreeEntry[];
     reason?: string;
@@ -83,6 +87,64 @@ export interface RestorePathTransitionV1 {
     target: CapturedPathStateV1;
     expectedCurrent: CapturedPathStateV1;
     excludedReason?: string;
+}
+
+export async function validateCheckpointMutationAuthority(
+    plan: RestorePlanV1,
+    checkpoint: Extract<WorkspaceCheckpointV1, { status: "available" }>,
+    mutationLog: RestoreMutationLog
+): Promise<boolean> {
+    if (checkpoint.before.id === checkpoint.after.id) {
+        if (checkpoint.changes.length === 0) return true;
+        hardBlock(plan, "workspace checkpoint claims changes without an agent-turn mutation", checkpoint.turnId);
+        return false;
+    }
+    try {
+        const mutation = await mutationLog.read(checkpoint.after.id);
+        if (
+            mutation.metadata.kind !== "agent-turn" ||
+            mutation.metadata.sessionid !== checkpoint.originSessionId ||
+            mutation.metadata.turnid !== checkpoint.turnId ||
+            mutation.parent !== checkpoint.before.id
+        ) {
+            hardBlock(plan, "workspace checkpoint mutation authority is invalid", checkpoint.turnId);
+            return false;
+        }
+    } catch (error) {
+        hardBlock(plan, `workspace checkpoint mutation is unavailable: ${(error as Error).message}`, checkpoint.turnId);
+        return false;
+    }
+    return true;
+}
+
+export async function findCrestHistoryBlockers(
+    plan: RestorePlanV1,
+    input: {
+        mutationLog: RestoreMutationLog;
+        afterCommit: string;
+        paths: readonly string[];
+        includedCommits: ReadonlySet<string>;
+        ownerSessionId: string;
+    }
+): Promise<ReadonlyMap<string, string> | undefined> {
+    if (input.paths.length === 0) return new Map();
+    try {
+        const overlaps = await input.mutationLog.findForeignOverlap({
+            afterCommit: input.afterCommit,
+            paths: input.paths,
+            includedCommits: input.includedCommits,
+            ownerSessionId: input.ownerSessionId,
+        });
+        const blockers = new Map<string, string>();
+        for (const overlap of overlaps) {
+            if (overlap.sessionId == null) continue;
+            blockers.set(overlap.path, "a later Crest operation changed this path");
+        }
+        return blockers;
+    } catch (error) {
+        hardBlock(plan, `workspace mutation history is unavailable: ${(error as Error).message}`);
+        return undefined;
+    }
 }
 
 function emptyPlan(
@@ -293,7 +355,8 @@ export async function classifyRestoreTransitions(
     transitions: ReadonlyMap<string, RestorePathTransitionV1>,
     inspect: (path: string) => Promise<LiveCapturedPathState>,
     inspectBatch: ((paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>) | undefined,
-    redo: boolean
+    redo: boolean,
+    historyBlockers: ReadonlyMap<string, string> = new Map()
 ): Promise<RestorePlanV1> {
     const effective: Array<{ path: string; transition: RestorePathTransitionV1 }> = [];
     for (const path of [...transitions.keys()].sort()) {
@@ -330,15 +393,19 @@ export async function classifyRestoreTransitions(
             expected: transition.expectedCurrent,
             target: transition.target,
         });
-        if (liveMatchesCaptured(live, transition.target)) {
+        const historyBlocker = historyBlockers.get(path);
+        if (liveMatchesCaptured(live, transition.target) && !historyBlocker) {
             continue;
         }
         const conflict =
-            redo && classification.conflict === "forceable-drift" ? "hard-blocker" : classification.conflict;
+            historyBlocker || (redo && classification.conflict === "forceable-drift")
+                ? "hard-blocker"
+                : classification.conflict;
         const reason =
-            redo && classification.conflict === "forceable-drift"
+            historyBlocker ??
+            (redo && classification.conflict === "forceable-drift"
                 ? "redo is blocked because the workspace changed after rewind"
-                : classification.reason;
+                : classification.reason);
         plan.paths.push({
             path,
             operation: operationFor(transition.target, transition.expectedCurrent),
@@ -482,6 +549,14 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     if (snapshotFailure) {
         return hardBlock(plan, snapshotFailure);
     }
+    for (const checkpoint of checkpoints) {
+        if (
+            checkpoint.status === "available" &&
+            !(await validateCheckpointMutationAuthority(plan, checkpoint, input.mutationLog))
+        ) {
+            return plan;
+        }
+    }
 
     const workspaceStatesByEntryId = new Map(workspaceStates.map((item) => [item.entryId, item.state]));
     const transitions = new Map<string, RestorePathTransitionV1>();
@@ -522,7 +597,31 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             }
         }
     }
-    return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
+    const changedCheckpoints = checkpoints.filter(
+        (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
+            checkpoint.status === "available" && checkpoint.before.id !== checkpoint.after.id
+    );
+    const historyBoundary = changedCheckpoints[0]?.after.id;
+    const includedCommits = new Set(changedCheckpoints.slice(1).map((checkpoint) => checkpoint.after.id));
+    if (!historyBoundary) {
+        return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
+    }
+    const historyBlockers = await findCrestHistoryBlockers(plan, {
+        mutationLog: input.mutationLog,
+        afterCommit: historyBoundary,
+        paths: [...transitions.keys()].sort(),
+        includedCommits,
+        ownerSessionId: input.sessionId,
+    });
+    if (!historyBlockers) return plan;
+    return classifyRestoreTransitions(
+        plan,
+        transitions,
+        input.inspectLivePath,
+        input.inspectLivePaths,
+        false,
+        historyBlockers
+    );
 }
 
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {

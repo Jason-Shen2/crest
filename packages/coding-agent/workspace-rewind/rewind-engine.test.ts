@@ -185,6 +185,10 @@ function makeHarness(input: {
     let captureCount = 0;
     const store = {
         identity: Workspace,
+        mutationLog: {
+            read: vi.fn(),
+            findForeignOverlap: vi.fn(),
+        },
         capture: vi.fn(async (_options: { profile: string; requiredPaths?: readonly string[] }) => {
             captureCount++;
             order.push(captureCount === 1 ? "safety-capture" : "result-capture");
@@ -375,6 +379,9 @@ describe("WorkspaceRewindEngine transaction", () => {
             targetTurnId: "turn-1",
         });
 
+        expect(value.options.planRewind).toHaveBeenCalledWith(
+            expect.objectContaining({ mutationLog: value.store.mutationLog })
+        );
         expect(rewindPreview.files[0]).toMatchObject({ operation: "write", additions: 1, deletions: 1 });
         expect(rewindPreview.files[0]!.diff).toContain("-checkpoint B");
         expect(rewindPreview.files[0]!.diff).toContain("+checkpoint A");

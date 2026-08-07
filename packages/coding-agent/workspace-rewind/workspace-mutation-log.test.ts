@@ -256,6 +256,28 @@ describe.sequential("WorkspaceMutationLog", () => {
         ).resolves.toEqual([]);
     });
 
+    test("rejects an overlapping Crest mutation without a Session owner", async () => {
+        const fixture = await makeFixture(roots);
+        const owner = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "owner" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        await fixture.log.append({
+            expectedHead: owner,
+            tree: await writeTree(fixture, { "shared.txt": "unowned" }),
+            metadata: makeMetadata("turn-undo"),
+        });
+
+        await expect(
+            fixture.log.findForeignOverlap({
+                afterCommit: owner,
+                paths: ["shared.txt"],
+                includedCommits: new Set(),
+                ownerSessionId: "session-a",
+            })
+        ).rejects.toThrow(/owner|session/i);
+    });
+
     test("ignores only included commits authorized for the owner Session", async () => {
         const fixture = await makeFixture(roots);
         const owner = await fixture.log.append({
