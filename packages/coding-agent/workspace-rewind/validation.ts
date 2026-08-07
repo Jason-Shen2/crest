@@ -429,6 +429,7 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         "kind",
         "applyMode",
         "forcedPaths",
+        "sourceSnapshot",
         "currentSnapshot",
         "currentStates",
     ];
@@ -444,9 +445,10 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         return undefined;
     }
     const forcedPaths = decodeUniquePaths(value.forcedPaths);
+    const sourceSnapshot = decodeWorkspaceSnapshotRefV1(value.sourceSnapshot);
     const currentSnapshot = decodeWorkspaceSnapshotRefV1(value.currentSnapshot);
     const currentStates = decodePathStates(value.currentStates);
-    if (!forcedPaths || !currentSnapshot || !currentStates) {
+    if (!forcedPaths || !sourceSnapshot || !currentSnapshot || !currentStates) {
         return undefined;
     }
     const base: WorkspaceStateBaseV1 = {
@@ -457,6 +459,7 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         workspaceIncarnation: value.workspaceIncarnation,
         applyMode: value.applyMode,
         forcedPaths,
+        sourceSnapshot,
         currentSnapshot,
         currentStates,
     };
@@ -467,13 +470,7 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         const rewindValue = value.rewind;
         if (
             !isRecord(rewindValue) ||
-            !hasExactKeys(rewindValue, [
-                "fromLeafId",
-                "targetTurnId",
-                "targetBoundaryId",
-                "redoSnapshot",
-                "redoStates",
-            ]) ||
+            !hasExactKeys(rewindValue, ["fromLeafId", "targetTurnId", "targetBoundaryId", "redoStates"]) ||
             (rewindValue.fromLeafId !== null && typeof rewindValue.fromLeafId !== "string") ||
             typeof rewindValue.targetTurnId !== "string" ||
             (rewindValue.targetBoundaryId !== null && typeof rewindValue.targetBoundaryId !== "string")
@@ -482,9 +479,8 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         }
         const fromLeafId = typeof rewindValue.fromLeafId === "string" ? rewindValue.fromLeafId : null;
         const targetBoundaryId = typeof rewindValue.targetBoundaryId === "string" ? rewindValue.targetBoundaryId : null;
-        const redoSnapshot = decodeWorkspaceSnapshotRefV1(rewindValue.redoSnapshot);
         const redoStates = decodePathStates(rewindValue.redoStates);
-        if (!redoSnapshot || !redoStates) {
+        if (!redoStates) {
             return undefined;
         }
         return {
@@ -494,13 +490,16 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
                 fromLeafId,
                 targetTurnId: rewindValue.targetTurnId,
                 targetBoundaryId,
-                redoSnapshot,
                 redoStates,
             },
         };
     }
     if (value.kind === "redo") {
-        return hasExactKeys(value, baseKeys) ? { ...base, kind: "redo" } : undefined;
+        return hasExactKeys(value, [...baseKeys, "sourceRewindOperationId"]) &&
+            typeof value.sourceRewindOperationId === "string" &&
+            value.sourceRewindOperationId.length > 0
+            ? { ...base, kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId }
+            : undefined;
     }
     if (value.kind === "turn-undo") {
         if (!hasExactKeys(value, [...baseKeys, "sourceTurnId"]) || typeof value.sourceTurnId !== "string") {

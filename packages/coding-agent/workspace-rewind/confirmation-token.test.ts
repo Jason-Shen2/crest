@@ -74,7 +74,12 @@ describe("rewind confirmation registry", () => {
         expect(() => registry.take(invalidated, 2)).toThrow(/token/i);
 
         expect(() => registry.issue(plan({ hardBlocked: true }), 0)).toThrow(/blocked/i);
-        expect(() => registry.issue(plan({ target: { kind: "redo" }, forceRequired: true }), 0)).toThrow(/redo/i);
+        expect(() =>
+            registry.issue(
+                plan({ target: { kind: "redo", sourceRewindOperationId: "rewind-1" }, forceRequired: true }),
+                0
+            )
+        ).toThrow(/redo/i);
     });
 
     it("stores an immutable projection so callers cannot expand force authority", () => {

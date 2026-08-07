@@ -378,7 +378,7 @@ export async function buildAgentRewindSessionStateView(
     if (state) {
         try {
             await probe.verifySnapshot(state.currentSnapshot);
-            await probe.verifySnapshot(state.rewind.redoSnapshot);
+            await probe.verifySnapshot(state.sourceSnapshot);
             const messages = revertedUserMessages(entries, state.rewind.targetTurnId, state.rewind.fromLeafId);
             const files = await projectRedoFileRows(state, probe.readBlob);
             if (!files) throw new Error("rewind marker is missing an expected current path state");

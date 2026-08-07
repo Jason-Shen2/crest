@@ -81,10 +81,11 @@ function live(state: CapturedPathStateV1) {
     return { state: "absent" as const, fingerprint: "absent" };
 }
 
-type TestMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
-type TestPlanRewindInput = Omit<PlanRewindInput, "mutationLog" | "diffSnapshots"> & {
+type TestMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap"> & { useFixtureCommits?: boolean };
+type TestPlanRewindInput = Omit<PlanRewindInput, "mutationLog" | "diffSnapshots" | "readCommitSnapshot"> & {
     mutationLog?: TestMutationLog;
     diffSnapshots?: PlanRewindInput["diffSnapshots"];
+    readCommitSnapshot?: PlanRewindInput["readCommitSnapshot"];
 };
 
 function mutationLog(
@@ -94,6 +95,7 @@ function mutationLog(
     }> = {}
 ): TestMutationLog {
     return {
+        useFixtureCommits: overrides.read == null,
         read:
             overrides.read ??
             vi.fn(async (commit: string) => {
@@ -116,10 +118,125 @@ function mutationLog(
 }
 
 function planRewind(input: TestPlanRewindInput) {
+    const history = input.mutationLog ?? mutationLog();
+    let explicitLeaf: SessionTreeEntry | undefined;
+    for (let index = input.rawEntries.length - 1; index >= 0; index--) {
+        if (input.rawEntries[index]!.type === "leaf") {
+            explicitLeaf = input.rawEntries[index];
+            break;
+        }
+    }
+    const fixtureEntries = (() => {
+        if (explicitLeaf?.type !== "leaf" || explicitLeaf.targetId == null) return input.rawEntries;
+        const byId = new Map(
+            input.rawEntries.filter((entry) => entry.type !== "leaf").map((entry) => [entry.id, entry])
+        );
+        const reversed: SessionTreeEntry[] = [];
+        let cursor: string | null = explicitLeaf.targetId;
+        while (cursor != null) {
+            const entry = byId.get(cursor);
+            if (!entry) break;
+            reversed.push(entry);
+            cursor = entry.parentId;
+        }
+        return reversed.reverse();
+    })();
+    const refs = new Map<string, ReturnType<typeof snapshot>>();
+    const resultChanges = new Map<
+        string,
+        Array<{ path: string; before: CapturedPathStateV1; after: CapturedPathStateV1 }>
+    >();
+    const statesByCurrentCommit = new Map<string, WorkspaceStateV1>();
+    const checkpointsByAfterCommit = new Map<string, Extract<WorkspaceCheckpointV1, { status: "available" }>>();
+    const pathStates = new Map<string, CapturedPathStateV1>();
+    let authoritySnapshot: ReturnType<typeof snapshot> | undefined;
+    for (const entry of fixtureEntries) {
+        if (entry.type !== "custom") continue;
+        if ("transactionId" in entry) continue;
+        if (entry.customType === WorkspaceControlCustomTypes.checkpoint) {
+            const value = entry.data as WorkspaceCheckpointV1;
+            if (value.status !== "available") continue;
+            refs.set(value.before.id, value.before);
+            refs.set(value.after.id, value.after);
+            checkpointsByAfterCommit.set(value.after.id, value);
+            for (const change of value.changes) pathStates.set(change.path, change.after);
+            authoritySnapshot = value.after;
+            continue;
+        }
+        if (entry.customType !== WorkspaceControlCustomTypes.state) continue;
+        const value = entry.data as WorkspaceStateV1;
+        if (!value || !Array.isArray(value.currentStates) || value.currentSnapshot == null) continue;
+        value.sourceSnapshot ??= authoritySnapshot ?? value.currentSnapshot;
+        if (value.kind === "rewind" && "redoSnapshot" in value.rewind) {
+            delete (value.rewind as { redoSnapshot?: unknown }).redoSnapshot;
+        }
+        const changes = value.currentStates.flatMap((current) => {
+            const before = pathStates.get(current.path) ?? ({ state: "absent" } as const);
+            pathStates.set(current.path, current.state);
+            return JSON.stringify(before) === JSON.stringify(current.state)
+                ? []
+                : [{ path: current.path, before, after: current.state }];
+        });
+        refs.set(value.sourceSnapshot.id, value.sourceSnapshot);
+        refs.set(value.currentSnapshot.id, value.currentSnapshot);
+        resultChanges.set(`${value.sourceSnapshot.id}:${value.currentSnapshot.id}`, changes);
+        statesByCurrentCommit.set(value.currentSnapshot.id, value);
+        authoritySnapshot = value.currentSnapshot;
+    }
+    const originalRead = vi.mocked(history.read).getMockImplementation();
+    if (originalRead) {
+        vi.mocked(history.read).mockImplementation(async (commit) => {
+            const state = statesByCurrentCommit.get(commit);
+            if (!state) {
+                const checkpoint = checkpointsByAfterCommit.get(commit);
+                if (!checkpoint || !history.useFixtureCommits) return await originalRead(commit);
+                return {
+                    parent: checkpoint.before.id,
+                    tree: checkpoint.after.tree,
+                    metadata: {
+                        schemaversion: 1,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "agent-turn",
+                        sessionid: checkpoint.originSessionId,
+                        turnid: checkpoint.turnId,
+                    },
+                };
+            }
+            const turnId =
+                state.kind === "rewind"
+                    ? state.rewind.targetTurnId
+                    : state.kind === "turn-undo" || state.kind === "turn-redo"
+                      ? state.sourceTurnId
+                      : undefined;
+            const sourceOperationId =
+                state.kind === "redo"
+                    ? state.sourceRewindOperationId
+                    : state.kind === "turn-redo"
+                      ? state.undoOperationId
+                      : undefined;
+            return {
+                parent: state.sourceSnapshot.id,
+                tree: state.currentSnapshot.tree,
+                metadata: {
+                    schemaversion: 1 as const,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: state.kind,
+                    sessionid: state.sessionId,
+                    operationid: state.operationId,
+                    ...(turnId ? { turnid: turnId } : {}),
+                    ...(sourceOperationId ? { sourceoperationid: sourceOperationId } : {}),
+                },
+            };
+        });
+    }
     const diffSnapshots =
         input.diffSnapshots ??
         (async (before: ReturnType<typeof snapshot>, after: ReturnType<typeof snapshot>) => {
-            for (const entry of input.rawEntries) {
+            const result = resultChanges.get(`${before.id}:${after.id}`);
+            if (result) return result;
+            for (const entry of fixtureEntries) {
                 if (entry.type !== "custom" || entry.customType !== WorkspaceControlCustomTypes.checkpoint) continue;
                 const value = entry.data as WorkspaceCheckpointV1;
                 if (value.status === "available" && value.before.id === before.id && value.after.id === after.id) {
@@ -130,8 +247,9 @@ function planRewind(input: TestPlanRewindInput) {
         });
     return planRewindImpl({
         ...input,
-        mutationLog: input.mutationLog ?? mutationLog(),
+        mutationLog: history,
         diffSnapshots,
+        readCommitSnapshot: input.readCommitSnapshot ?? (async (commit) => refs.get(commit)!),
     } as PlanRewindInput);
 }
 
@@ -259,6 +377,7 @@ describe("restore planning", () => {
                 after: { state: "file", oid: OidB, executable: false },
             },
         ]);
+        second.before = first.after;
         const u1 = message("u1", null, "user");
         const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, first);
         const u2 = message("u2", c1.id, "user");
@@ -282,6 +401,45 @@ describe("restore planning", () => {
             includedCommits: new Set([second.after.id]),
             ownerSessionId: "session-1",
         });
+    });
+
+    it("fails closed when same-path authority transitions are not continuous", async () => {
+        const first = checkpoint("u1", [
+            { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+        ]);
+        const second = checkpoint("u2", [
+            {
+                path: "a.ts",
+                before: { state: "file", oid: OidB, executable: false },
+                after: { state: "file", oid: OidC, executable: false },
+            },
+        ]);
+        second.before = first.after;
+        const u1 = message("u1", null, "user");
+        const c1 = custom("c1", u1.id, WorkspaceControlCustomTypes.checkpoint, first);
+        const u2 = message("u2", c1.id, "user");
+        const c2 = custom("c2", u2.id, WorkspaceControlCustomTypes.checkpoint, second);
+        const history = mutationLog();
+        const inspectLivePath = vi.fn(async () => live(second.changes[0]!.after));
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [u1, c1, u2, c2],
+            semanticLeafId: c2.id,
+            targetTurnId: u1.id,
+            inspectLivePath,
+            verifySnapshot: async () => {},
+            mutationLog: history,
+        });
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toContainEqual({
+            path: "a.ts",
+            reason: "workspace history is not continuous for this path",
+        });
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(inspectLivePath).not.toHaveBeenCalled();
     });
 
     it("hard-blocks same-path Crest ABA history even when live bytes already match the rewind target", async () => {
@@ -331,6 +489,7 @@ describe("restore planning", () => {
             },
             { path: "b.ts", before: { state: "absent" }, after: { state: "file", oid: OidD, executable: false } },
         ]);
+        second.before = first.after;
         const u1 = message("u1", null, "user");
         const a1 = message("a1", "u1", "assistant");
         const c1 = custom("c1", "a1", WorkspaceControlCustomTypes.checkpoint, first);
@@ -344,9 +503,11 @@ describe("restore planning", () => {
             operationId: "old-rewind",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "redo",
+            kind: "turn-undo",
+            sourceTurnId: "u2",
             applyMode: "normal",
             forcedPaths: [],
+            sourceSnapshot: second.after,
             currentSnapshot: snapshot(OidC),
             currentStates: [
                 { path: "a.ts", state: { state: "file", oid: OidD, executable: false } },
@@ -507,10 +668,12 @@ describe("restore planning", () => {
             operationId: "authoritative",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "redo",
+            kind: "turn-undo",
+            sourceTurnId: "u1",
             applyMode: "normal",
             forcedPaths: [],
-            currentSnapshot: snapshot(OidA),
+            sourceSnapshot: cp.after,
+            currentSnapshot: snapshot(OidC),
             currentStates: [],
         } satisfies WorkspaceStateV1;
         const marker = custom("authoritative", checkpointEntry.id, WorkspaceControlCustomTypes.state, authoritative);
@@ -553,6 +716,7 @@ describe("restore planning", () => {
             workspaceIncarnation: Workspace.workspaceIncarnation,
             applyMode: "normal",
             forcedPaths: [],
+            sourceSnapshot: cp.after,
             currentSnapshot: snapshot(OidA),
             currentStates: [],
         } satisfies Omit<WorkspaceStateBaseV1, "operationId">;
@@ -564,7 +728,6 @@ describe("restore planning", () => {
                 fromLeafId: checkpointEntry.id,
                 targetTurnId: user.id,
                 targetBoundaryId: null,
-                redoSnapshot: snapshot(OidB),
                 redoStates: [],
             },
         } satisfies WorkspaceStateV1;
@@ -573,6 +736,8 @@ describe("restore planning", () => {
             operationId: "turn-undo",
             kind: "turn-undo",
             sourceTurnId: user.id,
+            sourceSnapshot: rewindState.currentSnapshot,
+            currentSnapshot: snapshot(OidD),
         } satisfies WorkspaceStateV1;
         const rewind = custom(
             "conversation-rewind",
@@ -620,9 +785,11 @@ describe("restore planning", () => {
             operationId: "between-turns",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "redo",
+            kind: "turn-undo",
+            sourceTurnId: "u1",
             applyMode: "normal",
             forcedPaths: [],
+            sourceSnapshot: cp1.after,
             currentSnapshot: snapshot(OidC),
             currentStates: [{ path: "a.ts", state: { state: "file", oid: OidC, executable: false } }],
         } satisfies WorkspaceStateV1;
@@ -631,6 +798,7 @@ describe("restore planning", () => {
         const marker = custom("marker", "c1", WorkspaceControlCustomTypes.state, state);
         const u2 = message("u2", "marker", "user");
         const c2 = custom("c2", "u2", WorkspaceControlCustomTypes.checkpoint, cp2);
+        cp2.before = state.currentSnapshot;
         const offBranchState = {
             ...state,
             operationId: "off-branch",
@@ -674,9 +842,11 @@ describe("restore planning", () => {
                 operationId: "same-operation",
                 workspaceIdentity: Workspace.workspaceIdentity,
                 workspaceIncarnation: Workspace.workspaceIncarnation,
-                kind: "redo",
+                kind: "turn-undo",
+                sourceTurnId: "u1",
                 applyMode: "normal",
                 forcedPaths: [],
+                sourceSnapshot: cp.after,
                 currentSnapshot: snapshot(OidA),
                 currentStates: [{ path: "a.ts", state: { state: "file", oid: OidA, executable: false } }],
             } satisfies WorkspaceStateV1;
@@ -772,7 +942,8 @@ describe("restore planning", () => {
 
     it("ignores corrupt and unavailable workspace state strictly before the target suffix", async () => {
         const u1 = message("u1", null, "user");
-        const c1 = custom("c1", "u1", WorkspaceControlCustomTypes.checkpoint, checkpoint("u1", []));
+        const cp1 = checkpoint("u1", []);
+        const c1 = custom("c1", "u1", WorkspaceControlCustomTypes.checkpoint, cp1);
         const unavailableSnapshot = snapshot(OidD);
         const preTargetStateData = {
             schemaVersion: 1,
@@ -780,9 +951,11 @@ describe("restore planning", () => {
             operationId: "pre-target",
             workspaceIdentity: Workspace.workspaceIdentity,
             workspaceIncarnation: Workspace.workspaceIncarnation,
-            kind: "redo",
+            kind: "turn-undo",
+            sourceTurnId: "u1",
             applyMode: "normal",
             forcedPaths: [],
+            sourceSnapshot: cp1.after,
             currentSnapshot: unavailableSnapshot,
             currentStates: [],
         } satisfies WorkspaceStateV1;
@@ -897,17 +1070,45 @@ describe("restore planning", () => {
             kind: "rewind",
             applyMode: "normal",
             forcedPaths: [],
-            currentSnapshot: snapshot(OidA),
+            sourceSnapshot: snapshot(OidD),
+            currentSnapshot: snapshot(OidE),
             currentStates: [{ path: "a.ts", state: { state: "absent" } }],
             rewind: {
                 fromLeafId: "assistant",
                 targetTurnId: "u1",
                 targetBoundaryId: null,
-                redoSnapshot: snapshot(OidB),
                 redoStates: [{ path: "a.ts", state: { state: "file", oid: OidA, executable: false } }],
             },
         } satisfies WorkspaceStateV1;
         const marker = custom("marker", "assistant", WorkspaceControlCustomTypes.state, rewindState);
+        const history = mutationLog({
+            read: vi.fn(async () => ({
+                parent: rewindState.sourceSnapshot.id,
+                tree: rewindState.currentSnapshot.tree,
+                metadata: {
+                    schemaversion: 1 as const,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: "rewind" as const,
+                    sessionid: rewindState.sessionId,
+                    operationid: rewindState.operationId,
+                    turnid: rewindState.rewind.targetTurnId,
+                },
+            })),
+        });
+        const resultAuthority = {
+            mutationLog: history,
+            diffSnapshots: vi.fn(async () => [
+                {
+                    path: "a.ts",
+                    before: { state: "file" as const, oid: OidA, executable: false },
+                    after: { state: "absent" as const },
+                },
+            ]),
+            readCommitSnapshot: vi.fn(async (commit: string) =>
+                commit === rewindState.sourceSnapshot.id ? rewindState.sourceSnapshot : rewindState.currentSnapshot
+            ),
+        };
 
         const clean = await planRedo({
             sessionId: "session-1",
@@ -917,6 +1118,7 @@ describe("restore planning", () => {
             rewindState,
             inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
             verifySnapshot: async () => {},
+            ...resultAuthority,
         });
         const drift = await planRedo({
             sessionId: "session-1",
@@ -926,6 +1128,7 @@ describe("restore planning", () => {
             rewindState,
             inspectLivePath: async () => ({ state: "file", oid: OidB, executable: false, fingerprint: "drift" }),
             verifySnapshot: async () => {},
+            ...resultAuthority,
         });
         const stale = await planRedo({
             sessionId: "session-1",
@@ -935,6 +1138,7 @@ describe("restore planning", () => {
             rewindState,
             inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
             verifySnapshot: async () => {},
+            ...resultAuthority,
         });
         const otherSession = await planRedo({
             sessionId: "session-2",
@@ -944,6 +1148,7 @@ describe("restore planning", () => {
             rewindState,
             inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
             verifySnapshot: async () => {},
+            ...resultAuthority,
         });
         const forgedStates: Array<Extract<WorkspaceStateV1, { kind: "rewind" }>> = [
             { ...rewindState, currentSnapshot: snapshot(OidD) },
@@ -953,7 +1158,7 @@ describe("restore planning", () => {
             },
             {
                 ...rewindState,
-                rewind: { ...rewindState.rewind!, redoSnapshot: snapshot(OidD) },
+                sourceSnapshot: snapshot(OidB),
             },
             {
                 ...rewindState,
@@ -973,14 +1178,32 @@ describe("restore planning", () => {
                     rewindState,
                     inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
                     verifySnapshot: async () => {},
+                    ...resultAuthority,
                 })
             )
         );
+        const forgedAssociation = await planRedo({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [message("assistant", null, "assistant"), marker],
+            semanticLeafId: "marker",
+            rewindState,
+            inspectLivePath: async () => ({ state: "absent", fingerprint: "absent" }),
+            verifySnapshot: async () => {},
+            ...resultAuthority,
+            readCommitSnapshot: vi.fn(async (commit: string) => ({
+                ...(commit === rewindState.sourceSnapshot.id
+                    ? rewindState.sourceSnapshot
+                    : rewindState.currentSnapshot),
+                scopeManifest: OidC,
+            })),
+        });
 
         expect(clean).toMatchObject({ hardBlocked: false, forceRequired: false, commitParentId: "assistant" });
         expect(drift).toMatchObject({ hardBlocked: true, forceRequired: false });
         expect(stale.hardBlocked).toBe(true);
         expect(otherSession.hardBlocked).toBe(true);
         expect(forged.every((plan) => plan.hardBlocked)).toBe(true);
+        expect(forgedAssociation.hardBlocked).toBe(true);
     });
 });

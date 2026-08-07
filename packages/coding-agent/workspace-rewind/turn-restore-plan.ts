@@ -3,18 +3,21 @@
 
 import { filterCommittedTransactionEntries } from "@crest/agent/harness/session/entry-transaction";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
+import { isDeepStrictEqual } from "node:util";
 
 import type { LiveCapturedPathState } from "./live-path-state";
 import {
     classifyRestoreTransitions,
     enforceRestoreTransitionLimit,
     findCrestHistoryBlockers,
+    type RestoreCommitSnapshotReader,
     type RestoreMutationLog,
     type RestorePathTransitionV1,
     type RestorePlanV1,
     type RestoreSnapshotDiff,
     type RestoreTargetV1,
     validateCheckpointMutationAuthority,
+    validateResultMutationAuthority,
 } from "./restore-plan";
 import {
     advanceTurnMutationAuthority,
@@ -22,6 +25,7 @@ import {
     decodeWorkspaceStateEntry,
     isWorkspaceControlEntry,
     type WorkspaceTurnMutationAuthority,
+    type WorkspaceTurnMutationStateV1,
 } from "./session-state";
 import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
@@ -38,6 +42,7 @@ interface PlanTurnRestoreBaseInput {
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
     mutationLog: RestoreMutationLog;
     diffSnapshots: RestoreSnapshotDiff;
+    readCommitSnapshot: RestoreCommitSnapshotReader;
 }
 
 export type PlanTurnUndoInput = PlanTurnRestoreBaseInput;
@@ -254,13 +259,40 @@ function transitionsForCheckpoint(
     return transitions;
 }
 
+function reverseResultTransitions(
+    plan: RestorePlanV1,
+    changes: readonly {
+        path: string;
+        before: RestorePathTransitionV1["target"];
+        after: RestorePathTransitionV1["target"];
+    }[]
+): Map<string, RestorePathTransitionV1> | undefined {
+    const transitions = new Map<string, RestorePathTransitionV1>();
+    for (const change of changes) {
+        if (!canonicalPath(change.path) || transitions.has(change.path)) {
+            hardBlock(plan, "workspace result diff contains an invalid path", change.path);
+            return undefined;
+        }
+        if (change.before.state === "excluded" || change.after.state === "excluded") {
+            hardBlock(plan, "path was excluded from snapshot coverage", change.path);
+            return undefined;
+        }
+        transitions.set(change.path, {
+            target: change.before,
+            expectedCurrent: change.after,
+        });
+    }
+    return transitions;
+}
+
 function sourceMutationAuthority(
     branch: SessionTreeEntry[],
     visibleEntries: ReadonlySet<SessionTreeEntry>,
     checkpointIndex: number,
     input: PlanTurnRestoreBaseInput
-): WorkspaceTurnMutationAuthority {
+): { authority: WorkspaceTurnMutationAuthority; latestState?: WorkspaceTurnMutationStateV1 } {
     let authority: WorkspaceTurnMutationAuthority = { action: "undo" };
+    let latestState: WorkspaceTurnMutationStateV1 | undefined;
     for (const entry of branch.slice(checkpointIndex + 1)) {
         if (!visibleEntries.has(entry)) continue;
         const state = decodeWorkspaceStateEntry(entry);
@@ -271,10 +303,12 @@ function sourceMutationAuthority(
             state.workspaceIncarnation === input.workspace.workspaceIncarnation &&
             (state.kind === "turn-undo" || state.kind === "turn-redo")
         ) {
-            authority = advanceTurnMutationAuthority(authority, state);
+            const next = advanceTurnMutationAuthority(authority, state);
+            if (!isDeepStrictEqual(next, authority)) latestState = state;
+            authority = next;
         }
     }
-    return authority;
+    return { authority, ...(latestState ? { latestState } : {}) };
 }
 
 async function prepare(
@@ -321,7 +355,9 @@ async function classifyTurnTransitions(
     checkpoint: AvailableCheckpoint,
     transitions: ReadonlyMap<string, RestorePathTransitionV1>,
     input: PlanTurnRestoreBaseInput,
-    redo: boolean
+    redo: boolean,
+    historyBoundary = checkpoint.after.id,
+    blockExternal = false
 ): Promise<RestorePlanV1> {
     if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
     if (checkpoint.before.id === checkpoint.after.id) {
@@ -329,10 +365,11 @@ async function classifyTurnTransitions(
     }
     const historyBlockers = await findCrestHistoryBlockers(plan, {
         mutationLog: input.mutationLog,
-        afterCommit: checkpoint.after.id,
+        afterCommit: historyBoundary,
         paths: [...transitions.keys()].sort(),
         includedCommits: new Set(),
         ownerSessionId: input.sessionId,
+        ...(blockExternal ? { blockExternal: true } : {}),
     });
     if (!historyBlockers) return plan;
     return classifyRestoreTransitions(
@@ -348,18 +385,34 @@ async function classifyTurnTransitions(
 export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePlanV1> {
     const prepared = await prepare(input, { kind: "turn-undo", sourceTurnId: input.sourceTurnId });
     if (!prepared.checkpoint) return prepared.plan;
-    const authority = sourceMutationAuthority(
+    const resolved = sourceMutationAuthority(
         prepared.branch!,
         prepared.visibleEntries!,
         prepared.checkpointIndex!,
         input
     );
-    if (authority.action !== "undo") {
+    if (resolved.authority.action !== "undo") {
         return hardBlock(prepared.plan, "Undo requires the source turn's current authority to allow Undo");
     }
-    const transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "undo");
+    let transitions: Map<string, RestorePathTransitionV1> | undefined;
+    let historyBoundary = prepared.checkpoint.after.id;
+    if (resolved.latestState?.kind === "turn-redo") {
+        if (!(await verifyResultSnapshots(prepared.plan, resolved.latestState, input))) return prepared.plan;
+        const exact = await validateResultMutationAuthority(
+            prepared.plan,
+            resolved.latestState,
+            input.mutationLog,
+            input.diffSnapshots,
+            input.readCommitSnapshot
+        );
+        if (!exact) return prepared.plan;
+        transitions = reverseResultTransitions(prepared.plan, exact);
+        historyBoundary = resolved.latestState.currentSnapshot.id;
+    } else {
+        transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "undo");
+    }
     if (!transitions) return prepared.plan;
-    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, false);
+    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, false, historyBoundary);
 }
 
 export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePlanV1> {
@@ -369,19 +422,65 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
         undoOperationId: input.undoOperationId,
     });
     if (!prepared.checkpoint) return prepared.plan;
-    const authority = sourceMutationAuthority(
+    const resolved = sourceMutationAuthority(
         prepared.branch!,
         prepared.visibleEntries!,
         prepared.checkpointIndex!,
         input
     );
-    if (authority.action !== "redo" || authority.undoOperationId !== input.undoOperationId) {
+    if (
+        resolved.authority.action !== "redo" ||
+        resolved.authority.undoOperationId !== input.undoOperationId ||
+        resolved.latestState?.kind !== "turn-undo" ||
+        resolved.latestState.operationId !== input.undoOperationId
+    ) {
         return hardBlock(
             prepared.plan,
             "Redo requires the source turn's current last marker to point at this undoOperationId"
         );
     }
-    const transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "redo");
+    const undoState = resolved.latestState;
+    if (!(await verifyResultSnapshots(prepared.plan, undoState, input))) return prepared.plan;
+    const exact = await validateResultMutationAuthority(
+        prepared.plan,
+        undoState,
+        input.mutationLog,
+        input.diffSnapshots,
+        input.readCommitSnapshot
+    );
+    if (!exact) return prepared.plan;
+    const transitions = reverseResultTransitions(prepared.plan, exact);
     if (!transitions) return prepared.plan;
-    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, true);
+    return classifyTurnTransitions(
+        prepared.plan,
+        prepared.checkpoint,
+        transitions,
+        input,
+        true,
+        undoState.currentSnapshot.id,
+        true
+    );
+}
+
+async function verifyResultSnapshots(
+    plan: RestorePlanV1,
+    state: WorkspaceTurnMutationStateV1,
+    input: PlanTurnRestoreBaseInput
+): Promise<boolean> {
+    for (const snapshot of [state.sourceSnapshot, state.currentSnapshot]) {
+        if (
+            snapshot.workspaceIdentity !== input.workspace.workspaceIdentity ||
+            snapshot.workspaceIncarnation !== input.workspace.workspaceIncarnation
+        ) {
+            hardBlock(plan, "workspace result snapshot identity or incarnation does not match");
+            return false;
+        }
+        try {
+            await input.verifySnapshot(snapshot);
+        } catch (error) {
+            hardBlock(plan, `workspace result snapshot is unavailable: ${(error as Error).message}`);
+            return false;
+        }
+    }
+    return true;
 }

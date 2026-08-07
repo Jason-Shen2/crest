@@ -30,17 +30,14 @@ import {
     type RestoreTargetV1,
 } from "./restore-plan";
 import { countRevertedMessages, foldWorkspaceSessionState } from "./session-state";
-import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
+import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
 import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
 import { WorkspaceRestoreExecutor } from "./workspace-restore-executor";
-import {
-    ProcessWorkspaceWriterLeases,
-    type WorkspaceWriterLeaseRegistry,
-} from "./workspace-writer-lease";
+import { ProcessWorkspaceWriterLeases, type WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
 type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
@@ -479,6 +476,7 @@ export class WorkspaceRewindEngine {
             verifySnapshot: (snapshot) => this.store.verify(snapshot),
             mutationLog: this.store.mutationLog,
             diffSnapshots: (before, after) => this.store.diff(before, after),
+            readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return {
             entries,
@@ -495,7 +493,7 @@ export class WorkspaceRewindEngine {
             return {
                 entries,
                 plan: {
-                    target: { kind: "redo" },
+                    target: { kind: "redo", sourceRewindOperationId: "unavailable" },
                     sessionId: input.sessionId,
                     workspaceIdentity: input.workspace.workspaceIdentity,
                     workspaceIncarnation: input.workspace.workspaceIncarnation,
@@ -519,6 +517,9 @@ export class WorkspaceRewindEngine {
             inspectLivePath: this.inspectPath,
             inspectLivePaths: this.inspectPaths,
             verifySnapshot: (snapshot) => this.store.verify(snapshot),
+            mutationLog: this.store.mutationLog,
+            diffSnapshots: (before, after) => this.store.diff(before, after),
+            readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return {
             entries,
@@ -541,6 +542,7 @@ export class WorkspaceRewindEngine {
             verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
             mutationLog: this.store.mutationLog,
             diffSnapshots: (before, after) => this.store.diff(before, after),
+            readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return { entries, plan };
     }
@@ -559,6 +561,7 @@ export class WorkspaceRewindEngine {
             verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
             mutationLog: this.store.mutationLog,
             diffSnapshots: (before, after) => this.store.diff(before, after),
+            readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return { entries, plan };
     }

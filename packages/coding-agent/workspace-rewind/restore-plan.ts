@@ -41,7 +41,7 @@ export interface RestorePathPlanV1 {
 
 export type RestoreTargetV1 =
     | { kind: "rewind"; targetTurnId: string }
-    | { kind: "redo" }
+    | { kind: "redo"; sourceRewindOperationId: string }
     | { kind: "turn-undo"; sourceTurnId: string }
     | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
 
@@ -70,6 +70,7 @@ export interface PlanRewindInput {
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
     mutationLog: RestoreMutationLog;
     diffSnapshots: RestoreSnapshotDiff;
+    readCommitSnapshot: RestoreCommitSnapshotReader;
 }
 
 export interface PlanRedoInput {
@@ -81,6 +82,9 @@ export interface PlanRedoInput {
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
+    mutationLog: RestoreMutationLog;
+    diffSnapshots: RestoreSnapshotDiff;
+    readCommitSnapshot: RestoreCommitSnapshotReader;
 }
 
 export type RestoreMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
@@ -88,6 +92,7 @@ export type RestoreSnapshotDiff = (
     before: WorkspaceSnapshotRefV1,
     after: WorkspaceSnapshotRefV1
 ) => Promise<WorkspacePathChangeV1[]>;
+export type RestoreCommitSnapshotReader = (commit: string) => Promise<WorkspaceSnapshotRefV1>;
 
 interface ActiveBranchResult {
     branch?: SessionTreeEntry[];
@@ -139,6 +144,76 @@ export async function validateCheckpointMutationAuthority(
     return true;
 }
 
+export async function validateResultMutationAuthority(
+    plan: RestorePlanV1,
+    state: WorkspaceStateV1,
+    mutationLog: RestoreMutationLog,
+    diffSnapshots: RestoreSnapshotDiff,
+    readCommitSnapshot: RestoreCommitSnapshotReader
+): Promise<WorkspacePathChangeV1[] | undefined> {
+    const expectedTurnId =
+        state.kind === "rewind"
+            ? state.rewind.targetTurnId
+            : state.kind === "turn-undo" || state.kind === "turn-redo"
+              ? state.sourceTurnId
+              : undefined;
+    const expectedSourceOperationId =
+        state.kind === "redo"
+            ? state.sourceRewindOperationId
+            : state.kind === "turn-redo"
+              ? state.undoOperationId
+              : undefined;
+    try {
+        const [sourceRef, currentRef] = await Promise.all([
+            readCommitSnapshot(state.sourceSnapshot.id),
+            readCommitSnapshot(state.currentSnapshot.id),
+        ]);
+        if (
+            !isDeepStrictEqual(sourceRef, state.sourceSnapshot) ||
+            !isDeepStrictEqual(currentRef, state.currentSnapshot)
+        ) {
+            hardBlock(plan, "workspace result snapshot association is invalid");
+            return undefined;
+        }
+        const result = await mutationLog.read(state.currentSnapshot.id);
+        if (
+            result.parent !== state.sourceSnapshot.id ||
+            result.tree !== state.currentSnapshot.tree ||
+            result.metadata.kind !== state.kind ||
+            result.metadata.sessionid !== state.sessionId ||
+            result.metadata.operationid !== state.operationId ||
+            result.metadata.turnid !== expectedTurnId ||
+            result.metadata.sourceoperationid !== expectedSourceOperationId
+        ) {
+            hardBlock(plan, "workspace result mutation authority is invalid");
+            return undefined;
+        }
+        if (state.kind === "redo" || state.kind === "turn-redo") {
+            const source = await mutationLog.read(state.sourceSnapshot.id);
+            const expectedSourceKind = state.kind === "redo" ? "rewind" : "turn-undo";
+            if (
+                source.tree !== state.sourceSnapshot.tree ||
+                source.metadata.kind !== expectedSourceKind ||
+                source.metadata.sessionid !== state.sessionId ||
+                source.metadata.operationid !== expectedSourceOperationId ||
+                (state.kind === "turn-redo" && source.metadata.turnid !== state.sourceTurnId)
+            ) {
+                hardBlock(plan, "workspace result source mutation authority is invalid");
+                return undefined;
+            }
+        }
+    } catch (error) {
+        hardBlock(plan, `workspace result mutation is unavailable: ${(error as Error).message}`);
+        return undefined;
+    }
+    try {
+        return await diffSnapshots(state.sourceSnapshot, state.currentSnapshot);
+    } catch (error) {
+        hardBlock(plan, `workspace result diff is unavailable: ${(error as Error).message}`);
+        return undefined;
+    }
+}
+
 export function enforceRestoreTransitionLimit(
     plan: RestorePlanV1,
     transitions: ReadonlyMap<string, RestorePathTransitionV1>
@@ -156,6 +231,7 @@ export async function findCrestHistoryBlockers(
         paths: readonly string[];
         includedCommits: ReadonlySet<string>;
         ownerSessionId: string;
+        blockExternal?: boolean;
     }
 ): Promise<ReadonlyMap<string, string> | undefined> {
     if (input.paths.length === 0) return new Map();
@@ -168,13 +244,53 @@ export async function findCrestHistoryBlockers(
         });
         const blockers = new Map<string, string>();
         for (const overlap of overlaps) {
-            if (overlap.sessionId == null) continue;
-            blockers.set(overlap.path, "a later Crest operation changed this path");
+            if (overlap.sessionId == null && !input.blockExternal) continue;
+            blockers.set(
+                overlap.path,
+                overlap.sessionId == null
+                    ? "a later external write changed this path"
+                    : "a later Crest operation changed this path"
+            );
         }
         return blockers;
     } catch (error) {
         hardBlock(plan, `workspace mutation history is unavailable: ${(error as Error).message}`);
         return undefined;
+    }
+}
+
+async function validateAuthorityCommitOrder(
+    plan: RestorePlanV1,
+    commits: readonly string[],
+    mutationLog: RestoreMutationLog
+): Promise<boolean> {
+    if (new Set(commits).size !== commits.length) {
+        hardBlock(plan, "workspace mutation authority contains duplicate result commits");
+        return false;
+    }
+    if (commits.length < 2) return true;
+    const indexes = new Map(commits.map((commit, index) => [commit, index]));
+    let expectedIndex = commits.length - 1;
+    let cursor = commits[expectedIndex]!;
+    const visited = new Set<string>();
+    try {
+        while (expectedIndex > 0) {
+            if (visited.has(cursor)) throw new Error("workspace mutation history contains a cycle");
+            visited.add(cursor);
+            const mutation = await mutationLog.read(cursor);
+            if (!mutation.parent) throw new Error("workspace mutation authority is not contiguous");
+            cursor = mutation.parent;
+            const authorityIndex = indexes.get(cursor);
+            if (authorityIndex == null) continue;
+            if (authorityIndex !== expectedIndex - 1) {
+                throw new Error("workspace mutation authority order differs from the active Session branch");
+            }
+            expectedIndex = authorityIndex;
+        }
+        return true;
+    } catch (error) {
+        hardBlock(plan, `workspace mutation authority continuity is invalid: ${(error as Error).message}`);
+        return false;
     }
 }
 
@@ -574,7 +690,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
         checkpoint.status === "available" ? [checkpoint.before, checkpoint.after] : []
     );
     for (const item of workspaceStates) {
-        snapshots.push(item.state.currentSnapshot);
+        snapshots.push(item.state.sourceSnapshot, item.state.currentSnapshot);
     }
     const snapshotFailure = await snapshotsAreReadable(snapshots, input.workspace, input.verifySnapshot);
     if (snapshotFailure) {
@@ -589,6 +705,19 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
         }
     }
 
+    const resultChangesByEntryId = new Map<string, WorkspacePathChangeV1[]>();
+    for (const item of workspaceStates) {
+        const exact = await validateResultMutationAuthority(
+            plan,
+            item.state,
+            input.mutationLog,
+            input.diffSnapshots,
+            input.readCommitSnapshot
+        );
+        if (!exact) return plan;
+        resultChangesByEntryId.set(item.entryId, exact);
+    }
+
     const workspaceStatesByEntryId = new Map(workspaceStates.map((item) => [item.entryId, item.state]));
     const transitions = new Map<string, RestorePathTransitionV1>();
     for (const entry of suffix) {
@@ -596,6 +725,9 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
         if (checkpoint) {
             for (const change of checkpoint.changes) {
                 const existing = transitions.get(change.path);
+                if (existing && !capturedEqual(existing.expectedCurrent, change.before)) {
+                    return hardBlock(plan, "workspace history is not continuous for this path", change.path);
+                }
                 const excluded =
                     change.before.state === "excluded" || change.after.state === "excluded"
                         ? `path was excluded from snapshot coverage: ${
@@ -614,27 +746,37 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             }
         }
         const workspaceState = workspaceStatesByEntryId.get(entry.id);
-        if (workspaceState) {
-            const seen = new Set<string>();
-            for (const item of workspaceState.currentStates) {
-                if (seen.has(item.path)) {
-                    return hardBlock(plan, "workspace state contains duplicate paths", item.path);
+        const resultChanges = resultChangesByEntryId.get(entry.id);
+        if (workspaceState && resultChanges) {
+            for (const change of resultChanges) {
+                const existing = transitions.get(change.path);
+                if (existing && !capturedEqual(existing.expectedCurrent, change.before)) {
+                    return hardBlock(plan, "workspace history is not continuous for this path", change.path);
                 }
-                seen.add(item.path);
-                const transition = transitions.get(item.path);
-                if (transition) {
-                    transition.expectedCurrent = item.state;
-                }
+                const excluded =
+                    change.before.state === "excluded" || change.after.state === "excluded"
+                        ? "path was excluded from snapshot coverage"
+                        : existing?.excludedReason;
+                transitions.set(change.path, {
+                    target: existing?.target ?? change.before,
+                    expectedCurrent: change.after,
+                    ...(excluded == null ? {} : { excludedReason: excluded }),
+                });
             }
         }
     }
     if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
-    const changedCheckpoints = checkpoints.filter(
-        (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
-            checkpoint.status === "available" && checkpoint.before.id !== checkpoint.after.id
-    );
-    const historyBoundary = changedCheckpoints[0]?.after.id;
-    const includedCommits = new Set(changedCheckpoints.slice(1).map((checkpoint) => checkpoint.after.id));
+    const authorityCommits: string[] = [];
+    for (const entry of suffix) {
+        const checkpoint = checkpointsByEntryId.get(entry.id);
+        if (checkpoint && checkpoint.before.id !== checkpoint.after.id) authorityCommits.push(checkpoint.after.id);
+        const state = workspaceStatesByEntryId.get(entry.id);
+        if (state && state.sourceSnapshot.id !== state.currentSnapshot.id)
+            authorityCommits.push(state.currentSnapshot.id);
+    }
+    if (!(await validateAuthorityCommitOrder(plan, authorityCommits, input.mutationLog))) return plan;
+    const historyBoundary = authorityCommits[0];
+    const includedCommits = new Set(authorityCommits.slice(1));
     if (!historyBoundary) {
         return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, false);
     }
@@ -657,7 +799,11 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
 }
 
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
-    const plan = emptyPlan(input, { kind: "redo" }, input.rewindState.rewind.fromLeafId);
+    const plan = emptyPlan(
+        input,
+        { kind: "redo", sourceRewindOperationId: input.rewindState.operationId },
+        input.rewindState.rewind.fromLeafId
+    );
     const active = activeBranch(input.rawEntries, input.semanticLeafId);
     if (!active.branch) {
         return hardBlock(plan, active.reason!);
@@ -673,7 +819,7 @@ export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
         return hardBlock(plan, "redo workspace identity or incarnation does not match");
     }
     const snapshotFailure = await snapshotsAreReadable(
-        [input.rewindState.currentSnapshot, input.rewindState.rewind.redoSnapshot],
+        [input.rewindState.sourceSnapshot, input.rewindState.currentSnapshot],
         input.workspace,
         input.verifySnapshot
     );
@@ -681,29 +827,43 @@ export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
         return hardBlock(plan, snapshotFailure);
     }
 
-    const current = new Map<string, CapturedPathStateV1>();
-    for (const item of input.rewindState.currentStates) {
-        if (current.has(item.path)) {
-            return hardBlock(plan, "rewind marker contains duplicate current paths", item.path);
-        }
-        current.set(item.path, item.state);
-    }
+    const exactChanges = await validateResultMutationAuthority(
+        plan,
+        input.rewindState,
+        input.mutationLog,
+        input.diffSnapshots,
+        input.readCommitSnapshot
+    );
+    if (!exactChanges) return plan;
     const transitions = new Map<string, RestorePathTransitionV1>();
-    for (const item of input.rewindState.rewind.redoStates) {
-        if (transitions.has(item.path)) {
-            return hardBlock(plan, "rewind marker contains duplicate redo paths", item.path);
+    for (const change of exactChanges) {
+        if (!canonicalPath(change.path) || transitions.has(change.path)) {
+            return hardBlock(plan, "workspace result diff contains an invalid path", change.path);
         }
-        const expectedCurrent = current.get(item.path);
-        if (!expectedCurrent) {
-            return hardBlock(plan, "rewind marker is missing an expected current path state", item.path);
-        }
-        transitions.set(item.path, {
-            target: item.state,
-            expectedCurrent,
-            ...(item.state.state === "excluded" || expectedCurrent.state === "excluded"
+        transitions.set(change.path, {
+            target: change.before,
+            expectedCurrent: change.after,
+            ...(change.before.state === "excluded" || change.after.state === "excluded"
                 ? { excludedReason: "path was excluded from snapshot coverage" }
                 : {}),
         });
     }
-    return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, true);
+    if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
+    const historyBlockers = await findCrestHistoryBlockers(plan, {
+        mutationLog: input.mutationLog,
+        afterCommit: input.rewindState.currentSnapshot.id,
+        paths: [...transitions.keys()].sort(),
+        includedCommits: new Set(),
+        ownerSessionId: input.sessionId,
+        blockExternal: true,
+    });
+    if (!historyBlockers) return plan;
+    return classifyRestoreTransitions(
+        plan,
+        transitions,
+        input.inspectLivePath,
+        input.inspectLivePaths,
+        true,
+        historyBlockers
+    );
 }

@@ -12,7 +12,7 @@ import {
     foldWorkspaceSessionState,
     isWorkspaceControlEntry,
 } from "./session-state";
-import { WorkspaceControlCustomTypes } from "./types";
+import { WorkspaceControlCustomTypes, type WorkspaceStateV1 } from "./types";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
@@ -84,7 +84,9 @@ function checkpoint(turnId: string, status: "available" | "unavailable" = "avail
     };
 }
 
-function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewind") {
+function workspaceState(sessionId?: string, kind?: "rewind"): Extract<WorkspaceStateV1, { kind: "rewind" }>;
+function workspaceState(sessionId: string, kind: "redo"): Extract<WorkspaceStateV1, { kind: "redo" }>;
+function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewind"): WorkspaceStateV1 {
     return {
         schemaVersion: 1,
         sessionId,
@@ -94,6 +96,7 @@ function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewi
         kind,
         applyMode: "normal",
         forcedPaths: [],
+        sourceSnapshot: snapshot(OidB),
         currentSnapshot: snapshot(OidA),
         currentStates: [],
         ...(kind === "rewind"
@@ -102,12 +105,11 @@ function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewi
                       fromLeafId: "leaf-1",
                       targetTurnId: "u1",
                       targetBoundaryId: null,
-                      redoSnapshot: snapshot(OidB),
                       redoStates: [],
                   },
               }
-            : {}),
-    };
+            : { sourceRewindOperationId: "rewind-operation" }),
+    } as WorkspaceStateV1;
 }
 
 function turnState(
@@ -117,8 +119,9 @@ function turnState(
     sessionId = "session-1",
     undoOperationId?: string
 ) {
+    const { sourceRewindOperationId: _sourceRewindOperationId, ...base } = workspaceState(sessionId, "redo");
     return {
-        ...workspaceState(sessionId, "redo"),
+        ...base,
         operationId,
         kind,
         sourceTurnId,

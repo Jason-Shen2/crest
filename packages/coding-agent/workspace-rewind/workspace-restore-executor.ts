@@ -12,8 +12,8 @@ import { inspectLivePaths, type LiveCapturedPathState } from "./live-path-state"
 import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV2 } from "./pending-restore-store";
 import type { RestorePlanV1 } from "./restore-plan";
 import type { WorkspaceRewindCommitResult } from "./rewind-engine";
-import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { foldWorkspaceSessionState } from "./session-state";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -202,11 +202,7 @@ export class WorkspaceRestoreExecutor {
         }
     }
 
-    async prepareResultCommit(
-        input: ExecuteWorkspaceRestoreInput,
-        operationId: string,
-        paths: RestorePlanV1["paths"]
-    ) {
+    async prepareResultCommit(input: ExecuteWorkspaceRestoreInput, operationId: string, paths: RestorePlanV1["paths"]) {
         const indexFile = join(this.store.storeRoot, "journal", `restore-index-${operationId}`);
         await mkdir(dirname(indexFile), { recursive: true, mode: 0o700 });
         try {
@@ -229,6 +225,9 @@ export class WorkspaceRestoreExecutor {
                     sessionid: input.plan.sessionId,
                     operationid: operationId,
                     ...(turnIdFor(input.plan.target) ? { turnid: turnIdFor(input.plan.target) } : {}),
+                    ...(sourceOperationIdFor(input.plan.target)
+                        ? { sourceoperationid: sourceOperationIdFor(input.plan.target) }
+                        : {}),
                 },
             });
             const metadata = await this.store.readSnapshotMetadata(input.source);
@@ -274,7 +273,12 @@ export class WorkspaceRestoreExecutor {
             const source = sourceStates.get(path.path)!;
             const live = inspected.get(path.path);
             const captured = live == null ? undefined : capturedFromLive(live);
-            if (!live || !captured || live.fingerprint !== path.liveFingerprint || !sameCapturedState(captured, source)) {
+            if (
+                !live ||
+                !captured ||
+                live.fingerprint !== path.liveFingerprint ||
+                !sameCapturedState(captured, source)
+            ) {
                 throw new Error(`Workspace changed after restore confirmation: ${path.path}`);
             }
             if (!forcedPaths.has(path.path) && !sameCapturedState(source, path.expectedCurrent)) {
@@ -300,6 +304,12 @@ export class WorkspaceRestoreExecutor {
 function turnIdFor(target: RestorePlanV1["target"]): string | undefined {
     if (target.kind === "rewind") return target.targetTurnId;
     if (target.kind === "turn-undo" || target.kind === "turn-redo") return target.sourceTurnId;
+    return undefined;
+}
+
+function sourceOperationIdFor(target: RestorePlanV1["target"]): string | undefined {
+    if (target.kind === "redo") return target.sourceRewindOperationId;
+    if (target.kind === "turn-redo") return target.undoOperationId;
     return undefined;
 }
 

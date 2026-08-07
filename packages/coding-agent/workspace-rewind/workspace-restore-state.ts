@@ -44,6 +44,7 @@ export async function deriveWorkspaceRestoreState(
         workspaceIncarnation: pending.workspaceIncarnation,
         applyMode: pending.applyMode,
         forcedPaths: [...pending.forcedPaths],
+        sourceSnapshot,
         currentSnapshot: plannedSnapshot,
         currentStates: plannedStates.map((item) => ({ path: item.path, state: item.state })),
     } satisfies WorkspaceStateBaseV1;
@@ -56,12 +57,15 @@ export async function deriveWorkspaceRestoreState(
                 fromLeafId: pending.expectedSemanticLeafId,
                 targetTurnId: pending.target.targetTurnId,
                 targetBoundaryId: pending.commitParentId,
-                redoSnapshot: sourceSnapshot,
                 redoStates: sourceStates.map((item) => ({ path: item.path, state: item.state })),
             },
         };
     } else if (pending.target.kind === "redo") {
-        markerState = { ...base, kind: "redo" };
+        markerState = {
+            ...base,
+            kind: "redo",
+            sourceRewindOperationId: pending.target.sourceRewindOperationId,
+        };
     } else if (pending.target.kind === "turn-undo") {
         markerState = { ...base, kind: "turn-undo", sourceTurnId: pending.target.sourceTurnId };
     } else {

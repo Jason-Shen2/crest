@@ -61,7 +61,7 @@ test("executes a result-commit restore without any restore-time workspace captur
 
 test.each([
     { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
-    { target: { kind: "redo" }, expectedTurn: undefined },
+    { target: { kind: "redo", sourceRewindOperationId: "rewind-1" }, expectedTurn: undefined },
     { target: { kind: "turn-undo", sourceTurnId: "turn-1" }, expectedTurn: "turn-1" },
     {
         target: { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
@@ -89,6 +89,13 @@ test.each([
             ...(expectedTurn ? { turnid: expectedTurn } : {}),
         });
         expect(mutation.metadata.turnid).toBe(expectedTurn);
+        expect(mutation.metadata.sourceoperationid).toBe(
+            target.kind === "redo"
+                ? target.sourceRewindOperationId
+                : target.kind === "turn-redo"
+                  ? target.undoOperationId
+                  : undefined
+        );
         await expect(fixture.store.mutationLog.changedPaths(result.prepared.commit)).resolves.toEqual(["file.txt"]);
     }
 );

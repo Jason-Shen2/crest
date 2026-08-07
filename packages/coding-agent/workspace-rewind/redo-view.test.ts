@@ -19,6 +19,13 @@ function marker(overrides: Partial<Extract<WorkspaceStateV1, { kind: "rewind" }>
         kind: "rewind",
         applyMode: "normal",
         forcedPaths: [],
+        sourceSnapshot: {
+            id: "4".repeat(40),
+            tree: "5".repeat(40),
+            scopeManifest: "6".repeat(40),
+            workspaceIdentity: "workspace-1",
+            workspaceIncarnation: "incarnation-1",
+        },
         currentSnapshot: {
             id: "1".repeat(40),
             tree: "2".repeat(40),
@@ -36,13 +43,6 @@ function marker(overrides: Partial<Extract<WorkspaceStateV1, { kind: "rewind" }>
             fromLeafId: "assistant-1",
             targetTurnId: "user-1",
             targetBoundaryId: null,
-            redoSnapshot: {
-                id: "4".repeat(40),
-                tree: "5".repeat(40),
-                scopeManifest: "6".repeat(40),
-                workspaceIdentity: "workspace-1",
-                workspaceIncarnation: "incarnation-1",
-            },
             redoStates: [
                 {
                     path: "docs/README.md",

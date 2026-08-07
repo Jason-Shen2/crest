@@ -163,12 +163,14 @@ export class PendingWorkspaceRestoreStore {
         ]);
         const planned = await this.store.mutationLog.read(record.plannedCommit);
         const expectedTurnId = turnIdFor(record.target);
+        const expectedSourceOperationId = sourceOperationIdFor(record.target);
         if (
             planned.parent !== record.sourceCommit ||
             planned.metadata.kind !== record.target.kind ||
             planned.metadata.sessionid !== record.sessionId ||
             planned.metadata.operationid !== record.operationId ||
-            planned.metadata.turnid !== expectedTurnId
+            planned.metadata.turnid !== expectedTurnId ||
+            planned.metadata.sourceoperationid !== expectedSourceOperationId
         ) {
             throw new Error("Pending restore result commit does not match its operation");
         }
@@ -265,8 +267,12 @@ function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
     if (value.kind === "rewind" && hasExactKeys(value, ["kind", "targetTurnId"]) && isSafeString(value.targetTurnId)) {
         return { kind: "rewind", targetTurnId: value.targetTurnId };
     }
-    if (value.kind === "redo" && hasExactKeys(value, ["kind"])) {
-        return { kind: "redo" };
+    if (
+        value.kind === "redo" &&
+        hasExactKeys(value, ["kind", "sourceRewindOperationId"]) &&
+        isSafeString(value.sourceRewindOperationId)
+    ) {
+        return { kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId };
     }
     if (
         value.kind === "turn-undo" &&
@@ -327,6 +333,12 @@ function corruptCandidate(
 function turnIdFor(target: RestoreTargetV1): string | undefined {
     if (target.kind === "rewind") return target.targetTurnId;
     if (target.kind === "turn-undo" || target.kind === "turn-redo") return target.sourceTurnId;
+    return undefined;
+}
+
+function sourceOperationIdFor(target: RestoreTargetV1): string | undefined {
+    if (target.kind === "redo") return target.sourceRewindOperationId;
+    if (target.kind === "turn-redo") return target.undoOperationId;
     return undefined;
 }
 

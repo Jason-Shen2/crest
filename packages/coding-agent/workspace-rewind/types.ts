@@ -103,7 +103,6 @@ export interface WorkspaceRewindStateV1 {
     fromLeafId: string | null;
     targetTurnId: string;
     targetBoundaryId: string | null;
-    redoSnapshot: WorkspaceSnapshotRefV1;
     redoStates: Array<{ path: string; state: CapturedPathStateV1 }>;
 }
 
@@ -115,6 +114,7 @@ export interface WorkspaceStateBaseV1 {
     workspaceIncarnation: string;
     applyMode: "normal" | "force-drift";
     forcedPaths: string[];
+    sourceSnapshot: WorkspaceSnapshotRefV1;
     currentSnapshot: WorkspaceSnapshotRefV1;
     currentStates: Array<{ path: string; state: CapturedPathStateV1 }>;
 }
@@ -127,7 +127,13 @@ export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
               sourceTurnId?: never;
               undoOperationId?: never;
           }
-        | { kind: "redo"; rewind?: never; sourceTurnId?: never; undoOperationId?: never }
+        | {
+              kind: "redo";
+              rewind?: never;
+              sourceTurnId?: never;
+              undoOperationId?: never;
+              sourceRewindOperationId: string;
+          }
         | { kind: "turn-undo"; rewind?: never; sourceTurnId: string; undoOperationId?: never }
         | { kind: "turn-redo"; rewind?: never; sourceTurnId: string; undoOperationId: string }
     );

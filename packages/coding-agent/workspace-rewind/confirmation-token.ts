@@ -48,8 +48,12 @@ function canonicalTarget(target: RestoreTargetV1): RestoreTargetV1 {
     if (target.kind === "rewind" && targetKeysAre(target, ["kind", "targetTurnId"]) && target.targetTurnId) {
         return { kind: "rewind", targetTurnId: target.targetTurnId };
     }
-    if (target.kind === "redo" && targetKeysAre(target, ["kind"])) {
-        return { kind: "redo" };
+    if (
+        target.kind === "redo" &&
+        targetKeysAre(target, ["kind", "sourceRewindOperationId"]) &&
+        target.sourceRewindOperationId
+    ) {
+        return { kind: "redo", sourceRewindOperationId: target.sourceRewindOperationId };
     }
     if (target.kind === "turn-undo" && targetKeysAre(target, ["kind", "sourceTurnId"]) && target.sourceTurnId) {
         return { kind: "turn-undo", sourceTurnId: target.sourceTurnId };

@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { WorkspaceStateV1 } from "./types";
 import { decodeWorkspaceCheckpointV1, decodeWorkspaceSnapshotRefV1, decodeWorkspaceStateV1 } from "./validation";
 
 const OidA = "a".repeat(40);
@@ -92,6 +93,7 @@ function workspaceStateBase() {
         workspaceIncarnation: "incarnation-1",
         applyMode: "normal",
         forcedPaths: ["src/forced.ts"],
+        sourceSnapshot: snapshot(OidB),
         currentSnapshot: snapshot(OidA),
         currentStates: [
             { path: "src/index.ts", state: { state: "file", oid: OidA, executable: true } },
@@ -100,7 +102,10 @@ function workspaceStateBase() {
     };
 }
 
-function workspaceState(kind: "rewind" | "redo" = "rewind") {
+function workspaceState(): Extract<WorkspaceStateV1, { kind: "rewind" }>;
+function workspaceState(kind: "rewind"): Extract<WorkspaceStateV1, { kind: "rewind" }>;
+function workspaceState(kind: "redo"): Extract<WorkspaceStateV1, { kind: "redo" }>;
+function workspaceState(kind: "rewind" | "redo" = "rewind"): WorkspaceStateV1 {
     return {
         ...workspaceStateBase(),
         kind,
@@ -110,12 +115,11 @@ function workspaceState(kind: "rewind" | "redo" = "rewind") {
                       fromLeafId: "leaf-1",
                       targetTurnId: "turn-1",
                       targetBoundaryId: null,
-                      redoSnapshot: snapshot(OidB),
                       redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
                   },
               }
-            : {}),
-    };
+            : { sourceRewindOperationId: "rewind-operation-1" }),
+    } as WorkspaceStateV1;
 }
 
 function turnState(kind: "turn-undo" | "turn-redo") {
@@ -132,7 +136,6 @@ function rewindPayload() {
         fromLeafId: "leaf-1",
         targetTurnId: "turn-1",
         targetBoundaryId: null,
-        redoSnapshot: snapshot(OidB),
         redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
     };
 }
@@ -388,15 +391,12 @@ describe("workspace rewind validation", () => {
             }),
         ],
         [
-            "workspace rewind redo snapshot",
+            "workspace source snapshot",
             () => ({
                 decode: decodeWorkspaceStateV1,
                 value: {
                     ...workspaceState(),
-                    rewind: {
-                        ...workspaceState().rewind,
-                        redoSnapshot: { ...snapshot(OidB), id: "invalid-snapshot-id" },
-                    },
+                    sourceSnapshot: { ...snapshot(OidB), id: "invalid-snapshot-id" },
                 },
             }),
         ],

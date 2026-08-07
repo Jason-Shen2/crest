@@ -12,7 +12,7 @@ import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { AgentRuntimeRegistry } from "../agent-runtime-registry";
 import { WorkspaceGitRunner, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { PendingBoundaryStore } from "./pending-boundary-store";
-import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV1 } from "./pending-restore-store";
+import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV2 } from "./pending-restore-store";
 import { makeProcessOwnerIdentity } from "./process-owner";
 import { reconcileSnapshotRefs, SnapshotRetentionLimits } from "./snapshot-retention";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -256,31 +256,23 @@ test("retains bound and unbound pending owners without consulting quota", async 
     await store.verify(snapshot);
 }, 15_000);
 
-test("retains the active restore pending safety snapshot until it moves to audit and orphan grace expires", async () => {
+test("retains result source and current snapshots after pending cleanup and aggressive Git GC", async () => {
     const { store, sessionsRoot, snapshot } = await makeStore();
     const pending = new PendingWorkspaceRestoreStore(store);
-    const record = makePendingRestore(store, sessionsRoot, snapshot);
+    const { record, sourceSnapshot, plannedSnapshot } = await makePendingRestore(store, sessionsRoot, snapshot);
     await store.withWorkspaceLock(() => pending.publishLocked(record));
-    const unreadableAuditTarget = join(dirname(store.storeRoot), "unreadable-audit-target");
-    await writeFile(unreadableAuditTarget, "audit bytes");
-    await symlink(unreadableAuditTarget, join(store.storeRoot, "journal", "restore", "resolved-unreadable-audit.json"));
     expect(await pending.readCandidate()).toEqual({ kind: "valid", record });
-    await store.deleteCrestRef(`refs/crest/snapshots/${snapshot.id}`);
+    await addRewindStateOwner(store, sessionsRoot, sourceSnapshot, plannedSnapshot, "restore-session");
+    await store.withWorkspaceLock(() => pending.removeLocked(record.operationId));
+    await store.deleteCrestRef(store.ownerRefName(sourceSnapshot.id));
+    await store.deleteCrestRef(store.ownerRefName(plannedSnapshot.id));
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-15T00:00:00Z"));
 
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
     vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs * 2);
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-    await store.verify(snapshot);
-
-    await store.withWorkspaceLock(() => pending.resolveToAuditLocked(record.operationId, "keep-current"));
-    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-    vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs + 1);
-    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([
-        `refs/crest/snapshots/${snapshot.id}`,
-    ]);
-    await expect(store.verify(snapshot)).rejects.toThrow();
+    await Promise.all([store.verify(sourceSnapshot), store.verify(plannedSnapshot)]);
 }, 15_000);
 
 test("fails closed before deletion or GC when the active restore pending is corrupt", async () => {
@@ -298,10 +290,10 @@ test("fails closed before deletion or GC when the active restore pending is corr
     expect((await store.listCrestRefs()).map((ref) => ref.name)).toContain(`refs/crest/snapshots/${snapshot.id}`);
 });
 
-test("retains workspace state current and redo snapshots through aggressive Git GC", async () => {
-    const { store, sessionsRoot, snapshot: currentSnapshot } = await makeStore();
+test("retains workspace state source and current snapshots through aggressive Git GC", async () => {
+    const { store, sessionsRoot, snapshot: sourceSnapshot } = await makeStore();
     await writeFile(join(store.identity.canonicalRoot, "tracked.txt"), "redo-value");
-    const { ref: redoSnapshot } = await store.capture({ profile: "terminal", requiredPaths: ["tracked.txt"] });
+    const { ref: currentSnapshot } = await store.capture({ profile: "terminal", requiredPaths: ["tracked.txt"] });
     const repo = new SqliteSessionRepo({ sessionsRoot });
     const session = await repo.create({ cwd: store.identity.canonicalRoot, id: "state-session" });
     const state: WorkspaceStateV1 = {
@@ -313,13 +305,13 @@ test("retains workspace state current and redo snapshots through aggressive Git 
         kind: "rewind",
         applyMode: "normal",
         forcedPaths: [],
+        sourceSnapshot,
         currentSnapshot,
         currentStates: [],
         rewind: {
             fromLeafId: null,
             targetTurnId: "turn-a",
             targetBoundaryId: null,
-            redoSnapshot,
             redoStates: [],
         },
     };
@@ -331,7 +323,7 @@ test("retains workspace state current and redo snapshots through aggressive Git 
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
     vi.advanceTimersByTime(SnapshotRetentionLimits.orphanGraceMs * 2);
     expect((await reconcileSnapshotRefs({ store, sessionsRoot })).removedRefs).toEqual([]);
-    await Promise.all([store.verify(currentSnapshot), store.verify(redoSnapshot)]);
+    await Promise.all([store.verify(sourceSnapshot), store.verify(currentSnapshot)]);
 });
 
 test("grace-collects orphan refs without pruning a session-owned graph", async () => {
@@ -558,8 +550,10 @@ async function addStateOwner(
         workspaceIdentity: store.identity.workspaceIdentity,
         workspaceIncarnation: store.identity.workspaceIncarnation,
         kind: "redo",
+        sourceRewindOperationId: `${sessionId}-rewind-operation`,
         applyMode: "normal",
         forcedPaths: [],
+        sourceSnapshot: snapshot,
         currentSnapshot: snapshot,
         currentStates: [],
     };
@@ -567,33 +561,93 @@ async function addStateOwner(
     session.close();
 }
 
-function makePendingRestore(
+async function addRewindStateOwner(
     store: WorkspaceSnapshotStore,
     sessionsRoot: string,
-    snapshot: PendingWorkspaceRestoreV1["safetySnapshot"]
-): PendingWorkspaceRestoreV1 {
-    return {
+    sourceSnapshot: WorkspaceStateV1["sourceSnapshot"],
+    currentSnapshot: WorkspaceStateV1["currentSnapshot"],
+    sessionId: string
+): Promise<void> {
+    const repo = new SqliteSessionRepo({ sessionsRoot });
+    const session = await repo.create({ cwd: store.identity.canonicalRoot, id: sessionId });
+    const state: WorkspaceStateV1 = {
         schemaVersion: 1,
+        sessionId,
         operationId: "active-restore",
         workspaceIdentity: store.identity.workspaceIdentity,
         workspaceIncarnation: store.identity.workspaceIncarnation,
-        sessionId: "restore-session",
-        sessionPath: join(sessionsRoot, "restore-session.db"),
-        target: { kind: "rewind", targetTurnId: "turn-a" },
-        commitParentId: null,
+        kind: "rewind",
         applyMode: "normal",
         forcedPaths: [],
-        expectedSemanticLeafId: null,
-        workspaceStateEntryId: "workspace-state-a",
-        safetySnapshot: snapshot,
-        paths: [
-            {
-                path: "tracked.txt",
-                before: { state: "file", oid: "a".repeat(40), executable: false },
-                target: { state: "absent" },
-                createdParentDirectories: [],
-            },
-        ],
+        sourceSnapshot,
+        currentSnapshot,
+        currentStates: [],
+        rewind: {
+            fromLeafId: null,
+            targetTurnId: "turn-a",
+            targetBoundaryId: null,
+            redoStates: [],
+        },
+    };
+    await session.appendCustomEntry(WorkspaceControlCustomTypes.state, state);
+    session.close();
+}
+
+async function makePendingRestore(
+    store: WorkspaceSnapshotStore,
+    sessionsRoot: string,
+    snapshot: WorkspaceStateV1["sourceSnapshot"]
+): Promise<{
+    record: PendingWorkspaceRestoreV2;
+    sourceSnapshot: WorkspaceStateV1["sourceSnapshot"];
+    plannedSnapshot: WorkspaceStateV1["currentSnapshot"];
+}> {
+    const metadata = await store.readSnapshotMetadata(snapshot);
+    const sourceCommit = await store.mutationLog.append({
+        tree: snapshot.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "external",
+        },
+    });
+    const sourceSnapshot = await store.publishCommitSnapshot({ commit: sourceCommit, ...metadata });
+    const plannedCommit = await store.mutationLog.append({
+        expectedHead: sourceCommit,
+        tree: snapshot.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "rewind",
+            sessionid: "restore-session",
+            operationid: "active-restore",
+            turnid: "turn-a",
+        },
+    });
+    const plannedSnapshot = await store.publishCommitSnapshot({ commit: plannedCommit, ...metadata });
+    return {
+        sourceSnapshot,
+        plannedSnapshot,
+        record: {
+            schemaVersion: 2,
+            operationId: "active-restore",
+            workspaceIdentity: store.identity.workspaceIdentity,
+            workspaceIncarnation: store.identity.workspaceIncarnation,
+            sessionId: "restore-session",
+            sessionPath: join(sessionsRoot, "restore-session.db"),
+            target: { kind: "rewind", targetTurnId: "turn-a" },
+            applyMode: "normal",
+            forcedPaths: [],
+            expectedSemanticLeafId: null,
+            commitParentId: null,
+            workspaceStateEntryId: "workspace-state-a",
+            workspaceStateTimestamp: "2026-03-15T00:00:00.000Z",
+            sourceCommit,
+            plannedCommit,
+            affectedPaths: [],
+        },
     };
 }
 

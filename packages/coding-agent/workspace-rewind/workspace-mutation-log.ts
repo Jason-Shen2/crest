@@ -31,6 +31,7 @@ export interface WorkspaceMutationMetadataV1 {
     sessionid?: string;
     turnid?: string;
     operationid?: string;
+    sourceoperationid?: string;
 }
 
 export interface PreparedWorkspaceMutation {
@@ -358,7 +359,7 @@ function validateMetadata(
 ): asserts value is WorkspaceMutationMetadataV1 {
     if (!isJsonRecord(value)) throw new Error("Invalid workspace mutation metadata");
     const required = ["schemaversion", "workspaceidentity", "workspaceincarnation", "kind"];
-    const optional = ["sessionid", "turnid", "operationid"];
+    const optional = ["sessionid", "turnid", "operationid", "sourceoperationid"];
     if (!hasExactKeys(value, required, optional)) {
         throw new Error("Invalid workspace mutation metadata keys");
     }
@@ -370,12 +371,17 @@ function validateMetadata(
         !MutationKinds.has(value.kind as WorkspaceMutationKind) ||
         !hasOptionalNonemptyString(value, "sessionid") ||
         !hasOptionalNonemptyString(value, "turnid") ||
-        !hasOptionalNonemptyString(value, "operationid")
+        !hasOptionalNonemptyString(value, "operationid") ||
+        !hasOptionalNonemptyString(value, "sourceoperationid")
     ) {
         throw new Error("Invalid workspace mutation metadata");
     }
     if (value.workspaceidentity !== workspaceIdentity || value.workspaceincarnation !== workspaceIncarnation) {
         throw new Error("Workspace mutation metadata belongs to another workspace");
+    }
+    const requiresSource = value.kind === "redo" || value.kind === "turn-redo";
+    if (requiresSource !== Object.hasOwn(value, "sourceoperationid")) {
+        throw new Error("Workspace mutation source operation metadata is invalid");
     }
 }
 
