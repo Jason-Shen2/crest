@@ -28,11 +28,11 @@
 - Create: `packages/coding-agent/workspace-rewind/workspace-mutation-log.ts`
 - Create: `packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts`
 
-- [ ] **Step 1: Write failing Git-runner tests**
+- [x] **Step 1: Write failing Git-runner tests**
 
 Prove `commit-tree`, `write-tree`, `read-tree`, `update-index`, `ls-tree`, `status`, and `log` are accepted; arbitrary subcommands remain rejected; a private absolute `indexFile` is accepted without exposing arbitrary environment variables.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts
@@ -40,11 +40,11 @@ npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts
 
 Expected: FAIL on unsupported subcommands/options.
 
-- [ ] **Step 3: Add minimal secure plumbing**
+- [x] **Step 3: Add minimal secure plumbing**
 
 Add `indexFile?: string` to `GitRunOptions`, validate it as absolute, and set only `GIT_INDEX_FILE` internally. Keep hooks, external fsmonitor hooks, prompts, global config, and caller-provided `GIT_*` variables disabled.
 
-- [ ] **Step 4: Write failing mutation-log tests**
+- [x] **Step 4: Write failing mutation-log tests**
 
 ```ts
 it("appends one CAS-ordered commit with canonical owner metadata", async () => {});
@@ -54,7 +54,7 @@ it("ignores later different-path commits", async () => {});
 it("rejects malformed or foreign-workspace metadata", async () => {});
 ```
 
-- [ ] **Step 5: Run RED**
+- [x] **Step 5: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts
@@ -62,7 +62,7 @@ npx vitest run packages/coding-agent/workspace-rewind/workspace-mutation-log.tes
 
 Expected: FAIL because the module is absent.
 
-- [ ] **Step 6: Implement the log**
+- [x] **Step 6: Implement the log**
 
 ```ts
 export type WorkspaceMutationKind =
@@ -113,7 +113,7 @@ export class WorkspaceMutationLog {
 
 Use canonical JSON as the full commit message, `commit-tree` for creation, and CAS `update-ref` as the only head publication.
 
-- [ ] **Step 7: Run GREEN and commit**
+- [x] **Step 7: Run GREEN and commit**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts
