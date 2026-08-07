@@ -167,25 +167,15 @@ function findAvailableCheckpoint(entries: readonly SessionTreeEntry[], sessionId
 }
 
 class DeterministicWatcher implements WorkspaceChangeWatcher {
-    eventLog: Array<{ sequence: number; event: WorkspaceChangeEvent }> = [];
-    eventSequence = 0;
+    callbacks = new Set<(error: Error | null, events: WorkspaceChangeEvent[]) => unknown>();
 
     record(event: WorkspaceChangeEvent): void {
-        this.eventLog.push({ sequence: ++this.eventSequence, event });
+        for (const callback of this.callbacks) callback(null, [event]);
     }
 
-    async getEventsSince(_directory: string, snapshot: string): Promise<WorkspaceChangeEvent[]> {
-        const snapshotSequence = Number.parseInt(await readFile(snapshot, "utf8"), 10);
-        return this.eventLog.filter((entry) => entry.sequence > snapshotSequence).map((entry) => entry.event);
-    }
-
-    async subscribe(_directory: string, _callback: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown) {
-        return { unsubscribe: async () => undefined };
-    }
-
-    async writeSnapshot(_directory: string, snapshot: string): Promise<string> {
-        await writeFile(snapshot, String(this.eventSequence), { mode: 0o600 });
-        return snapshot;
+    async subscribe(_directory: string, callback: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown) {
+        this.callbacks.add(callback);
+        return { unsubscribe: async () => void this.callbacks.delete(callback) };
     }
 }
 

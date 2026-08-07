@@ -3,19 +3,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-    chmod,
-    lstat,
-    mkdir,
-    mkdtemp,
-    readFile,
-    realpath,
-    rename,
-    rm,
-    symlink,
-    unlink,
-    writeFile,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -45,9 +33,9 @@ import type {
 } from "./types";
 import {
     ParcelWorkspaceChangeFeed,
+    type WorkspaceChangeDrain,
     type WorkspaceChangeEvent,
     type WorkspaceChangeFeed,
-    type WorkspaceChangeRead,
     type WorkspaceChangeWatcher,
 } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -251,20 +239,19 @@ describe("full and incremental snapshot equivalence", () => {
     }, 30_000);
 
     test.each([
-        ["cursor missing", "cursor-missing", false],
-        ["query error", "query-failed", false],
-        ["callback error", "query-failed", false],
-        ["scope invalidation", undefined, true],
+        ["watcher overflow", true, false],
+        ["watcher error", true, false],
+        ["scope invalidation", false, true],
     ] as const)(
         "full reconciles %s without publishing an available empty state",
-        async (_name, gap, scopeInvalidated) => {
+        async (_name, loseTrust, scopeInvalidated) => {
             const value = await makeFixture(`gap-${_name.replaceAll(" ", "-")}`, false);
             const fullReconcile = vi.spyOn(value.store, "captureFullReconcile");
             try {
                 await value.tracker.capture({ profile: "pre-turn" });
                 await writeFile(join(value.workspaceRoot, "changed.txt"), _name);
                 value.feed.record(["changed.txt"], scopeInvalidated);
-                if (gap) value.feed.forceGap(gap);
+                if (loseTrust) value.feed.loseTrust();
                 const full = await value.store.captureFullReconcile({ profile: "terminal" });
 
                 const incremental = await value.tracker.capture({ profile: "terminal" });
@@ -316,37 +303,26 @@ describe("full and incremental snapshot equivalence", () => {
         30_000
     );
 
-    test.each(["cursor missing", "query error", "callback error"] as const)(
-        "turns a real change-feed %s into an explicit gap",
-        async (scenario) => {
-            const root = await mkdtemp(join(tmpdir(), `crest-equivalence-feed-${scenario.replaceAll(" ", "-")}-`));
-            cleanupRoots.push(root);
-            const requestedWorkspaceRoot = join(root, "workspace");
-            await mkdir(requestedWorkspaceRoot);
-            const workspaceRoot = await realpath(requestedWorkspaceRoot);
-            const storeRoot = join(root, "store");
-            const watcher = new FaultInjectingWatcher();
-            const feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot, watcher });
-            try {
-                await feed.prepareForReconcile();
-                await feed.initializeAfterReconcile();
-                if (scenario === "cursor missing") {
-                    await unlink(join(storeRoot, "tracker", "committed.cursor"));
-                } else if (scenario === "query error") {
-                    watcher.queryError = new Error("injected query failure");
-                } else {
-                    watcher.callback?.(new Error("injected callback failure"), []);
-                }
+    test("turns a real change-feed callback error into typed unavailable", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-equivalence-feed-callback-error-"));
+        cleanupRoots.push(root);
+        const requestedWorkspaceRoot = join(root, "workspace");
+        await mkdir(requestedWorkspaceRoot);
+        const workspaceRoot = await realpath(requestedWorkspaceRoot);
+        const watcher = new FaultInjectingWatcher();
+        const feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, watcher });
+        try {
+            await feed.start();
+            watcher.callback?.(new Error("injected callback failure"), []);
 
-                await expect(feed.readChanges()).resolves.toEqual({
-                    status: "gap",
-                    reason: scenario === "cursor missing" ? "cursor-missing" : "query-failed",
-                });
-            } finally {
-                await feed.dispose();
-            }
+            await expect(feed.drain()).resolves.toEqual({
+                status: "unavailable",
+                reason: "watcher-error",
+            });
+        } finally {
+            await feed.dispose();
         }
-    );
+    });
 
     test("detects a real dirty-file replacement at the anchored read boundary", async () => {
         const value = await makeFixture("real-dirty-read-replacement", false);
@@ -604,94 +580,54 @@ function diffFullProjections(
 
 class FaultInjectingWatcher implements WorkspaceChangeWatcher {
     callback?: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown;
-    queryError?: Error;
-    sequence = 0;
-
-    async getEventsSince(_directory: string, snapshot: string): Promise<WorkspaceChangeEvent[]> {
-        if (this.queryError) throw this.queryError;
-        await readFile(snapshot, "utf8");
-        return [];
-    }
 
     async subscribe(_directory: string, callback: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown) {
         this.callback = callback;
         return { unsubscribe: async () => undefined };
     }
-
-    async writeSnapshot(_directory: string, snapshot: string): Promise<string> {
-        await writeFile(snapshot, String(++this.sequence), { mode: 0o600 });
-        return snapshot;
-    }
 }
 
 class DeterministicChangeFeed implements WorkspaceChangeFeed {
     events: Array<{ sequence: number; path: string; scopeInvalidated: boolean }> = [];
-    committedSequence = 0;
-    preparedSequence = 0;
+    drainedSequence = 0;
     nextSequence = 0;
-    nextCandidate = 0;
-    candidates = new Map<string, number>();
-    gap = true;
-    gapReason: "cursor-missing" | "query-failed" = "cursor-missing";
+    trusted = false;
+    lastDrainHadChanges = false;
     onAdvance?: () => void;
 
     record(paths: readonly string[], scopeInvalidated = false): void {
         for (const path of paths) {
             this.events.push({ sequence: ++this.nextSequence, path, scopeInvalidated });
         }
+        if (scopeInvalidated) this.trusted = false;
     }
 
-    async prepareForReconcile(): Promise<void> {
-        this.preparedSequence = this.nextSequence;
+    async start(): Promise<void> {
+        this.drainedSequence = this.nextSequence;
+        this.lastDrainHadChanges = false;
+        this.trusted = true;
     }
 
-    async initializeAfterReconcile(): Promise<void> {
-        this.committedSequence = this.nextSequence;
-        this.gap = false;
-        this.candidates.clear();
+    async drain(): Promise<WorkspaceChangeDrain> {
+        if (!this.trusted) return { status: "unavailable", reason: "watcher-error" };
+        if (this.lastDrainHadChanges) this.onAdvance?.();
+        const events = this.events.filter((event) => event.sequence > this.drainedSequence);
+        this.drainedSequence = this.nextSequence;
+        const changedPaths = [...new Set(events.map((event) => event.path))].sort(comparePaths);
+        this.lastDrainHadChanges = changedPaths.length > 0;
+        return { status: "complete", changedPaths };
     }
 
-    async readChanges(): Promise<WorkspaceChangeRead> {
-        if (this.gap) return { status: "gap", reason: this.gapReason };
-        return this.readAfter(this.committedSequence);
+    isTrusted(): boolean {
+        return this.trusted;
     }
 
-    async advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        this.onAdvance?.();
-        return this.readAfter(sequence);
+    loseTrust(): void {
+        this.trusted = false;
     }
 
-    async commitCursor(candidateCursor: string): Promise<void> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        this.committedSequence = sequence;
-        this.candidates.clear();
-    }
-
-    markGap(): void {
-        this.gap = true;
-        this.gapReason = "query-failed";
-    }
-
-    forceGap(reason: "cursor-missing" | "query-failed"): void {
-        this.gap = true;
-        this.gapReason = reason;
-    }
-
-    async dispose(): Promise<void> {}
-
-    readAfter(sequence: number): WorkspaceChangeRead {
-        const events = this.events.filter((event) => event.sequence > sequence);
-        const candidateCursor = (++this.nextCandidate).toString(16).padStart(32, "0");
-        this.candidates.set(candidateCursor, this.nextSequence);
-        return {
-            status: "complete",
-            changedPaths: [...new Set(events.map((event) => event.path))].sort(comparePaths),
-            scopeInvalidated: events.some((event) => event.scopeInvalidated),
-            candidateCursor,
-        };
+    async dispose(): Promise<void> {
+        this.trusted = false;
     }
 }
 

@@ -527,15 +527,12 @@ function makeIncrementalTimeoutTracker(): WorkspaceSnapshotTracker {
             }),
         } as never,
         feed: {
-            prepareForReconcile: async () => undefined,
-            initializeAfterReconcile: async () => undefined,
-            readChanges: async () => ({
+            start: async () => undefined,
+            drain: async () => ({
                 status: "complete",
                 changedPaths: ["a.txt"],
-                candidateCursor: "candidate-1",
-                scopeInvalidated: false,
             }),
-            markGap: () => undefined,
+            isTrusted: () => true,
             dispose: async () => undefined,
         } as never,
         state: {

@@ -32,6 +32,7 @@ export interface GitRunOptions {
     maxStdoutBytes?: number;
     maxStderrBytes?: number;
     signal?: AbortSignal;
+    fsmonitor?: "builtin";
 }
 
 export interface GitRunResult {
@@ -129,7 +130,7 @@ export class WorkspaceGitRunner {
         }
         const commandArgs = [
             "-c",
-            "core.fsmonitor=false",
+            `core.fsmonitor=${options.fsmonitor === "builtin" ? "true" : "false"}`,
             "-c",
             `core.hooksPath=${securePaths.hooks}`,
             "-c",
@@ -292,6 +293,9 @@ function validateOptions(
         throw makeError("invalid_options");
     }
     if (options.indexFile != null && (typeof options.indexFile !== "string" || !isAbsolute(options.indexFile))) {
+        throw makeError("invalid_options");
+    }
+    if (options.fsmonitor != null && options.fsmonitor !== "builtin") {
         throw makeError("invalid_options");
     }
     if (options.stdin != null && !Buffer.isBuffer(options.stdin)) {

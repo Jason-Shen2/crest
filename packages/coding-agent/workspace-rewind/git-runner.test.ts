@@ -208,6 +208,33 @@ describe.sequential("WorkspaceGitRunner", () => {
         }
     });
 
+    test("enables only Git's built-in fsmonitor when explicitly requested", async () => {
+        const runner = new WorkspaceGitRunner(executable);
+
+        const result = await runner.run(["rev-parse", "report"], {
+            cwd: root,
+            timeoutMs: 2_000,
+            fsmonitor: "builtin",
+        });
+        const report = JSON.parse(result.stdout.toString()) as Report;
+
+        expect(report.argv).toContain("core.fsmonitor=true");
+        expect(report.argv).not.toContain("core.fsmonitor=false");
+        expect(report.argv.filter((value) => value.startsWith("core.fsmonitor="))).toEqual(["core.fsmonitor=true"]);
+    });
+
+    test("rejects arbitrary fsmonitor modes before spawning", async () => {
+        const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
+
+        await expect(
+            runner.run(["status", "--porcelain=v1"], {
+                cwd: root,
+                timeoutMs: 100,
+                fsmonitor: "../../external-hook" as never,
+            })
+        ).rejects.toMatchObject({ code: "invalid_options" });
+    });
+
     test("uses a runner-owned commit identity instead of ambient Git identity", async () => {
         const runner = new WorkspaceGitRunner();
         const gitDir = join(root, "identity.git");

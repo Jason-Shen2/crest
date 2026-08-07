@@ -5,23 +5,21 @@ import { mkdir, mkdtemp, realpath, rename, rm, unlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import ParcelWatcher from "@parcel/watcher";
 
-import { ParcelWorkspaceChangeFeed, type WorkspaceChangeRead } from "./workspace-change-feed";
+import { ParcelWorkspaceChangeFeed } from "./workspace-change-feed";
 
 describe("ParcelWorkspaceChangeFeed native integration", () => {
     let root: string;
     let workspaceRoot: string;
-    let storeRoot: string;
     let feeds: ParcelWorkspaceChangeFeed[];
     let nativeBackendAvailable: boolean;
 
     beforeEach(async () => {
         root = await mkdtemp(join(tmpdir(), "crest-workspace-feed-native-"));
         const requestedWorkspaceRoot = join(root, "workspace");
-        storeRoot = join(root, "store");
         await mkdir(requestedWorkspaceRoot);
         workspaceRoot = await realpath(requestedWorkspaceRoot);
         nativeBackendAvailable = await supportsNativeWatcher(workspaceRoot);
@@ -38,69 +36,55 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
         await writeFile(join(workspaceRoot, "delete.txt"), "delete");
         await writeFile(join(workspaceRoot, "old.txt"), "rename");
         const feed = makeFeed();
-        if (!(await reconcileOrUnsupported(feed))) return;
+        if (!(await startOrUnsupported(feed))) return;
 
         await writeFile(join(workspaceRoot, "create.txt"), "create");
         await writeFile(join(workspaceRoot, "update.txt"), "after");
         await unlink(join(workspaceRoot, "delete.txt"));
         await rename(join(workspaceRoot, "old.txt"), join(workspaceRoot, "new.txt"));
 
-        const result = await feed.readChanges();
-        assertComplete(result, ["create.txt", "delete.txt", "new.txt", "old.txt", "update.txt"]);
+        await expectPaths(feed, ["create.txt", "delete.txt", "new.txt", "old.txt", "update.txt"]);
     });
 
-    test("requires full reconcile after dispose and reopen instead of trusting the persisted cursor", async () => {
+    test("a reopened runtime starts cold and never consults a persisted cursor", async () => {
         const first = makeFeed();
-        if (!(await reconcileOrUnsupported(first))) return;
+        if (!(await startOrUnsupported(first))) return;
         await first.dispose();
         await writeFile(join(workspaceRoot, "offline.txt"), "offline");
 
         const reopened = makeFeed();
-        await expect(reopened.readChanges()).resolves.toEqual({ status: "gap", reason: "cold-start" });
-        if (!(await reconcileOrUnsupported(reopened))) return;
-        const baselineHints = await reopened.readChanges();
-        if (baselineHints.status !== "complete") throw new Error("expected complete recovery baseline");
-        await reopened.commitCursor(baselineHints.candidateCursor);
-        const recovered = await reopened.readChanges();
+        await expect(reopened.drain()).resolves.toEqual({ status: "unavailable", reason: "not-started" });
+        if (!(await startOrUnsupported(reopened))) return;
 
-        assertComplete(recovered, []);
-    });
-
-    test("reports cursor deletion as a gap", async () => {
-        const feed = makeFeed();
-        if (!(await reconcileOrUnsupported(feed))) return;
-        await unlink(join(storeRoot, "tracker", "committed.cursor"));
-
-        await expect(feed.readChanges()).resolves.toEqual({ status: "gap", reason: "cursor-missing" });
+        await expect(reopened.drain()).resolves.toEqual({ status: "complete", changedPaths: [] });
     });
 
     test("coalesces one thousand writes to one changed path", async () => {
         const path = join(workspaceRoot, "hot.txt");
         await writeFile(path, "initial");
         const feed = makeFeed();
-        if (!(await reconcileOrUnsupported(feed))) return;
+        if (!(await startOrUnsupported(feed))) return;
 
         for (let index = 0; index < 1_000; index++) {
             await writeFile(path, String(index));
         }
 
-        const result = await feed.readChanges();
-        assertComplete(result, ["hot.txt"]);
+        await expectPaths(feed, ["hot.txt"]);
     });
 
     function makeFeed(): ParcelWorkspaceChangeFeed {
-        const feed = new ParcelWorkspaceChangeFeed({ workspaceRoot, storeRoot });
+        const feed = new ParcelWorkspaceChangeFeed({ workspaceRoot });
         feeds.push(feed);
         return feed;
     }
 
-    async function reconcileOrUnsupported(feed: ParcelWorkspaceChangeFeed): Promise<boolean> {
+    async function startOrUnsupported(feed: ParcelWorkspaceChangeFeed): Promise<boolean> {
         try {
-            await reconcile(feed);
+            await feed.start();
             return true;
         } catch (error) {
             if (nativeBackendAvailable) {
-                await reconcile(feed);
+                await feed.start();
                 return true;
             }
             expect(error).toBeInstanceOf(Error);
@@ -109,15 +93,18 @@ describe("ParcelWorkspaceChangeFeed native integration", () => {
     }
 });
 
-function assertComplete(result: WorkspaceChangeRead, expectedPaths: string[]): void {
-    expect(result.status).toBe("complete");
-    if (result.status !== "complete") return;
-    expect(result.changedPaths).toEqual(expectedPaths);
-}
-
-async function reconcile(feed: ParcelWorkspaceChangeFeed): Promise<void> {
-    await feed.prepareForReconcile();
-    await feed.initializeAfterReconcile();
+async function expectPaths(feed: ParcelWorkspaceChangeFeed, expectedPaths: string[]): Promise<void> {
+    const observed = new Set<string>();
+    await vi.waitFor(
+        async () => {
+            const result = await feed.drain();
+            expect(result.status).toBe("complete");
+            if (result.status !== "complete") return;
+            for (const path of result.changedPaths) observed.add(path);
+            expect([...observed].sort()).toEqual(expectedPaths);
+        },
+        { timeout: 5_000, interval: 20 }
+    );
 }
 
 async function supportsNativeWatcher(workspaceRoot: string): Promise<boolean> {

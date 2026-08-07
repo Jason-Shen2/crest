@@ -16,14 +16,10 @@ import {
     type WorkspaceSnapshotStore,
 } from "./snapshot-store";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
-import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
+import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceScopeManifest } from "./workspace-scope";
-import {
-    loadWorkspaceTrackerState,
-    publishWorkspaceTrackerState,
-    type LoadedWorkspaceTrackerState,
-} from "./workspace-tracker-state";
+import type { LoadedWorkspaceTrackerState } from "./workspace-tracker-state";
 
 export interface WorkspaceSnapshotTrackerStore {
     storeRoot: string;
@@ -78,7 +74,6 @@ export interface WorkspaceSnapshotTrackerStateAccess {
 
 export interface WorkspaceSnapshotTrackerHooks {
     afterIncrementalSnapshotPublished?(): void | Promise<void>;
-    afterCursorCommitted?(): void | Promise<void>;
     afterTrackerStatePublished?(): void | Promise<void>;
 }
 
@@ -135,20 +130,8 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
         this.feed = input.feed;
         this.hooks = input.hooks;
         this.state = input.state ?? {
-            load: () =>
-                loadWorkspaceTrackerState({
-                    storeRoot: this.store.storeRoot,
-                    workspaceIdentity: this.store.identity.workspaceIdentity,
-                    workspaceIncarnation: this.store.identity.workspaceIncarnation,
-                    verifier: this.store,
-                }),
-            publish: (state) =>
-                publishWorkspaceTrackerState({
-                    storeRoot: this.store.storeRoot,
-                    workspaceIdentity: this.store.identity.workspaceIdentity,
-                    workspaceIncarnation: this.store.identity.workspaceIncarnation,
-                    ...state,
-                }),
+            load: async () => ({ status: "untrusted" }),
+            publish: async () => undefined,
         };
         this.makePathCapture = input.makePathCapture ?? ((options) => this.makeDefaultPathCapture(options));
     }
@@ -216,18 +199,22 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
             return await this.fullReconcile(options);
         }
         options.signal?.throwIfAborted();
-        const changes = await this.feed.readChanges();
+        this.needsReconcile = true;
+        const changes = await this.feed.drain();
         if (options.signal?.aborted) {
-            this.feed.markGap();
             options.signal.throwIfAborted();
         }
-        if (changes.status === "gap" || changes.scopeInvalidated) {
+        if (
+            changes.status === "unavailable" ||
+            !this.feed.isTrusted() ||
+            changes.changedPaths.some(invalidatesSnapshotScope)
+        ) {
             return await this.fullReconcile(options);
         }
         if (changes.changedPaths.length === 0) {
-            return await this.publishEmptyCapture(changes.candidateCursor, options.signal);
+            return await this.publishEmptyCapture(options.signal);
         }
-        return await this.captureDirty(options, changes.changedPaths, changes.candidateCursor);
+        return await this.captureDirty(options, changes.changedPaths);
     }
 
     async loadDurableState(): Promise<void> {
@@ -237,7 +224,7 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
 
     async fullReconcile(options: CaptureWorkspaceOptions): Promise<WorkspaceSnapshotCapture> {
         this.needsReconcile = true;
-        await this.feed.prepareForReconcile();
+        await this.feed.start();
         const previousPathCapture = this.pathCapture;
         let previousDisposed = false;
         let nextPathCapture: WorkspaceSnapshotTrackerPathCapture | undefined;
@@ -258,7 +245,7 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                         : {}),
                 },
             });
-            await this.feed.initializeAfterReconcile();
+            if (!this.feed.isTrusted()) throw new Error("Workspace change feed lost trust during reconcile");
             await previousPathCapture?.dispose();
             previousDisposed = previousPathCapture != null;
             if (this.pathCapture === previousPathCapture) this.pathCapture = undefined;
@@ -283,7 +270,6 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
             }
             this.pathCapture = previousDisposed ? undefined : previousPathCapture;
             this.current = undefined;
-            this.feed.markGap();
             if (failures.length > 1) {
                 throw new AggregateError(failures, "Workspace snapshot tracker reconcile cleanup failed");
             }
@@ -291,33 +277,25 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
         }
     }
 
-    async publishEmptyCapture(candidateCursor: string, signal?: AbortSignal): Promise<WorkspaceSnapshotCapture> {
+    async publishEmptyCapture(signal?: AbortSignal): Promise<WorkspaceSnapshotCapture> {
         const current = this.current!;
         this.needsReconcile = true;
-        try {
-            signal?.throwIfAborted();
-            await this.feed.commitCursor(candidateCursor);
-            await this.state.publish({ current: current.ref, coverage: current.coverage });
-            const capture = {
-                ref: { ...current.ref },
-                coverage: { ...cloneCoverage(current.coverage), newlyHashedBytes: 0 },
-            };
-            this.current = { ...current, coverage: capture.coverage };
-            this.needsReconcile = false;
-            return capture;
-        } catch (error) {
-            this.feed.markGap();
-            throw error;
-        }
+        signal?.throwIfAborted();
+        await this.state.publish({ current: current.ref, coverage: current.coverage });
+        const capture = {
+            ref: { ...current.ref },
+            coverage: { ...cloneCoverage(current.coverage), newlyHashedBytes: 0 },
+        };
+        this.current = { ...current, coverage: capture.coverage };
+        this.needsReconcile = false;
+        return capture;
     }
 
     async captureDirty(
         options: CaptureWorkspaceOptions,
-        initialPaths: readonly string[],
-        initialCandidateCursor: string
+        initialPaths: readonly string[]
     ): Promise<WorkspaceSnapshotCapture> {
         let paths = canonicalPaths(initialPaths);
-        let candidateCursor = initialCandidateCursor;
         for (let attempt = 0; attempt < 2; attempt++) {
             const timeoutMs =
                 options.profile === "pre-turn"
@@ -339,16 +317,15 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                 throw error;
             }
             if (result.status === "reconcile") return await this.fullReconcile(options);
-            let validation: WorkspaceChangeRead;
+            let validation: WorkspaceChangeDrain;
             try {
-                validation = await this.feed.advanceCandidate(candidateCursor);
+                validation = await this.feed.drain();
             } catch (error) {
                 await this.pathCapture!.discardCaptured(result).catch(() => undefined);
                 this.needsReconcile = true;
-                this.feed.markGap();
                 throw error;
             }
-            if (validation.status === "gap" || validation.scopeInvalidated) {
+            if (validation.status === "unavailable" || !this.feed.isTrusted()) {
                 await this.pathCapture!.discardCaptured(result);
                 return await this.fullReconcile(options);
             }
@@ -356,18 +333,16 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                 await this.pathCapture!.discardCaptured(result);
                 if (attempt === 1) return await this.fullReconcile(options);
                 paths = canonicalPaths([...paths, ...validation.changedPaths]);
-                candidateCursor = validation.candidateCursor;
                 continue;
             }
-            return await this.commitIncremental(options, result, validation.candidateCursor);
+            return await this.commitIncremental(options, result);
         }
         return await this.fullReconcile(options);
     }
 
     async commitIncremental(
         options: CaptureWorkspaceOptions,
-        result: Extract<IncrementalPathCaptureResult, { status: "captured" }>,
-        candidateCursor: string
+        result: Extract<IncrementalPathCaptureResult, { status: "captured" }>
     ): Promise<WorkspaceSnapshotCapture> {
         const current = this.current!;
         this.needsReconcile = true;
@@ -387,8 +362,6 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
                 });
             });
             await this.hooks?.afterIncrementalSnapshotPublished?.();
-            await this.feed.commitCursor(candidateCursor);
-            await this.hooks?.afterCursorCommitted?.();
             await this.state.publish({ current: captured.ref, coverage: captured.coverage });
             await this.hooks?.afterTrackerStatePublished?.();
             this.current = {
@@ -400,7 +373,6 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
             return cloneCapture(captured);
         } catch (error) {
             if (!consumed) await this.pathCapture!.discardCaptured(result).catch(() => undefined);
-            this.feed.markGap();
             throw error;
         }
     }
@@ -431,6 +403,16 @@ export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSour
 
 function canonicalPaths(paths: readonly string[]): string[] {
     return [...new Set(paths)].sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
+}
+
+function invalidatesSnapshotScope(path: string): boolean {
+    const segments = path.split("/");
+    return (
+        path === ".git/index" ||
+        path === ".git/info/exclude" ||
+        segments.includes(".git") ||
+        segments.includes(".gitignore")
+    );
 }
 
 function cloneScope(scope: WorkspaceScopeManifest): WorkspaceScopeManifest {

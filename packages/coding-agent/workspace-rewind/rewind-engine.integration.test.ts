@@ -28,7 +28,7 @@ import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewi
 import { decodeWorkspaceStateEntry } from "./session-state";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
-import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
+import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery } from "./workspace-recovery";
 import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
@@ -653,8 +653,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
 
 class BoundaryChangeFeed implements WorkspaceChangeFeed {
     paths: string[] = [];
-    initialized = false;
-    cursor = 0;
+    trusted = false;
 
     record(paths: readonly string[]): void {
         this.paths = [...new Set([...this.paths, ...paths])].sort((left, right) =>
@@ -662,38 +661,23 @@ class BoundaryChangeFeed implements WorkspaceChangeFeed {
         );
     }
 
-    async prepareForReconcile(): Promise<void> {}
-
-    async initializeAfterReconcile(): Promise<void> {
-        this.initialized = true;
+    async start(): Promise<void> {
+        this.trusted = true;
         this.paths = [];
     }
 
-    async readChanges(): Promise<WorkspaceChangeRead> {
-        if (!this.initialized) return { status: "gap", reason: "cold-start" };
-        return this.complete(this.paths);
-    }
-
-    async advanceCandidate(_candidateCursor: string): Promise<WorkspaceChangeRead> {
-        return this.complete([]);
-    }
-
-    async commitCursor(_candidateCursor: string): Promise<void> {
+    async drain(): Promise<WorkspaceChangeDrain> {
+        if (!this.trusted) return { status: "unavailable", reason: "not-started" };
+        const changedPaths = [...this.paths];
         this.paths = [];
+        return { status: "complete", changedPaths };
     }
 
-    markGap(): void {
-        this.initialized = false;
+    isTrusted(): boolean {
+        return this.trusted;
     }
 
-    async dispose(): Promise<void> {}
-
-    complete(paths: string[]): WorkspaceChangeRead {
-        return {
-            status: "complete",
-            changedPaths: [...paths],
-            scopeInvalidated: false,
-            candidateCursor: (++this.cursor).toString(16).padStart(32, "0"),
-        };
+    async dispose(): Promise<void> {
+        this.trusted = false;
     }
 }

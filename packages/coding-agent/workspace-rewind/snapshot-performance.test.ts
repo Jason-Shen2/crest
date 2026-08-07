@@ -16,7 +16,7 @@ import {
 import { WorkspaceGitRunner } from "./git-runner";
 import { IncrementalPathCapture, type IncrementalPathCaptureHooks } from "./incremental-path-capture";
 import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-store";
-import type { WorkspaceChangeFeed, WorkspaceChangeRead } from "./workspace-change-feed";
+import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 import { WorkspaceTrackerRegistry } from "./workspace-tracker-registry";
@@ -77,7 +77,6 @@ describe("incremental snapshot performance contracts", () => {
             expect(metrics.enumeratedEntryCount).toBe(1);
             expect(metrics.workerPeak).toBeLessThanOrEqual(1);
             expect(readNodeKinds).toHaveBeenCalledTimes(1);
-            expect(value.feed.commitCount).toBe(1);
             await expect(tracker.capture({ profile: "terminal" })).resolves.toMatchObject({
                 coverage: { newlyHashedBytes: 0 },
             });
@@ -308,61 +307,30 @@ async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceId
 }
 
 class DeterministicChangeFeed implements WorkspaceChangeFeed {
-    events: Array<{ sequence: number; path: string }> = [];
-    initialized = false;
-    committedSequence = 0;
-    nextSequence = 0;
-    nextCandidate = 0;
-    candidates = new Map<string, number>();
-    commitCount = 0;
+    paths = new Set<string>();
+    trusted = false;
 
     record(paths: readonly string[]): void {
-        for (const path of paths) this.events.push({ sequence: ++this.nextSequence, path });
+        for (const path of paths) this.paths.add(path);
     }
 
-    async prepareForReconcile(): Promise<void> {}
-
-    async initializeAfterReconcile(): Promise<void> {
-        this.committedSequence = this.nextSequence;
-        this.candidates.clear();
-        this.initialized = true;
+    async start(): Promise<void> {
+        this.paths.clear();
+        this.trusted = true;
     }
 
-    async readChanges(): Promise<WorkspaceChangeRead> {
-        if (!this.initialized) return { status: "gap", reason: "cold-start" };
-        return this.readAfter(this.committedSequence);
+    async drain(): Promise<WorkspaceChangeDrain> {
+        if (!this.trusted) return { status: "unavailable", reason: "not-started" };
+        const changedPaths = [...this.paths].sort();
+        this.paths.clear();
+        return { status: "complete", changedPaths };
     }
 
-    async advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        return this.readAfter(sequence);
+    isTrusted(): boolean {
+        return this.trusted;
     }
 
-    async commitCursor(candidateCursor: string): Promise<void> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        this.committedSequence = sequence;
-        this.candidates.clear();
-        this.commitCount++;
-    }
-
-    markGap(): void {
-        this.initialized = false;
-    }
-
-    async dispose(): Promise<void> {}
-
-    readAfter(sequence: number): WorkspaceChangeRead {
-        const candidateCursor = (++this.nextCandidate).toString(16).padStart(32, "0");
-        this.candidates.set(candidateCursor, this.nextSequence);
-        return {
-            status: "complete",
-            changedPaths: [
-                ...new Set(this.events.filter((event) => event.sequence > sequence).map((event) => event.path)),
-            ].sort(),
-            scopeInvalidated: false,
-            candidateCursor,
-        };
+    async dispose(): Promise<void> {
+        this.trusted = false;
     }
 }
