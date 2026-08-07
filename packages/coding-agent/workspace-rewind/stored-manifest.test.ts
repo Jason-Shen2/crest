@@ -12,6 +12,7 @@ import {
     type StoredPathStateV1,
     type StoredScopeManifestV1,
     type StoredScopeManifestV2,
+    type StoredScopeManifestV3,
 } from "./stored-manifest";
 import type { CapturedPathStateV1, WorkspaceSnapshotRefV1 } from "./types";
 import type { WorkspaceScopeManifest } from "./workspace-scope";
@@ -226,6 +227,54 @@ describe("stored snapshot manifests", () => {
             budgetexhaustion: { scope: "workspace-root" },
         });
     });
+
+    test("opens a compact v3 manifest without file-state authority", async () => {
+        const objects = new MemoryObjects();
+        const manifest = makeV3Manifest();
+        manifest.coverage = {
+            complete: false,
+            eligibleentrycount: 2,
+            exclusions: [{ path: "ignored", reason: "ignored" }],
+        };
+        const manifestOid = objects.putBlob(canonicalJson(manifest));
+        const reader = await openReader(objects, manifestOid);
+
+        expect(reader.manifest).not.toHaveProperty("entries");
+        expect(reader.manifest).not.toHaveProperty("statetree");
+        await expect(reader.readCoveragePathState("ignored")).resolves.toEqual({
+            state: "excluded",
+            reason: "ignored",
+        });
+        await expect(reader.readCoveragePathState("ignored/child.txt")).resolves.toEqual({
+            state: "excluded",
+            reason: "ignored",
+        });
+        await expect(reader.readCoveragePathState("missing.txt")).resolves.toEqual({ state: "absent" });
+    });
+
+    test("uses a v3 root capture-budget exclusion only when no path exclusion matches", async () => {
+        const objects = new MemoryObjects();
+        const manifest = makeV3Manifest();
+        manifest.coverage = {
+            complete: false,
+            eligibleentrycount: 0,
+            exclusions: [
+                { path: "ignored", reason: "ignored" },
+                { scope: "workspace-root", reason: "capture-budget" },
+            ],
+        };
+        const manifestOid = objects.putBlob(canonicalJson(manifest));
+        const reader = await openReader(objects, manifestOid);
+
+        await expect(reader.readCoveragePathState("ignored/child.txt")).resolves.toEqual({
+            state: "excluded",
+            reason: "ignored",
+        });
+        await expect(reader.readCoveragePathState("other.txt")).resolves.toEqual({
+            state: "excluded",
+            reason: "capture-budget",
+        });
+    });
 });
 
 async function makeV1Reader(states: ReadonlyMap<string, CapturedPathStateV1>): Promise<StoredManifestReader> {
@@ -278,6 +327,16 @@ function makeV2Manifest(stateTree: string): StoredScopeManifestV2 {
         scope: toStoredWorkspaceScope(makeScope()),
         coverage: { complete: false, eligibleentrycount: 3, exclusions: [] },
         statetree: stateTree,
+    };
+}
+
+function makeV3Manifest(): StoredScopeManifestV3 {
+    return {
+        schemaversion: 3,
+        workspaceidentity: WorkspaceIdentity,
+        workspaceincarnation: WorkspaceIncarnation,
+        scope: toStoredWorkspaceScope(makeScope()),
+        coverage: { complete: true, eligibleentrycount: 0, exclusions: [] },
     };
 }
 

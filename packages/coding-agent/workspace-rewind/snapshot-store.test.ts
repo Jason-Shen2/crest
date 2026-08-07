@@ -29,6 +29,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError, type GitRunOptions, type GitRunResult } from "./git-runner";
 import { IncrementalPathCapture } from "./incremental-path-capture";
 import { makeProcessOwnerIdentity } from "./process-owner";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { SnapshotQuotaExceededError } from "./snapshot-quota-accounting";
 import {
     initializePrivateStore,
@@ -38,7 +39,7 @@ import {
 } from "./snapshot-store";
 import type { CapturedPathStateV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
-import { discoverWorkspaceScope } from "./workspace-scope";
+import { discoverWorkspaceScope, type WorkspaceScopeManifest } from "./workspace-scope";
 
 const cleanupRoots: string[] = [];
 
@@ -1037,6 +1038,288 @@ describe("workspace snapshots", () => {
         await expect(fixture.store.verify(v2)).resolves.toBeUndefined();
         await expect(fixture.store.readPathState(v2, "README.md")).resolves.toMatchObject({ state: "file" });
         await expect(fixture.store.diff(v2, v2)).resolves.toEqual([]);
+    });
+
+    test("publishes and reconstructs one commit-backed v3 snapshot without a descriptor", async () => {
+        const fixture = await makeStoreFixture();
+        const state = await testFileState(fixture, Buffer.from("commit-backed"));
+        const tree = await writeCommitTree(fixture, [{ path: "README.md", state }]);
+        const commit = await appendTestMutation(fixture, tree);
+        const coverage = makeCommitCoverage(1);
+
+        const ref = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage,
+        });
+        const repeated = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage,
+        });
+        const manifest = JSON.parse((await fixture.store.readBlob(ref.scopeManifest)).toString("utf8"));
+
+        expect(ref).toEqual({
+            id: commit,
+            workspaceIdentity: fixture.identity.workspaceIdentity,
+            workspaceIncarnation: fixture.identity.workspaceIncarnation,
+            tree,
+            scopeManifest: ref.scopeManifest,
+        });
+        expect(repeated).toEqual(ref);
+        expect(manifest).toMatchObject({ schemaversion: 3, coverage: { eligibleentrycount: 1 } });
+        expect(manifest).not.toHaveProperty("entries");
+        expect(manifest).not.toHaveProperty("statetree");
+        await expect(fixture.store.readCommitSnapshot(commit)).resolves.toEqual(ref);
+        await expect(fixture.store.verifyOwnedSnapshot(ref)).resolves.toBeUndefined();
+        expect(await readTestObjectType(fixture, ref.id)).toBe("commit");
+        expect(await readTestRef(fixture, `refs/crest/snapshots/${commit}`)).toBe(ref.scopeManifest);
+    });
+
+    test("serializes commit-backed publication under the short workspace lock", async () => {
+        const fixture = await makeStoreFixture();
+        const tree = await writeCommitTree(fixture, []);
+        const commit = await appendTestMutation(fixture, tree);
+        const release = makeDeferred();
+        const held = fixture.store.withWorkspaceLock(() => release.promise);
+        await fixture.store.mutationLock.waitUntilHeldForTest();
+        let settled = false;
+
+        const publishing = fixture.store
+            .publishCommitSnapshot({ commit, scope: makeCommitScope(), coverage: makeCommitCoverage(0) })
+            .finally(() => {
+                settled = true;
+            });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(settled).toBe(false);
+        release.resolve();
+        await held;
+        await expect(publishing).resolves.toMatchObject({ id: commit, tree });
+    });
+
+    test("rejects a different v3 manifest for an already-associated commit", async () => {
+        const fixture = await makeStoreFixture();
+        const tree = await writeCommitTree(fixture, []);
+        const commit = await appendTestMutation(fixture, tree);
+        const original = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(0),
+        });
+
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: makeCommitScope(),
+                coverage: makeCommitCoverage(0, [{ path: "ignored", reason: "ignored" }]),
+            })
+        ).rejects.toThrow(/association|manifest/i);
+        await expect(fixture.store.readCommitSnapshot(commit)).resolves.toEqual(original);
+    });
+
+    test("rejects v3 coverage that contradicts its commit tree", async () => {
+        const fixture = await makeStoreFixture();
+        const tree = await writeCommitTree(fixture, []);
+        const commit = await appendTestMutation(fixture, tree);
+
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: makeCommitScope(),
+                coverage: makeCommitCoverage(1),
+            })
+        ).rejects.toThrow(/coverage|eligible/i);
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: makeCommitScope(),
+                coverage: {
+                    complete: true,
+                    eligibleEntryCount: 0,
+                    exclusions: [{ path: "ignored", reason: "ignored" }],
+                },
+            })
+        ).rejects.toThrow(/coverage|complete/i);
+    });
+
+    test("rejects noncanonical paths in a v3 commit tree", async () => {
+        const fixture = await makeStoreFixture();
+        const blob = await writeTestBlob(fixture, Buffer.from("unsafe"));
+        const tree = await writeRawTree(
+            fixture,
+            Buffer.concat([Buffer.from("100644 bad\\name\0"), Buffer.from(blob, "hex")])
+        );
+        const commit = await appendTestMutation(fixture, tree);
+
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: makeCommitScope(),
+                coverage: makeCommitCoverage(1),
+            })
+        ).rejects.toThrow(/path|workspace-relative/i);
+    });
+
+    test("reads v3 tree modes before coverage exclusions and derives node kinds", async () => {
+        const fixture = await makeStoreFixture();
+        const regular = await testFileState(fixture, Buffer.from("regular"));
+        const executable = await testFileState(fixture, Buffer.from("executable"), true);
+        const symlinkOid = await writeTestBlob(fixture, Buffer.from("regular.txt"));
+        const symlinkState: CapturedPathStateV1 = { state: "symlink", oid: symlinkOid };
+        const tree = await writeCommitTree(fixture, [
+            { path: "regular.txt", state: regular },
+            { path: "bin/run", state: executable },
+            { path: "link", state: symlinkState },
+        ]);
+        const commit = await appendTestMutation(fixture, tree);
+        const ref = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(3, [
+                { path: "ignored", reason: "ignored" },
+                { scope: "workspace-root", reason: "capture-budget" },
+            ]),
+        });
+
+        await expect(fixture.store.readPathState(ref, "regular.txt")).resolves.toEqual(regular);
+        await expect(fixture.store.readPathState(ref, "bin/run")).resolves.toEqual(executable);
+        await expect(fixture.store.readPathState(ref, "link")).resolves.toEqual(symlinkState);
+        await expect(fixture.store.readPathState(ref, "ignored/child.txt")).resolves.toEqual({
+            state: "excluded",
+            reason: "ignored",
+        });
+        await expect(fixture.store.readPathState(ref, "missing.txt")).resolves.toEqual({
+            state: "excluded",
+            reason: "capture-budget",
+        });
+        await expect(fixture.store.readNodeKind(ref, "bin")).resolves.toBe("tree");
+        await expect(fixture.store.readNodeKind(ref, "bin/run")).resolves.toBe("leaf");
+        await expect(fixture.store.readNodeKind(ref, "ignored")).resolves.toBe("absent");
+        await expect(fixture.store.verify(ref)).resolves.toBeUndefined();
+        await expect(fixture.store.verify({ ...ref, tree: await writeCommitTree(fixture, []) })).rejects.toThrow(
+            /commit.*tree|tree.*commit/i
+        );
+    });
+
+    test("diffs v3 tree deltas and representable exclusions in canonical byte order", async () => {
+        const fixture = await makeStoreFixture();
+        const beforeA = await testFileState(fixture, Buffer.from("before"));
+        const afterA = await testFileState(fixture, Buffer.from("after"));
+        const deleted = await testFileState(fixture, Buffer.from("deleted"));
+        const created = await testFileState(fixture, Buffer.from("created"));
+        const beforeTree = await writeCommitTree(fixture, [
+            { path: "a.txt", state: beforeA },
+            { path: "delete.txt", state: deleted },
+        ]);
+        const beforeCommit = await appendTestMutation(fixture, beforeTree);
+        const before = await fixture.store.publishCommitSnapshot({
+            commit: beforeCommit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(2, [{ path: "ignored", reason: "ignored" }]),
+        });
+        const afterTree = await writeCommitTree(fixture, [
+            { path: "a.txt", state: afterA },
+            { path: "new.txt", state: created },
+        ]);
+        const afterCommit = await appendTestMutation(fixture, afterTree, beforeCommit);
+        const after = await fixture.store.publishCommitSnapshot({
+            commit: afterCommit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(2),
+        });
+
+        expect(await fixture.store.diff(before, after)).toEqual([
+            { path: "a.txt", before: beforeA, after: afterA },
+            { path: "delete.txt", before: deleted, after: { state: "absent" } },
+            {
+                path: "ignored",
+                before: { state: "excluded", reason: "ignored" },
+                after: { state: "absent" },
+            },
+            { path: "new.txt", before: { state: "absent" }, after: created },
+        ]);
+    });
+
+    test("roots v3 metadata across pruning and includes it in snapshot usage traversal", async () => {
+        const fixture = await makeStoreFixture();
+        const state = await testFileState(fixture, Buffer.from("reachable"));
+        const tree = await writeCommitTree(fixture, [{ path: "reachable.txt", state }]);
+        const commit = await appendTestMutation(fixture, tree);
+        const ref = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(1),
+        });
+        fixture.git.runs.length = 0;
+
+        await expect(fixture.store.measureSnapshotUsage([ref])).resolves.toBeGreaterThan(0);
+        const traversal = fixture.git.runs.find((run) => run.args[0] === "rev-list");
+        expect(traversal?.stdin?.toString("ascii").trim().split("\n")).toEqual(
+            expect.arrayContaining([ref.id, ref.scopeManifest])
+        );
+        await fixture.git.run(["reflog", "expire", "--expire=now", "--all"], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 5_000,
+        });
+        await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.storeRoot, timeoutMs: 30_000 });
+
+        await expect(fixture.store.readCommitSnapshot(commit)).resolves.toEqual(ref);
+        await expect(fixture.store.verifyOwnedSnapshot(ref)).resolves.toBeUndefined();
+        await expect(fixture.store.readBlob(ref.scopeManifest)).resolves.toBeInstanceOf(Buffer);
+    });
+
+    test("fails closed for malformed commit-backed ids, manifests, and symbolic associations", async () => {
+        const fixture = await makeStoreFixture();
+        const tree = await writeCommitTree(fixture, []);
+        const commit = await appendTestMutation(fixture, tree);
+        const ref = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(0),
+        });
+        const association = `refs/crest/snapshots/${commit}`;
+        const malformedManifest = await writeTestBlob(
+            fixture,
+            Buffer.from(
+                JSON.stringify(JSON.parse((await fixture.store.readBlob(ref.scopeManifest)).toString("utf8")), null, 2)
+            )
+        );
+
+        await expect(fixture.store.readCommitSnapshot("not-an-oid")).rejects.toThrow(/object id/i);
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit: await writeTestBlob(fixture, Buffer.from("not a commit")),
+                scope: makeCommitScope(),
+                coverage: makeCommitCoverage(0),
+            })
+        ).rejects.toThrow();
+        await fixture.git.run(["update-ref", "--no-deref", association, malformedManifest, ref.scopeManifest], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 5_000,
+        });
+        await expect(fixture.store.readCommitSnapshot(commit)).rejects.toThrow(/canonical/i);
+
+        await fixture.git.run(["update-ref", "-d", association, malformedManifest], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 5_000,
+        });
+        const authority = "refs/crest/ops/symbolic-manifest";
+        await fixture.git.run(["update-ref", authority, ref.scopeManifest], {
+            gitDir: fixture.storeRoot,
+            timeoutMs: 5_000,
+        });
+        const associationPath = join(fixture.storeRoot, association);
+        await mkdir(dirname(associationPath), { recursive: true });
+        await writeFile(associationPath, `ref: ${authority}\n`);
+        await expect(fixture.store.readCommitSnapshot(commit)).rejects.toThrow(/symbolic/i);
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: makeCommitScope(),
+                coverage: makeCommitCoverage(0),
+            })
+        ).rejects.toThrow(/symbolic/i);
     });
 
     test("commits a copy-on-write v2 snapshot and roots every new object through its owner ref", async () => {
@@ -2725,6 +3008,87 @@ async function writeTestBlob(fixture: Awaited<ReturnType<typeof makeStoreFixture
     return stripTestOid(result.stdout);
 }
 
+let CommitIndexId = 0;
+
+async function testFileState(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    bytes: Buffer,
+    executable = false
+): Promise<CapturedPathStateV1> {
+    return { state: "file", oid: await writeTestBlob(fixture, bytes), executable };
+}
+
+async function writeCommitTree(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    states: ReadonlyArray<{ path: string; state: CapturedPathStateV1 }>
+): Promise<string> {
+    const index = new ShadowWorkspaceIndex({
+        git: fixture.git,
+        gitDir: fixture.storeRoot,
+        indexFile: join(fixture.storeRoot, "journal", `commit-index-${CommitIndexId++}`),
+    });
+    await index.load();
+    await index.apply(states);
+    return await index.writeTree();
+}
+
+async function appendTestMutation(
+    fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
+    tree: string,
+    expectedHead?: string
+): Promise<string> {
+    return await fixture.store.mutationLog.append({
+        ...(expectedHead == null ? {} : { expectedHead }),
+        tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: fixture.identity.workspaceIdentity,
+            workspaceincarnation: fixture.identity.workspaceIncarnation,
+            kind: "external",
+        },
+    });
+}
+
+function makeCommitScope(): WorkspaceScopeManifest {
+    return {
+        schemaVersion: 1,
+        policy: {
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+            gitGlobalExcludes: "disabled-by-isolated-runner",
+        },
+        ignoreInputs: [],
+        nestedRepositoryBoundaries: [],
+    };
+}
+
+function makeCommitCoverage(
+    eligibleEntryCount: number,
+    exclusions: WorkspaceSnapshotCoverage["exclusions"] = []
+): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    return {
+        complete: exclusions.length === 0,
+        eligibleEntryCount,
+        exclusions,
+    };
+}
+
+async function readTestObjectType(fixture: Awaited<ReturnType<typeof makeStoreFixture>>, oid: string): Promise<string> {
+    const result = await fixture.git.run(["cat-file", "-t", oid], {
+        gitDir: fixture.storeRoot,
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
+async function readTestRef(fixture: Awaited<ReturnType<typeof makeStoreFixture>>, ref: string): Promise<string> {
+    const result = await fixture.git.run(["for-each-ref", "--format=%(objectname)", ref], {
+        gitDir: fixture.storeRoot,
+        timeoutMs: 5_000,
+    });
+    return stripTestOid(result.stdout);
+}
+
 async function convertSnapshotToV2(
     fixture: Awaited<ReturnType<typeof makeStoreFixture>>,
     source: WorkspaceSnapshotRefV1,
@@ -3095,9 +3459,11 @@ class BlockingQuotaGit extends WorkspaceGitRunner {
 
 class RecordingGit extends WorkspaceGitRunner {
     calls: string[][] = [];
+    runs: Array<{ args: string[]; stdin?: Buffer }> = [];
 
     override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
         this.calls.push([...args]);
+        this.runs.push({ args: [...args], ...(options.stdin == null ? {} : { stdin: Buffer.from(options.stdin) }) });
         return super.run(args, options);
     }
 }

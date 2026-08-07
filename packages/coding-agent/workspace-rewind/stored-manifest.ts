@@ -33,6 +33,14 @@ export interface StoredScopeManifestV2 {
     statetree: string;
 }
 
+export interface StoredScopeManifestV3 {
+    schemaversion: 3;
+    workspaceidentity: string;
+    workspaceincarnation: string;
+    scope: StoredWorkspaceScopeManifestV1;
+    coverage: StoredSnapshotCoverage;
+}
+
 export interface StoredSnapshotCoverage {
     complete: boolean;
     eligibleentrycount: number;
@@ -49,7 +57,7 @@ export interface StoredPathStateV1 {
     state: CapturedPathStateV1;
 }
 
-export type StoredScopeManifest = StoredScopeManifestV1 | StoredScopeManifestV2;
+export type StoredScopeManifest = StoredScopeManifestV1 | StoredScopeManifestV2 | StoredScopeManifestV3;
 
 export type StoredWorkspaceScopeManifestPath =
     | { path: string; pathbytesbase64?: never }
@@ -169,7 +177,38 @@ export class StoredManifestReader {
         if (this.manifest.schemaversion === 1) {
             return resolveV1PathState(this.manifest, this.v1States!, path);
         }
+        if (this.manifest.schemaversion === 3) {
+            throw new Error("A v3 scope manifest does not store file path state");
+        }
         return await this.readV2PathState(path);
+    }
+
+    async readCoveragePathState(path: string): Promise<Extract<CapturedPathStateV1, { state: "absent" | "excluded" }>> {
+        validateWorkspaceRelativePath(path);
+        if (this.manifest.schemaversion !== 3) {
+            const state = await this.readPathState(path);
+            if (state.state === "absent" || state.state === "excluded") return state;
+            return { state: "absent" };
+        }
+        let candidate = path;
+        while (true) {
+            const exclusion = this.manifest.coverage.exclusions.find(
+                (item): item is Extract<StoredSnapshotCoverageExclusion, { path: string }> =>
+                    "path" in item && item.path === candidate
+            );
+            if (exclusion) return { state: "excluded", reason: exclusion.reason };
+            const separator = candidate.lastIndexOf("/");
+            if (separator < 0) break;
+            candidate = candidate.slice(0, separator);
+        }
+        if (
+            this.manifest.coverage.exclusions.some(
+                (item) => "scope" in item && item.scope === "workspace-root" && item.reason === "capture-budget"
+            )
+        ) {
+            return { state: "excluded", reason: "capture-budget" };
+        }
+        return { state: "absent" };
     }
 
     async readNodeKind(path: string): Promise<"absent" | "leaf" | "tree"> {
@@ -227,6 +266,9 @@ export class StoredManifestReader {
                     workspaceStates.set(path, state);
                 }
             }
+            return { workspaceStates, objectIds };
+        }
+        if (this.manifest.schemaversion === 3) {
             return { workspaceStates, objectIds };
         }
         const pathsByOid = new Map<string, string[]>();
@@ -293,6 +335,7 @@ export class StoredManifestReader {
             for (const path of this.v1States!.keys()) paths.add(path);
             return;
         }
+        if (this.manifest.schemaversion === 3) return;
         await this.walkV2LeafOids(this.manifest.statetree, "", async (path) => {
             paths.add(path);
         });
@@ -306,6 +349,7 @@ export class StoredManifestReader {
                 .filter((candidate) => candidate === path || candidate.startsWith(prefix))
                 .sort(comparePathBytes);
         }
+        if (this.manifest.schemaversion === 3) return [];
         const segments = path.split("/");
         let treeOid = this.manifest.statetree;
         for (let index = 0; index < segments.length; index++) {
@@ -499,6 +543,7 @@ function isStoredManifest(value: unknown): value is StoredScopeManifest {
     }
     if (value.schemaversion === 1) return isStoredManifestV1(value);
     if (value.schemaversion === 2) return isStoredManifestV2(value);
+    if (value.schemaversion === 3) return isStoredManifestV3(value);
     return false;
 }
 
@@ -538,6 +583,13 @@ function isStoredManifestV2(value: Record<string, unknown>): boolean {
         ]) &&
         typeof value.statetree === "string" &&
         isOid(value.statetree) &&
+        isStoredCoverage(value.coverage)
+    );
+}
+
+function isStoredManifestV3(value: Record<string, unknown>): boolean {
+    return (
+        hasExactKeys(value, ["schemaversion", "workspaceidentity", "workspaceincarnation", "scope", "coverage"]) &&
         isStoredCoverage(value.coverage)
     );
 }

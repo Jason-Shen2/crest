@@ -57,6 +57,7 @@ import {
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
     type StoredScopeManifestV2,
+    type StoredScopeManifestV3,
 } from "./stored-manifest";
 import type {
     CapturedPathStateV1,
@@ -66,6 +67,7 @@ import type {
 } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceMutationLock } from "./workspace-lock";
+import { WorkspaceMutationLog } from "./workspace-mutation-log";
 import {
     discoverWorkspaceScope,
     verifyWorkspaceScopeDirectories,
@@ -217,6 +219,7 @@ export class WorkspaceSnapshotStore {
     readonly git: WorkspaceGitRunner;
     readonly processOwner: ProcessOwnerIdentity;
     readonly mutationLock: WorkspaceMutationLock;
+    readonly mutationLog: WorkspaceMutationLog;
     readonly quotaAccounting: SnapshotQuotaAccounting;
 
     private constructor(input: {
@@ -236,6 +239,12 @@ export class WorkspaceSnapshotStore {
             workspaceIdentity: input.identity.workspaceIdentity,
             workspaceIncarnation: input.identity.workspaceIncarnation,
             processOwner: input.processOwner,
+        });
+        this.mutationLog = new WorkspaceMutationLog({
+            git: input.git,
+            gitDir: input.storeRoot,
+            workspaceIdentity: input.identity.workspaceIdentity,
+            workspaceIncarnation: input.identity.workspaceIncarnation,
         });
         SnapshotFingerprints.set(this, new Map());
         TrustedSnapshotDescriptors.set(this, new Set());
@@ -336,6 +345,75 @@ export class WorkspaceSnapshotStore {
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
         return this.mutationLock.runExclusive(operation);
+    }
+
+    publishCommitSnapshot(input: {
+        commit: string;
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    }): Promise<WorkspaceSnapshotRefV1> {
+        const owned = cloneCommitSnapshotInput(input);
+        return this.withWorkspaceLock(() => this.#publishCommitSnapshotUnlocked(owned));
+    }
+
+    readCommitSnapshot(commit: string): Promise<WorkspaceSnapshotRefV1> {
+        const ownedCommit = `${commit}`;
+        return this.withWorkspaceLock(() => this.#readCommitSnapshotUnlocked(ownedCommit));
+    }
+
+    async #publishCommitSnapshotUnlocked(input: {
+        commit: string;
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    }): Promise<WorkspaceSnapshotRefV1> {
+        const mutation = await this.mutationLog.read(input.commit);
+        const runtime = makeMaintenanceRuntime();
+        const storedManifest: StoredScopeManifestV3 = {
+            schemaversion: 3,
+            workspaceidentity: this.identity.workspaceIdentity,
+            workspaceincarnation: this.identity.workspaceIncarnation,
+            scope: toStoredWorkspaceScope(input.scope),
+            coverage: {
+                complete: input.coverage.complete,
+                eligibleentrycount: input.coverage.eligibleEntryCount,
+                exclusions: input.coverage.exclusions.map(toStoredCoverageExclusion),
+            },
+        };
+        const scopeManifest = await this.writeBlob(canonicalJson(storedManifest), runtime);
+        const ref: WorkspaceSnapshotRefV1 = {
+            id: input.commit,
+            workspaceIdentity: this.identity.workspaceIdentity,
+            workspaceIncarnation: this.identity.workspaceIncarnation,
+            tree: mutation.tree,
+            scopeManifest,
+        };
+        const manifest = await this.#readStoredManifestBlob(ref);
+        if (manifest.manifest.schemaversion !== 3) {
+            throw new Error("Commit-backed snapshot requires a v3 scope manifest");
+        }
+        await this.verifyWorkspaceTree(ref, manifest);
+        await this.#ensureObjectsDurableUnlocked([ref.id, ref.tree, ref.scopeManifest], runtime);
+        await this.#publishSnapshotAssociation(ref, ref.scopeManifest, runtime);
+        markSnapshotTrusted(this, ref);
+        return ref;
+    }
+
+    async #readCommitSnapshotUnlocked(commit: string): Promise<WorkspaceSnapshotRefV1> {
+        const mutation = await this.mutationLog.read(commit);
+        const association = await this.#readSnapshotAssociation(this.ownerRefName(commit));
+        if (!association) throw new Error("Commit-backed snapshot association is missing");
+        const ref: WorkspaceSnapshotRefV1 = {
+            id: commit,
+            workspaceIdentity: this.identity.workspaceIdentity,
+            workspaceIncarnation: this.identity.workspaceIncarnation,
+            tree: mutation.tree,
+            scopeManifest: association,
+        };
+        const manifest = await this.#readStoredManifestBlob(ref);
+        if (manifest.manifest.schemaversion !== 3) {
+            throw new Error("Commit-backed snapshot association does not reference a v3 manifest");
+        }
+        return ref;
     }
 
     async #captureUnlocked(options: CaptureWorkspaceOptions): Promise<{
@@ -648,7 +726,20 @@ export class WorkspaceSnapshotStore {
         try {
             const beforeManifest = await this.#readStoredManifest(before);
             const afterManifest = await this.#readStoredManifest(after);
-            return await beforeManifest.diff(afterManifest);
+            if (beforeManifest.manifest.schemaversion !== 3 && afterManifest.manifest.schemaversion !== 3) {
+                return await beforeManifest.diff(afterManifest);
+            }
+            const paths = new Set(await this.#readTreeDeltaPaths(before.tree, after.tree));
+            await this.#collectManifestDiffPaths(beforeManifest, paths);
+            await this.#collectManifestDiffPaths(afterManifest, paths);
+            const changes: WorkspacePathChangeV1[] = [];
+            for (const path of [...paths].sort(comparePathBytes)) {
+                const beforeState = await this.#readPathStateFromManifest(before, beforeManifest, path);
+                const afterState = await this.#readPathStateFromManifest(after, afterManifest, path);
+                if (canonicalJson(beforeState).equals(canonicalJson(afterState))) continue;
+                changes.push({ path, before: beforeState, after: afterState });
+            }
+            return changes;
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -662,7 +753,7 @@ export class WorkspaceSnapshotStore {
         validateRelativePath(path);
         try {
             const manifest = await this.#readStoredManifest(snapshot);
-            return await manifest.readPathState(path);
+            return await this.#readPathStateFromManifest(snapshot, manifest, path);
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -676,7 +767,14 @@ export class WorkspaceSnapshotStore {
         validateRelativePath(path);
         try {
             if (signal?.aborted) throw signal.reason;
-            return await (await this.#readStoredManifest(snapshot, signal)).readNodeKind(path);
+            const manifest = await this.#readStoredManifest(snapshot, signal);
+            if (manifest.manifest.schemaversion !== 3) return await manifest.readNodeKind(path);
+            const entry = await this.#readWorkspacePathEntry(snapshot.tree, path, signal);
+            if (!entry) {
+                await manifest.readCoveragePathState(path);
+                return "absent";
+            }
+            return entry.kind;
         } catch (cause) {
             if (signal?.aborted) throw signal.reason ?? cause;
             throw asCorruptSnapshot(cause);
@@ -695,13 +793,87 @@ export class WorkspaceSnapshotStore {
             const kinds = new Map<string, "absent" | "leaf" | "tree">();
             for (const path of paths) {
                 if (signal?.aborted) throw signal.reason;
-                kinds.set(path, await manifest.readNodeKind(path));
+                if (manifest.manifest.schemaversion !== 3) {
+                    kinds.set(path, await manifest.readNodeKind(path));
+                    continue;
+                }
+                const entry = await this.#readWorkspacePathEntry(snapshot.tree, path, signal);
+                if (!entry) await manifest.readCoveragePathState(path);
+                kinds.set(path, entry?.kind ?? "absent");
             }
             return kinds;
         } catch (cause) {
             if (signal?.aborted) throw signal.reason ?? cause;
             throw asCorruptSnapshot(cause);
         }
+    }
+
+    async #readPathStateFromManifest(
+        snapshot: WorkspaceSnapshotRefV1,
+        manifest: StoredManifestReader,
+        path: string
+    ): Promise<CapturedPathStateV1> {
+        if (manifest.manifest.schemaversion !== 3) return await manifest.readPathState(path);
+        const entry = await this.#readWorkspacePathEntry(snapshot.tree, path);
+        if (!entry || entry.kind === "tree") return await manifest.readCoveragePathState(path);
+        return entry.state;
+    }
+
+    async #readWorkspacePathEntry(
+        tree: string,
+        path: string,
+        signal?: AbortSignal
+    ): Promise<
+        | { kind: "tree" }
+        | { kind: "leaf"; state: Extract<CapturedPathStateV1, { state: "file" | "symlink" }> }
+        | undefined
+    > {
+        const result = await this.git.run(["ls-tree", "-z", "--full-tree", tree, "--", path], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+            signal,
+        });
+        const entry = parseExactLsTreeEntry(result.stdout, path);
+        if (!entry) return undefined;
+        if (entry.mode === "040000") return { kind: "tree" };
+        const type = await this.git.run(["cat-file", "-t", entry.oid], {
+            gitDir: this.storeRoot,
+            timeoutMs: StoreGitTimeoutMs,
+            maxStdoutBytes: 16,
+            signal,
+        });
+        if (!type.stdout.equals(Buffer.from("blob\n"))) {
+            throw new Error("Workspace tree leaf is missing or is not a blob");
+        }
+        if (entry.mode === "120000") {
+            return { kind: "leaf", state: { state: "symlink", oid: entry.oid } };
+        }
+        if (entry.mode !== "100644" && entry.mode !== "100755") {
+            throw new Error("Workspace tree leaf has an invalid mode");
+        }
+        return {
+            kind: "leaf",
+            state: { state: "file", oid: entry.oid, executable: entry.mode === "100755" },
+        };
+    }
+
+    async #readTreeDeltaPaths(beforeTree: string, afterTree: string): Promise<string[]> {
+        if (beforeTree === afterTree) return [];
+        const result = await this.git.run(
+            ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", beforeTree, afterTree],
+            { gitDir: this.storeRoot, timeoutMs: StoreGitTimeoutMs }
+        );
+        return parseNulWorkspacePaths(result.stdout);
+    }
+
+    async #collectManifestDiffPaths(manifest: StoredManifestReader, paths: Set<string>): Promise<void> {
+        if (manifest.manifest.schemaversion === 3) {
+            for (const exclusion of manifest.manifest.coverage.exclusions) {
+                if ("path" in exclusion) paths.add(exclusion.path);
+            }
+            return;
+        }
+        await manifest.collectExplicitPaths(paths);
     }
 
     readIncrementalSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
@@ -787,23 +959,23 @@ export class WorkspaceSnapshotStore {
     }
 
     async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
-        const owner = await this.#readExactRef(this.ownerRefName(snapshot.id));
-        if (owner !== snapshot.id) {
+        const manifest = await this.#readStoredManifestBlob(snapshot);
+        const expected = manifest.manifest.schemaversion === 3 ? snapshot.scopeManifest : snapshot.id;
+        const owner = await this.#readSnapshotAssociation(this.ownerRefName(snapshot.id));
+        if (owner !== expected) {
             throw new Error("Workspace snapshot owner ref is missing or changed");
         }
     }
 
     measureSnapshotUsage(snapshots: readonly WorkspaceSnapshotRefV1[]): Promise<number> {
         return this.withWorkspaceLock(async () => {
-            const roots = [
-                ...new Set(
-                    snapshots.map((snapshot) => {
-                        this.assertSnapshotIdentity(snapshot);
-                        return snapshot.id;
-                    })
-                ),
-            ];
-            return await this.#objectBytesForRoots(roots, makeMaintenanceRuntime());
+            const roots = new Set<string>();
+            for (const snapshot of snapshots) {
+                this.assertSnapshotIdentity(snapshot);
+                roots.add(snapshot.id);
+                roots.add(snapshot.scopeManifest);
+            }
+            return await this.#objectBytesForRoots([...roots], makeMaintenanceRuntime());
         });
     }
 
@@ -854,13 +1026,55 @@ export class WorkspaceSnapshotStore {
     async #anchorSnapshotUnlocked(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
         this.assertSnapshotIdentity(ref);
         await this.ensureObjectsDurable([ref.id, ref.tree, ref.scopeManifest], runtime);
+        const manifest = await this.#readStoredManifest(ref, runtime.signal);
+        await this.#publishSnapshotAssociation(
+            ref,
+            manifest.manifest.schemaversion === 3 ? ref.scopeManifest : ref.id,
+            runtime
+        );
+    }
+
+    async #publishSnapshotAssociation(
+        ref: WorkspaceSnapshotRefV1,
+        target: string,
+        runtime: CaptureRuntime
+    ): Promise<void> {
         const refName = this.ownerRefName(ref.id);
-        await this.git.run(["update-ref", refName, ref.id], {
+        const previous = await this.#readSnapshotAssociation(refName, runtime);
+        if (previous != null && previous !== target) {
+            throw new Error("Workspace snapshot manifest association conflicts with an existing value");
+        }
+        await this.git.run(["update-ref", "--no-deref", refName, target, previous ?? "0".repeat(target.length)], {
             gitDir: this.storeRoot,
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
-        await secureCaptureArtifacts(this.storeRoot, new Set(), refName, runtime);
+        await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, refName, runtime);
+    }
+
+    async #readSnapshotAssociation(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
+        validateCrestRefName(refName);
+        const result = await this.git.run(
+            ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "--count=2", refName],
+            {
+                gitDir: this.storeRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                maxStdoutBytes: 1024,
+                signal: runtime.signal,
+            }
+        );
+        if (result.stdout.length === 0) return undefined;
+        let association: string | undefined;
+        for (const line of splitLines(result.stdout)) {
+            const fields = line.split("\0");
+            if (fields.length !== 3) throw new Error("Invalid workspace snapshot association ref");
+            if (fields[0] !== refName) continue;
+            if (fields[2]) throw new Error("Workspace snapshot association must not be symbolic");
+            validateOid(fields[1]!);
+            if (association) throw new Error("Duplicate workspace snapshot association ref");
+            association = fields[1];
+        }
+        return association;
     }
 
     anchorPending(record: PendingWorkspaceBoundaryV1): Promise<void> {
@@ -1584,8 +1798,15 @@ export class WorkspaceSnapshotStore {
     async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<StoredManifestReader> {
         try {
             this.assertSnapshotIdentity(snapshot);
-            const descriptor = await this.#readSnapshotDescriptor(snapshot, signal);
             const manifest = await this.#readStoredManifestBlob(snapshot, signal);
+            if (manifest.manifest.schemaversion === 3) {
+                const mutation = await this.mutationLog.read(snapshot.id);
+                if (mutation.tree !== snapshot.tree) {
+                    throw new Error("Commit-backed snapshot tree does not match its mutation commit");
+                }
+                return manifest;
+            }
+            const descriptor = await this.#readSnapshotDescriptor(snapshot, signal);
             if (manifest.manifest.schemaversion === 1) {
                 if (descriptor.size !== 2 || descriptor.has("state")) {
                     throw new Error("Snapshot v1 descriptor has unexpected entries");
@@ -1620,14 +1841,24 @@ export class WorkspaceSnapshotStore {
         const treeOids = new Set<string>();
         await this.collectWorkspaceTreeStates(snapshot.tree, "", actual, leafOids, treeOids, runtime);
         const manifestVerification = await manifest.verify();
-        const expected = manifestVerification.workspaceStates;
-        if (actual.size !== expected.size) {
-            throw new Error("Workspace tree and scope manifest diverge");
-        }
-        for (const [path, expectedState] of expected) {
-            const actualState = actual.get(path);
-            if (!actualState || !canonicalJson(actualState).equals(canonicalJson(expectedState))) {
-                throw new Error(`Workspace tree and scope manifest diverge: ${path}`);
+        if (manifest.manifest.schemaversion === 3) {
+            const coverage = manifest.manifest.coverage;
+            if (coverage.eligibleentrycount !== actual.size) {
+                throw new Error("Commit-backed snapshot coverage does not match its workspace tree");
+            }
+            if (coverage.complete !== (coverage.exclusions.length === 0)) {
+                throw new Error("Commit-backed snapshot coverage completeness is inconsistent");
+            }
+        } else {
+            const expected = manifestVerification.workspaceStates;
+            if (actual.size !== expected.size) {
+                throw new Error("Workspace tree and scope manifest diverge");
+            }
+            for (const [path, expectedState] of expected) {
+                const actualState = actual.get(path);
+                if (!actualState || !canonicalJson(actualState).equals(canonicalJson(expectedState))) {
+                    throw new Error(`Workspace tree and scope manifest diverge: ${path}`);
+                }
             }
         }
         if (leafOids.size > 0) {
@@ -1701,6 +1932,7 @@ export class WorkspaceSnapshotStore {
         });
         for (const [name, entry] of parseRawTreeEntries(tree.stdout, treeOid.length / 2)) {
             const path = parentPath ? `${parentPath}/${name}` : name;
+            validateRelativePath(path);
             if (entry.mode === "40000") {
                 await this.collectWorkspaceTreeStates(entry.oid, path, states, leafOids, treeOids, runtime);
                 continue;
@@ -2499,6 +2731,45 @@ function cloneIncrementalCommitInput(input: {
     };
 }
 
+function cloneCommitSnapshotInput(input: {
+    commit: string;
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+}): {
+    commit: string;
+    scope: WorkspaceScopeManifest;
+    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+} {
+    if (
+        !input ||
+        typeof input.commit !== "string" ||
+        !input.scope ||
+        typeof input.scope !== "object" ||
+        !input.coverage ||
+        typeof input.coverage.complete !== "boolean" ||
+        !Number.isSafeInteger(input.coverage.eligibleEntryCount) ||
+        input.coverage.eligibleEntryCount < 0 ||
+        !Array.isArray(input.coverage.exclusions)
+    ) {
+        throw new Error("Invalid commit-backed snapshot input");
+    }
+    const exclusions = input.coverage.exclusions.map(cloneCoverageExclusion).sort(compareCoverageExclusions);
+    for (let index = 1; index < exclusions.length; index++) {
+        if (compareCoverageExclusions(exclusions[index - 1]!, exclusions[index]!) === 0) {
+            throw new Error("Duplicate commit-backed snapshot coverage exclusion");
+        }
+    }
+    return {
+        commit: input.commit,
+        scope: JSON.parse(JSON.stringify(input.scope)) as WorkspaceScopeManifest,
+        coverage: {
+            complete: input.coverage.complete,
+            eligibleEntryCount: input.coverage.eligibleEntryCount,
+            exclusions,
+        },
+    };
+}
+
 function deriveIncrementalCoverage(
     base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
     changes: readonly WorkspacePathChangeV1[]
@@ -2923,7 +3194,7 @@ function parseBatchObjectBytes(value: Buffer, expectedObjectIds: string[]): numb
         if (
             fields.length !== 3 ||
             fields[0] !== expectedObjectIds[index] ||
-            (fields[1] !== "tree" && fields[1] !== "blob")
+            (fields[1] !== "commit" && fields[1] !== "tree" && fields[1] !== "blob")
         ) {
             throw new Error("Git returned invalid snapshot object metadata");
         }
@@ -3012,6 +3283,52 @@ function parseRawTreeEntries(value: Buffer, hashBytes: number): Map<string, { mo
         offset = nul + 1 + hashBytes;
     }
     return entries;
+}
+
+function parseExactLsTreeEntry(
+    value: Buffer,
+    expectedPath: string
+): { mode: "040000" | "100644" | "100755" | "120000"; oid: string } | undefined {
+    if (value.length === 0) return undefined;
+    if (value.at(-1) !== 0) throw new Error("Invalid Git tree path output");
+    const records = value.subarray(0, -1).toString("utf8").split("\0");
+    if (records.length !== 1 || !Buffer.from(records[0]!).equals(value.subarray(0, -1))) {
+        throw new Error("Invalid Git tree path output");
+    }
+    const match =
+        /^(040000) tree ([0-9a-f]{40})\t([\s\S]+)$|^(100644|100755|120000) blob ([0-9a-f]{40})\t([\s\S]+)$/.exec(
+            records[0]!
+        );
+    if (!match) throw new Error("Invalid Git tree path entry");
+    const mode = (match[1] ?? match[4]) as "040000" | "100644" | "100755" | "120000";
+    const oid = match[2] ?? match[5]!;
+    const path = match[3] ?? match[6]!;
+    if (path !== expectedPath) throw new Error("Git tree path lookup returned a different path");
+    return { mode, oid };
+}
+
+function parseNulWorkspacePaths(value: Buffer): string[] {
+    if (value.length === 0) return [];
+    if (value.at(-1) !== 0) throw new Error("Invalid Git tree delta output");
+    const paths: string[] = [];
+    const seen = new Set<string>();
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        const bytes = value.subarray(start, index);
+        const path = bytes.toString("utf8");
+        if (!Buffer.from(path).equals(bytes)) throw new Error("Invalid UTF-8 Git tree delta path");
+        validateRelativePath(path);
+        if (seen.has(path)) throw new Error("Duplicate Git tree delta path");
+        seen.add(path);
+        paths.push(path);
+        start = index + 1;
+    }
+    return paths.sort(comparePathBytes);
+}
+
+function comparePathBytes(left: string, right: string): number {
+    return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
 function remainingTimeout(deadline: number): number {
