@@ -10,6 +10,8 @@ const WorkspaceHeadRef = "refs/crest/workspace-head";
 const ZeroOid = "0".repeat(40);
 const GitTimeoutMs = 30_000;
 const MaxCommitBytes = 64 * 1024;
+// Reserve 4 KiB of the reader limit for the fixed Git commit headers.
+const MaxMetadataBytes = 60 * 1024;
 const MutationKinds = new Set<WorkspaceMutationKind>([
     "external",
     "agent-turn",
@@ -71,7 +73,7 @@ export class WorkspaceMutationLog {
 
     async readHead(): Promise<string | undefined> {
         const result = await this.git.run(
-            ["for-each-ref", "--format=%(refname) %(objectname)", "--count=2", WorkspaceHeadRef],
+            ["for-each-ref", "--format=%(refname) %(objectname) %(symref)", "--count=2", WorkspaceHeadRef],
             {
                 gitDir: this.gitDir,
                 timeoutMs: GitTimeoutMs,
@@ -93,6 +95,10 @@ export class WorkspaceMutationLog {
         if (input.expectedHead != null) validateSha1(input.expectedHead);
         validateMetadata(input.metadata, this.workspaceIdentity, this.workspaceIncarnation);
         const metadata = encodeCanonicalStoredJson(input.metadata);
+        if (metadata.length > MaxMetadataBytes) {
+            throw new Error("Workspace mutation metadata exceeds the size limit");
+        }
+        await this.readHead();
         const commitResult = await this.git.run(
             ["commit-tree", input.tree, ...(input.expectedHead == null ? [] : ["-p", input.expectedHead])],
             {
@@ -103,7 +109,7 @@ export class WorkspaceMutationLog {
             }
         );
         const commit = decodeOidLine(commitResult.stdout);
-        await this.git.run(["update-ref", WorkspaceHeadRef, commit, input.expectedHead ?? ZeroOid], {
+        await this.git.run(["update-ref", "--no-deref", WorkspaceHeadRef, commit, input.expectedHead ?? ZeroOid], {
             gitDir: this.gitDir,
             timeoutMs: GitTimeoutMs,
             maxStdoutBytes: 0,
@@ -250,14 +256,17 @@ function decodeExactHead(value: Buffer): string | undefined {
     const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n") : text.split("\n");
     let head: string | undefined;
     for (const line of lines) {
-        const separator = line.indexOf(" ");
-        if (separator < 1 || line.indexOf(" ", separator + 1) >= 0) {
+        const refSeparator = line.indexOf(" ");
+        const oidSeparator = line.indexOf(" ", refSeparator + 1);
+        if (refSeparator < 1 || oidSeparator <= refSeparator + 1 || line.indexOf(" ", oidSeparator + 1) >= 0) {
             throw new Error("Invalid Git ref output");
         }
-        const ref = line.slice(0, separator);
-        const oid = line.slice(separator + 1);
+        const ref = line.slice(0, refSeparator);
+        const oid = line.slice(refSeparator + 1, oidSeparator);
+        const symref = line.slice(oidSeparator + 1);
         validateSha1(oid);
         if (ref !== WorkspaceHeadRef) continue;
+        if (symref) throw new Error("Workspace mutation head must not be symbolic");
         if (head) throw new Error("Duplicate workspace mutation head");
         head = oid;
     }

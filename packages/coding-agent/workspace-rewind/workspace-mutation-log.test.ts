@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -13,6 +13,7 @@ const WorkspaceIdentity = "a".repeat(64);
 const WorkspaceIncarnation = "b".repeat(64);
 const WorkspaceHeadRef = "refs/crest/workspace-head";
 const ZeroOid = "0".repeat(40);
+const ExpectedMaxMetadataBytes = 60 * 1024;
 
 interface Fixture {
     gitDir: string;
@@ -69,6 +70,77 @@ describe.sequential("WorkspaceMutationLog", () => {
         });
 
         await expect(fixture.log.readHead()).resolves.toBeUndefined();
+    });
+
+    test("rejects a symbolic workspace head", async () => {
+        const fixture = await makeFixture(roots);
+        const commit = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "authority" }),
+            metadata: makeMetadata("external"),
+        });
+        await replaceWorkspaceHeadWithSymbolicRef(fixture, "refs/heads/authority", commit);
+
+        await expect(fixture.log.readHead()).rejects.toThrow(/symbolic/i);
+    });
+
+    test("does not publish through a symbolic workspace head", async () => {
+        const fixture = await makeFixture(roots);
+        const authority = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "authority" }),
+            metadata: makeMetadata("external"),
+        });
+        const authorityRef = "refs/heads/authority";
+        await replaceWorkspaceHeadWithSymbolicRef(fixture, authorityRef, authority);
+
+        await expect(
+            fixture.log.append({
+                expectedHead: authority,
+                tree: await writeTree(fixture, { "shared.txt": "must not publish" }),
+                metadata: makeMetadata("agent-turn", "session-a"),
+            })
+        ).rejects.toThrow();
+        await expect(readRef(fixture, authorityRef)).resolves.toBe(authority);
+        await expect(readFile(join(fixture.gitDir, WorkspaceHeadRef), "utf8")).resolves.toBe(`ref: ${authorityRef}\n`);
+    });
+
+    test.each(["sessionid", "operationid"] as const)(
+        "rejects canonical metadata over the writer limit via %s without mutating Git",
+        async (field) => {
+            const fixture = await makeFixture(roots);
+            const base = await fixture.log.append({
+                tree: await writeTree(fixture, { "shared.txt": "base" }),
+                metadata: makeMetadata("external"),
+            });
+            const nextTree = await writeTree(fixture, { "shared.txt": "next" });
+            const objectsBefore = await countLooseObjects(fixture);
+            const metadata = makeMetadataWithCanonicalSize(field, ExpectedMaxMetadataBytes + 1);
+            expect(Buffer.byteLength(canonicalJson(metadata))).toBe(ExpectedMaxMetadataBytes + 1);
+
+            await expect(
+                fixture.log.append({
+                    expectedHead: base,
+                    tree: nextTree,
+                    metadata,
+                })
+            ).rejects.toThrow(/metadata.*(?:large|size|limit)/i);
+            await expect(fixture.log.readHead()).resolves.toBe(base);
+            await expect(countLooseObjects(fixture)).resolves.toBe(objectsBefore);
+        }
+    );
+
+    test("round-trips canonical metadata at the writer limit", async () => {
+        const fixture = await makeFixture(roots);
+        const base = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "base" }),
+            metadata: makeMetadata("external"),
+        });
+        const tree = await writeTree(fixture, { "shared.txt": "next" });
+        const metadata = makeMetadataWithCanonicalSize("operationid", ExpectedMaxMetadataBytes);
+        expect(Buffer.byteLength(canonicalJson(metadata))).toBe(ExpectedMaxMetadataBytes);
+
+        const commit = await fixture.log.append({ expectedHead: base, tree, metadata });
+
+        await expect(fixture.log.read(commit)).resolves.toEqual({ parent: base, tree, metadata });
     });
 
     test("rejects append when the workspace head moved", async () => {
@@ -430,6 +502,44 @@ function makeMetadata(kind: WorkspaceMutationMetadataV1["kind"], sessionid?: str
         kind,
         ...(sessionid == null ? {} : { sessionid }),
     };
+}
+
+function makeMetadataWithCanonicalSize(field: "sessionid" | "operationid", size: number): WorkspaceMutationMetadataV1 {
+    const metadata = { ...makeMetadata("agent-turn", "session-a"), [field]: "" };
+    const valueBytes = size - Buffer.byteLength(canonicalJson(metadata));
+    if (valueBytes < 1) throw new Error("Requested metadata size is too small");
+    metadata[field] = "x".repeat(valueBytes);
+    return metadata;
+}
+
+async function replaceWorkspaceHeadWithSymbolicRef(
+    fixture: Fixture,
+    authorityRef: string,
+    authority: string
+): Promise<void> {
+    await fixture.git.run(["update-ref", authorityRef, authority, ZeroOid], {
+        gitDir: fixture.gitDir,
+        timeoutMs: 5_000,
+    });
+    await writeFile(join(fixture.gitDir, WorkspaceHeadRef), `ref: ${authorityRef}\n`);
+}
+
+async function readRef(fixture: Fixture, ref: string): Promise<string> {
+    const result = await fixture.git.run(["rev-parse", "--verify", ref], {
+        gitDir: fixture.gitDir,
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
+async function countLooseObjects(fixture: Fixture): Promise<number> {
+    const result = await fixture.git.run(["count-objects", "-v"], {
+        gitDir: fixture.gitDir,
+        timeoutMs: 5_000,
+    });
+    const count = /^count: (\d+)$/m.exec(result.stdout.toString("ascii"))?.[1];
+    if (count == null) throw new Error("Missing loose object count");
+    return Number(count);
 }
 
 async function writeTree(fixture: Fixture, entries: Readonly<Record<string, string>>): Promise<string> {
