@@ -82,7 +82,10 @@ function live(state: CapturedPathStateV1) {
 }
 
 type TestMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
-type TestPlanRewindInput = Omit<PlanRewindInput, "mutationLog"> & { mutationLog?: TestMutationLog };
+type TestPlanRewindInput = Omit<PlanRewindInput, "mutationLog" | "diffSnapshots"> & {
+    mutationLog?: TestMutationLog;
+    diffSnapshots?: PlanRewindInput["diffSnapshots"];
+};
 
 function mutationLog(
     overrides: Partial<{
@@ -113,10 +116,91 @@ function mutationLog(
 }
 
 function planRewind(input: TestPlanRewindInput) {
-    return planRewindImpl({ ...input, mutationLog: input.mutationLog ?? mutationLog() } as PlanRewindInput);
+    const diffSnapshots =
+        input.diffSnapshots ??
+        (async (before: ReturnType<typeof snapshot>, after: ReturnType<typeof snapshot>) => {
+            for (const entry of input.rawEntries) {
+                if (entry.type !== "custom" || entry.customType !== WorkspaceControlCustomTypes.checkpoint) continue;
+                const value = entry.data as WorkspaceCheckpointV1;
+                if (value.status === "available" && value.before.id === before.id && value.after.id === after.id) {
+                    return value.changes;
+                }
+            }
+            return [];
+        });
+    return planRewindImpl({
+        ...input,
+        mutationLog: input.mutationLog ?? mutationLog(),
+        diffSnapshots,
+    } as PlanRewindInput);
 }
 
 describe("restore planning", () => {
+    it("hard-blocks full rewind when checkpoint changes omit an authoritative path", async () => {
+        const stored = checkpoint("u1", [
+            { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+        ]);
+        const authoritative = [
+            ...stored.changes,
+            {
+                path: "b.ts",
+                before: { state: "absent" as const },
+                after: { state: "file" as const, oid: OidB, executable: false },
+            },
+        ];
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, stored);
+        const history = mutationLog();
+        const inspectLivePath = vi.fn(async () => live(stored.changes[0]!.after));
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [user, checkpointEntry],
+            semanticLeafId: checkpointEntry.id,
+            targetTurnId: user.id,
+            inspectLivePath,
+            verifySnapshot: async () => {},
+            mutationLog: history,
+            diffSnapshots: vi.fn(async () => authoritative),
+        });
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(inspectLivePath).not.toHaveBeenCalled();
+    });
+
+    it("rejects an oversized full-rewind transition set before history or live inspection", async () => {
+        const changes = Array.from({ length: 4_097 }, (_, index) => ({
+            path: `file-${index}.ts`,
+            before: { state: "absent" as const },
+            after: { state: "file" as const, oid: OidA, executable: false },
+        }));
+        const stored = checkpoint("u1", changes);
+        const user = message("u1", null, "user");
+        const checkpointEntry = custom("c1", user.id, WorkspaceControlCustomTypes.checkpoint, stored);
+        const history = mutationLog();
+        const inspectLivePath = vi.fn(async () => ({ state: "absent" as const, fingerprint: "absent" }));
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [user, checkpointEntry],
+            semanticLeafId: checkpointEntry.id,
+            targetTurnId: user.id,
+            inspectLivePath,
+            verifySnapshot: async () => {},
+            mutationLog: history,
+        });
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toContainEqual(
+            expect.objectContaining({ reason: expect.stringMatching(/inspection limit/i) })
+        );
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(inspectLivePath).not.toHaveBeenCalled();
+    });
+
     it.each([
         ["kind", { kind: "external" }],
         ["owner", { sessionid: "session-2" }],

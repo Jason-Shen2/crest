@@ -14,7 +14,13 @@ import {
     type RewindConflictClass,
 } from "./live-path-state";
 import { decodeWorkspaceCheckpointEntry, decodeWorkspaceStateEntry, isWorkspaceControlEntry } from "./session-state";
-import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
+import type {
+    CapturedPathStateV1,
+    WorkspaceCheckpointV1,
+    WorkspacePathChangeV1,
+    WorkspaceSnapshotRefV1,
+    WorkspaceStateV1,
+} from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import type { WorkspaceMutationLog } from "./workspace-mutation-log";
@@ -63,6 +69,7 @@ export interface PlanRewindInput {
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
     mutationLog: RestoreMutationLog;
+    diffSnapshots: RestoreSnapshotDiff;
 }
 
 export interface PlanRedoInput {
@@ -77,6 +84,10 @@ export interface PlanRedoInput {
 }
 
 export type RestoreMutationLog = Pick<WorkspaceMutationLog, "read" | "findForeignOverlap">;
+export type RestoreSnapshotDiff = (
+    before: WorkspaceSnapshotRefV1,
+    after: WorkspaceSnapshotRefV1
+) => Promise<WorkspacePathChangeV1[]>;
 
 interface ActiveBranchResult {
     branch?: SessionTreeEntry[];
@@ -92,7 +103,8 @@ export interface RestorePathTransitionV1 {
 export async function validateCheckpointMutationAuthority(
     plan: RestorePlanV1,
     checkpoint: Extract<WorkspaceCheckpointV1, { status: "available" }>,
-    mutationLog: RestoreMutationLog
+    mutationLog: RestoreMutationLog,
+    diffSnapshots: RestoreSnapshotDiff
 ): Promise<boolean> {
     if (checkpoint.before.id === checkpoint.after.id) {
         if (checkpoint.changes.length === 0) return true;
@@ -114,7 +126,26 @@ export async function validateCheckpointMutationAuthority(
         hardBlock(plan, `workspace checkpoint mutation is unavailable: ${(error as Error).message}`, checkpoint.turnId);
         return false;
     }
+    try {
+        const exactChanges = await diffSnapshots(checkpoint.before, checkpoint.after);
+        if (!isDeepStrictEqual(checkpoint.changes, exactChanges)) {
+            hardBlock(plan, "workspace checkpoint changes do not match its exact snapshot diff", checkpoint.turnId);
+            return false;
+        }
+    } catch (error) {
+        hardBlock(plan, `workspace checkpoint diff is unavailable: ${(error as Error).message}`, checkpoint.turnId);
+        return false;
+    }
     return true;
+}
+
+export function enforceRestoreTransitionLimit(
+    plan: RestorePlanV1,
+    transitions: ReadonlyMap<string, RestorePathTransitionV1>
+): boolean {
+    if (transitions.size <= RestorePlanMaxInspectedPaths) return true;
+    hardBlock(plan, `restore path inspection limit exceeded: ${RestorePlanMaxInspectedPaths}`);
+    return false;
 }
 
 export async function findCrestHistoryBlockers(
@@ -552,7 +583,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     for (const checkpoint of checkpoints) {
         if (
             checkpoint.status === "available" &&
-            !(await validateCheckpointMutationAuthority(plan, checkpoint, input.mutationLog))
+            !(await validateCheckpointMutationAuthority(plan, checkpoint, input.mutationLog, input.diffSnapshots))
         ) {
             return plan;
         }
@@ -597,6 +628,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             }
         }
     }
+    if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
     const changedCheckpoints = checkpoints.filter(
         (checkpoint): checkpoint is Extract<WorkspaceCheckpointV1, { status: "available" }> =>
             checkpoint.status === "available" && checkpoint.before.id !== checkpoint.after.id

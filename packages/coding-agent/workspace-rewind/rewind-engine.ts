@@ -467,6 +467,7 @@ export class WorkspaceRewindEngine {
             inspectLivePaths: this.inspectPaths,
             verifySnapshot: (snapshot) => this.store.verify(snapshot),
             mutationLog: this.store.mutationLog,
+            diffSnapshots: (before, after) => this.store.diff(before, after),
         });
         return {
             entries,
@@ -528,6 +529,7 @@ export class WorkspaceRewindEngine {
             inspectLivePaths: this.inspectPaths,
             verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
             mutationLog: this.store.mutationLog,
+            diffSnapshots: (before, after) => this.store.diff(before, after),
         });
         return { entries, plan };
     }
@@ -545,6 +547,7 @@ export class WorkspaceRewindEngine {
             inspectLivePaths: this.inspectPaths,
             verifySnapshot: (snapshot) => this.store.verifyUntrustedSnapshot(snapshot),
             mutationLog: this.store.mutationLog,
+            diffSnapshots: (before, after) => this.store.diff(before, after),
         });
         return { entries, plan };
     }

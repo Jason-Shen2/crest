@@ -140,7 +140,15 @@ function mutationLog(
 function baseInput(
     entries: SessionTreeEntry[],
     liveStates: Record<string, ReturnType<typeof live>>,
-    history: TestMutationLog = mutationLog()
+    history: TestMutationLog = mutationLog(),
+    diffSnapshots = vi.fn(async () => {
+        const entry = entries.find(
+            (candidate) =>
+                candidate.type === "custom" && candidate.customType === WorkspaceControlCustomTypes.checkpoint
+        );
+        const value = entry?.type === "custom" ? (entry.data as WorkspaceCheckpointV1) : undefined;
+        return value?.status === "available" ? value.changes : [];
+    })
 ) {
     return {
         sessionId: "session-1",
@@ -151,6 +159,7 @@ function baseInput(
         inspectLivePath: vi.fn(async (path: string) => liveStates[path]!),
         verifySnapshot: vi.fn(async () => {}),
         mutationLog: history,
+        diffSnapshots,
     };
 }
 
@@ -206,12 +215,28 @@ describe("per-turn restore planning", () => {
         const unchanged = checkpoint([], { after: snapshot(`${OidA.slice(0, -1)}1`) });
         const history = mutationLog();
         vi.mocked(history.read).mockRejectedValue(new Error("must not read a no-change mutation"));
+        const diffSnapshots = vi.fn(async () => {
+            throw new Error("must not diff an identical snapshot");
+        });
 
-        const plan = await planTurnUndo(baseInput(branch(unchanged), {}, history));
+        const plan = await planTurnUndo(baseInput(branch(unchanged), {}, history, diffSnapshots));
 
         expect(plan.hardBlocked).toBe(false);
         expect(history.read).not.toHaveBeenCalled();
         expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(diffSnapshots).not.toHaveBeenCalled();
+    });
+
+    it("accepts a coverage-only agent-turn commit only when its exact snapshot diff is empty", async () => {
+        const semanticOnly = checkpoint([]);
+        const history = mutationLog();
+        const diffSnapshots = vi.fn(async () => []);
+
+        const plan = await planTurnUndo(baseInput(branch(semanticOnly), {}, history, diffSnapshots));
+
+        expect(plan.hardBlocked).toBe(false);
+        expect(history.read).toHaveBeenCalledWith(semanticOnly.after.id);
+        expect(diffSnapshots).toHaveBeenCalledWith(semanticOnly.before, semanticOnly.after);
     });
 
     it("validates an agent-turn commit when only snapshot semantics changed", async () => {
@@ -232,6 +257,80 @@ describe("per-turn restore planning", () => {
 
         expect(plan.hardBlocked).toBe(true);
         expect(history.read).toHaveBeenCalledWith(`${OidB.slice(0, -1)}1`);
+    });
+
+    it.each([
+        [
+            "added",
+            [
+                { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+                { path: "b.ts", before: { state: "absent" }, after: { state: "file", oid: OidB, executable: false } },
+            ],
+        ],
+        ["omitted", []],
+        [
+            "wrong-state",
+            [{ path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidC, executable: false } }],
+        ],
+        [
+            "wrong-order",
+            [
+                { path: "b.ts", before: { state: "absent" }, after: { state: "file", oid: OidB, executable: false } },
+                { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+            ],
+        ],
+        [
+            "duplicate",
+            [
+                { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+                { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },
+            ],
+        ],
+    ] as const)("hard-blocks checkpoint changes with an %s exact diff", async (_label, storedChanges) => {
+        const authoritative = [
+            {
+                path: "a.ts",
+                before: { state: "absent" as const },
+                after: { state: "file" as const, oid: OidA, executable: false },
+            },
+        ];
+        if (_label === "wrong-order") {
+            authoritative.push({
+                path: "b.ts",
+                before: { state: "absent" },
+                after: { state: "file", oid: OidB, executable: false },
+            });
+        }
+        const value = checkpoint(storedChanges as never);
+        const history = mutationLog();
+        const diffSnapshots = vi.fn(async () => authoritative);
+        const input = baseInput(branch(value), {}, history, diffSnapshots);
+
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(input.inspectLivePath).not.toHaveBeenCalled();
+    });
+
+    it("rejects an oversized turn transition set before history or live inspection", async () => {
+        const changes = Array.from({ length: 4_097 }, (_, index) => ({
+            path: `file-${index}.ts`,
+            before: { state: "absent" as const },
+            after: { state: "file" as const, oid: OidA, executable: false },
+        }));
+        const value = checkpoint(changes);
+        const history = mutationLog();
+        const input = baseInput(branch(value), {}, history);
+
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toContainEqual(
+            expect.objectContaining({ reason: expect.stringMatching(/inspection limit/i) })
+        );
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
+        expect(input.inspectLivePath).not.toHaveBeenCalled();
     });
 
     it("hard-blocks a later Crest-owned same-path mutation before inspecting live bytes", async () => {

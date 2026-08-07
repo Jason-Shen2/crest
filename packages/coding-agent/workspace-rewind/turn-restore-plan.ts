@@ -7,10 +7,12 @@ import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import type { LiveCapturedPathState } from "./live-path-state";
 import {
     classifyRestoreTransitions,
+    enforceRestoreTransitionLimit,
     findCrestHistoryBlockers,
     type RestoreMutationLog,
     type RestorePathTransitionV1,
     type RestorePlanV1,
+    type RestoreSnapshotDiff,
     type RestoreTargetV1,
     validateCheckpointMutationAuthority,
 } from "./restore-plan";
@@ -35,6 +37,7 @@ interface PlanTurnRestoreBaseInput {
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     verifySnapshot: (snapshot: WorkspaceSnapshotRefV1) => Promise<void>;
     mutationLog: RestoreMutationLog;
+    diffSnapshots: RestoreSnapshotDiff;
 }
 
 export type PlanTurnUndoInput = PlanTurnRestoreBaseInput;
@@ -298,7 +301,11 @@ async function prepare(
     const selected = terminalCheckpoint(active.branch, visibleEntries, sourceIndex, input.sessionId);
     if (!selected.checkpoint) return { plan: hardBlock(plan, selected.reason!, input.sourceTurnId) };
     if (!(await verifyCheckpoint(plan, selected.checkpoint, input))) return { plan };
-    if (!(await validateCheckpointMutationAuthority(plan, selected.checkpoint, input.mutationLog))) return { plan };
+    if (
+        !(await validateCheckpointMutationAuthority(plan, selected.checkpoint, input.mutationLog, input.diffSnapshots))
+    ) {
+        return { plan };
+    }
     if (!projectCoverage(plan, selected.checkpoint)) return { plan };
     return {
         plan,
@@ -316,6 +323,7 @@ async function classifyTurnTransitions(
     input: PlanTurnRestoreBaseInput,
     redo: boolean
 ): Promise<RestorePlanV1> {
+    if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
     if (checkpoint.before.id === checkpoint.after.id) {
         return classifyRestoreTransitions(plan, transitions, input.inspectLivePath, input.inspectLivePaths, redo);
     }
