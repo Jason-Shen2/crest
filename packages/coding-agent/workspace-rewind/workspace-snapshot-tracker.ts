@@ -8,7 +8,7 @@ import {
     type IncrementalPathCaptureResult,
 } from "./incremental-path-capture";
 import type { IncrementalPathMutation } from "./incremental-tree";
-import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
+import type { LegacyWorkspaceSnapshotCapture } from "./snapshot-source";
 import {
     WorkspaceCheckpointLimits,
     WorkspaceSnapshotStoreError,
@@ -110,7 +110,7 @@ interface TrackerCurrent extends WorkspaceIncrementalMetadata {
     coverage: WorkspaceSnapshotCoverage;
 }
 
-export class WorkspaceSnapshotTracker implements WorkspaceCheckpointSnapshotSource {
+export class WorkspaceSnapshotTracker implements LegacyWorkspaceSnapshotCapture {
     readonly store: WorkspaceSnapshotTrackerStore;
     readonly feed: WorkspaceChangeFeed;
     readonly state: WorkspaceSnapshotTrackerStateAccess;

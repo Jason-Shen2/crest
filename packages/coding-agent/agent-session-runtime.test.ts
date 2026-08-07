@@ -1355,12 +1355,20 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
     it("revalidates the workspace write gate immediately before hosted PTY start and input", async () => {
         const fake = makeFakeHarness();
         const { host } = makeHost();
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
+            recover: vi.fn(async () => undefined),
+            dispose: vi.fn(async () => undefined),
+        };
         const assertWorkspaceWritable = vi.fn(async () => {
             throw new Error("workspace frozen");
         });
         const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
             ptyHost: host,
             assertWorkspaceWritable,
+            checkpointManager,
         } as any);
 
         await expect(
@@ -1377,6 +1385,45 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         expect(host.start).not.toHaveBeenCalled();
         expect(host.write).not.toHaveBeenCalled();
         expect(assertWorkspaceWritable).toHaveBeenCalledTimes(2);
+        expect(checkpointManager.beforeHostedCommand).not.toHaveBeenCalled();
+    });
+
+    it("establishes the checkpoint boundary after the write gate and before hosted PTY start and input", async () => {
+        const fake = makeFakeHarness();
+        const { host } = makeHost();
+        const order: string[] = [];
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => {
+                order.push("checkpoint");
+            }),
+            recover: vi.fn(async () => undefined),
+            dispose: vi.fn(async () => undefined),
+        };
+        const owner = new AgentSessionRuntime("/s", fake.pane, [], [], {
+            ptyHost: host,
+            checkpointManager,
+            assertWorkspaceWritable: vi.fn(async () => {
+                order.push("gate");
+            }),
+        });
+        vi.mocked(host.start).mockImplementationOnce(async () => {
+            order.push("start");
+            return makeSnapshot();
+        });
+        vi.mocked(host.write).mockImplementationOnce(async () => {
+            order.push("write");
+        });
+
+        await owner.startHostedCommand("npm run dev", {
+            workspaceId: "w1",
+            workspaceDir: "/tmp",
+            environment: {},
+        });
+        await owner.writeHostedCommand("cmd1", "yes\n");
+
+        expect(order).toEqual(["gate", "checkpoint", "start", "gate", "checkpoint", "write"]);
     });
 
     it("emits updated hosted command snapshots after the PTY host changes", async () => {
@@ -1417,6 +1464,8 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         const fake = makeFakeHarness();
         const checkpointManager = {
             isBusy: vi.fn(() => true),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: vi.fn(async () => undefined),
         };
@@ -1433,6 +1482,8 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         const checkpointFailure = new Error("checkpoint cleanup failed");
         const checkpointManager = {
             isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: vi.fn(async () => Promise.reject(checkpointFailure)),
         };
@@ -1452,6 +1503,8 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         vi.mocked(host.dispose).mockRejectedValueOnce(ptyFailure);
         const checkpointManager = {
             isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: vi.fn(async () => Promise.reject(checkpointFailure)),
         };
@@ -1477,6 +1530,8 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
         }) as never;
         const checkpointManager = {
             isBusy: vi.fn(() => true),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: vi.fn(async () => undefined),
         };
@@ -1543,27 +1598,19 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
 });
 
 describe("AgentSessionRuntime — execution config", () => {
-    it("rechecks the workspace gate before every tool call and stops before permissions after freeze", async () => {
+    it("does not acquire a workspace writer lease for a permission-blocked tool", async () => {
         const fake = makeFakeHarness();
-        const frozen = new Error("workspace frozen after prompt");
-        const workspaceGate = vi.fn(async () => {
-            throw frozen;
-        });
-        const permissionsHook = vi.fn(async () => undefined);
-        const refreshedRewindState: AgentRewindSessionStateView = {
-            enabled: true,
-            semanticLeafId: null,
-            displayLeafId: null,
-            eligibleTurnIds: [],
-            turnChanges: [],
-            busy: false,
-            frozen: true,
-            quota: { status: "ok", usedBytes: 0, softQuotaBytes: 1, cleanupAvailable: false },
+        const workspaceGate = vi.fn(async () => undefined);
+        const permissionsHook = vi.fn(async () => ({ block: true, reason: "denied" }));
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
+            recover: vi.fn(async () => undefined),
+            dispose: vi.fn(async () => undefined),
         };
-        const buildRewindState = vi.fn(async () => refreshedRewindState);
         const runtime = new AgentSessionRuntime("/s", fake.pane, [], [], {
-            initialRewindState: { ...refreshedRewindState, frozen: false },
-            buildRewindState,
+            checkpointManager,
         });
         runtime.setWorkspaceWriteGuard(workspaceGate);
 
@@ -1575,11 +1622,49 @@ describe("AgentSessionRuntime — execution config", () => {
         });
         const combinedHook = vi.mocked(fake.pane.setToolCallHook).mock.calls.at(-1)?.[0];
 
-        await expect(combinedHook?.({ toolName: "bash" } as never)).rejects.toBe(frozen);
-        expect(workspaceGate).toHaveBeenCalledOnce();
-        expect(permissionsHook).not.toHaveBeenCalled();
-        expect(buildRewindState).toHaveBeenCalledOnce();
-        expect(runtime.getSessionState().rewindState).toEqual(refreshedRewindState);
+        await expect(combinedHook?.({ toolName: "bash" } as never)).resolves.toEqual({
+            block: true,
+            reason: "denied",
+        });
+        expect(permissionsHook).toHaveBeenCalledOnce();
+        expect(workspaceGate).not.toHaveBeenCalled();
+        expect(checkpointManager.beforeWorkspaceTool).not.toHaveBeenCalled();
+    });
+
+    it("orders permission approval before the workspace gate and checkpoint acquisition", async () => {
+        const fake = makeFakeHarness();
+        const order: string[] = [];
+        const checkpointManager = {
+            isBusy: vi.fn(() => false),
+            beforeWorkspaceTool: vi.fn(async () => {
+                order.push("checkpoint");
+            }),
+            beforeHostedCommand: vi.fn(async () => undefined),
+            recover: vi.fn(async () => undefined),
+            dispose: vi.fn(async () => undefined),
+        };
+        const runtime = new AgentSessionRuntime("/s", fake.pane, [], [], { checkpointManager });
+        runtime.setWorkspaceWriteGuard(
+            vi.fn(async () => {
+                order.push("gate");
+            })
+        );
+
+        await runtime.syncExecutionConfig({
+            promptInputs: { cwd: "/next" },
+            model: fake.model,
+            thinkingLevel: "off",
+            toolCallHook: vi.fn(async () => {
+                order.push("permission");
+                return undefined;
+            }),
+        });
+        const combinedHook = vi.mocked(fake.pane.setToolCallHook).mock.calls.at(-1)?.[0];
+
+        await combinedHook?.({ toolName: "bash" } as never);
+
+        expect(order).toEqual(["permission", "gate", "checkpoint"]);
+        expect(checkpointManager.beforeWorkspaceTool).toHaveBeenCalledWith("bash");
     });
 
     it("applies changed execution config before sending", async () => {

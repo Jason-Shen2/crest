@@ -14,6 +14,7 @@ import { SessionMutationBarrier } from "../session-mutation-barrier";
 import { registerWorkspaceCheckpointManager } from "./checkpoint-manager";
 import { WorkspaceGitRunner } from "./git-runner";
 import { decodeWorkspaceCheckpointEntry } from "./session-state";
+import { initializeWorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import type { WorkspaceCheckpointV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -83,12 +84,17 @@ async function makeFixture(label: string, gitRepository = false) {
         },
     } as unknown as AgentHarness;
     let hostedPtyRunning = false;
+    const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+        store,
+        legacyCapture: store,
+    });
     const manager = registerWorkspaceCheckpointManager({
         harness,
         session,
         sessionId: `session-${label}`,
         workspaceRoot,
         store,
+        snapshotSource,
         mutationBarrier: new SessionMutationBarrier(),
         hasRunningHostedCommands: () => hostedPtyRunning,
         processOwner: {
@@ -136,6 +142,7 @@ async function runTurn(
         boundaryToken,
         userEntryId: turnId,
     } as AgentHarnessEvent);
+    await value.manager.beforeWorkspaceTool("unknown_workspace_writer");
     await writer();
     for (const event of metadataEvents) await value.emit(event);
     await value.emit({
@@ -154,7 +161,7 @@ function pathChanges(checkpoint: WorkspaceCheckpointV1): string[] {
 }
 
 describe("turn-boundary workspace capture is tool-independent", () => {
-    it("uses the full snapshot store as the default capture source", async () => {
+    it("captures only when a potentially-writing operation starts and when its turn ends", async () => {
         const value = await makeFixture("default-source");
         const capture = vi.spyOn(value.store, "capture");
         const diff = vi.spyOn(value.store, "diff");
@@ -164,7 +171,7 @@ describe("turn-boundary workspace capture is tool-independent", () => {
         );
 
         expect(checkpoint.status).toBe("available");
-        expect(capture.mock.calls.map(([options]) => options.profile)).toEqual(["pre-turn", "terminal"]);
+        expect(capture.mock.calls.map(([options]) => options.profile)).toEqual(["terminal", "terminal"]);
         if (checkpoint.status !== "available") {
             throw new Error("Expected an available checkpoint");
         }

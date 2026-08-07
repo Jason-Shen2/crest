@@ -5,17 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentHarness, AgentHarnessEvent, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import { SessionMutationBarrier } from "../session-mutation-barrier";
-import { AnchoredReaderError } from "./anchored-reader";
-import {
-    registerWorkspaceCheckpointManager,
-    type WorkspaceCheckpointManager,
-    type WorkspaceCheckpointManagerDependencies,
-} from "./checkpoint-manager";
+import { registerWorkspaceCheckpointManager, type WorkspaceCheckpointManagerDependencies } from "./checkpoint-manager";
 import type { ProcessOwnerIdentity } from "./process-owner";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStoreError } from "./snapshot-store";
-import { WorkspaceControlCustomTypes, type WorkspacePathChangeV1, type WorkspaceSnapshotRefV1 } from "./types";
-import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
+import { WorkspaceControlCustomTypes, type WorkspaceSnapshotCoverage, type WorkspaceSnapshotRefV1 } from "./types";
 
 const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
@@ -32,9 +26,15 @@ function snapshot(id: string): WorkspaceSnapshotRefV1 {
     };
 }
 
-function makeFixture() {
+const Coverage: WorkspaceSnapshotCoverage = {
+    complete: true,
+    eligibleEntryCount: 1,
+    newlyHashedBytes: 0,
+    exclusions: [],
+};
+
+function makeFixture(options: { hosted?: boolean } = {}) {
     const listeners = new Set<(event: AgentHarnessEvent) => void | Promise<void>>();
-    const order: string[] = [];
     const harness = {
         subscribe(listener: (event: AgentHarnessEvent) => void | Promise<void>) {
             listeners.add(listener);
@@ -46,395 +46,338 @@ function makeFixture() {
     const session = {
         getLeafId: vi.fn(async () => leafId),
         getEntries: vi.fn(async () => [...entries]),
-        appendEntries: vi.fn(async (next: SessionTreeEntry[], options?: { expectedLeafId?: string | null }) => {
-            order.push("append");
-            expect(options).toEqual({ expectedLeafId: leafId });
+        appendEntries: vi.fn(async (next: SessionTreeEntry[], appendOptions?: { expectedLeafId?: string | null }) => {
+            expect(appendOptions).toEqual({ expectedLeafId: leafId });
             entries.push(...next);
             leafId = next.at(-1)?.id ?? leafId;
         }),
     } as unknown as Session;
-    const before = snapshot(OidA);
+    const base = snapshot(OidA);
     const after = snapshot(OidB);
-    const store = {
-        identity: {
-            workspaceIdentity: "workspace-1",
-            workspaceIncarnation: "incarnation-1",
-        },
-        capture: vi
-            .fn()
-            .mockImplementationOnce(async (options) => {
-                order.push(`capture:${options.profile}`);
-                return {
-                    ref: before,
-                    coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-                };
-            })
-            .mockImplementationOnce(async (options) => {
-                order.push(`capture:${options.profile}`);
-                return {
-                    ref: after,
-                    coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-                };
-            }),
-        diff: vi.fn(async () => {
-            order.push("diff");
-            return [];
-        }),
+    const source: WorkspaceCheckpointSnapshotSource = {
+        readHead: vi.fn(async () => ({ ref: base, coverage: Coverage })),
+        synchronizeExternal: vi.fn(async () => ({ ref: base, coverage: Coverage })),
+        captureOwnedTurn: vi.fn(async () => ({
+            after,
+            coverage: Coverage,
+            changes: [
+                {
+                    path: "changed.txt",
+                    before: { state: "absent" as const },
+                    after: { state: "file" as const, oid: OidC, executable: false },
+                },
+            ],
+        })),
+    };
+    const release = vi.fn();
+    const writerLeases = {
+        acquire: vi.fn(async (input) => ({
+            workspaceKey: input.workspaceKey,
+            sessionId: input.sessionId,
+            boundaryToken: input.boundaryToken,
+            release,
+        })),
     };
     const pending = {
-        begin: vi.fn(async () => order.push("pending:begin")),
-        bind: vi.fn(async () => order.push("pending:bind")),
-        recordAfter: vi.fn(async () => order.push("pending:after")),
-        complete: vi.fn(async () => order.push("pending:complete")),
-        retireUnavailable: vi.fn(async () => order.push("pending:retire-unavailable")),
-        retireUnbound: vi.fn(async () => order.push("pending:retire-unbound")),
-        retireRecoveredUnbound: vi.fn(async () => order.push("pending:retire-recovered-unbound")),
+        begin: vi.fn(),
+        bind: vi.fn(),
+        recordAfter: vi.fn(),
+        complete: vi.fn(),
+        retireUnavailable: vi.fn(async () => undefined),
+        retireUnbound: vi.fn(),
+        retireRecoveredUnbound: vi.fn(async () => undefined),
         recover: vi.fn(async () => []),
     };
     const dependencies: WorkspaceCheckpointManagerDependencies = {
         pendingStore: pending as never,
-        now: () => "2026-07-29T00:00:00.000Z",
+        writerLeases: writerLeases as never,
+        now: () => "2026-08-08T00:00:00.000Z",
     };
-    let manager!: WorkspaceCheckpointManager;
-    const onCheckpointCommitted = vi.fn(async () => {
-        order.push(`refresh:${manager.isBusy()}`);
-    });
-    manager = registerWorkspaceCheckpointManager({
+    const onCheckpointCommitted = vi.fn(async () => undefined);
+    const manager = registerWorkspaceCheckpointManager({
         harness,
         session,
         sessionId: "session-1",
         workspaceRoot: "/workspace",
-        store: store as never,
+        store: {
+            identity: {
+                workspaceIdentity: "workspace-1",
+                workspaceIncarnation: "incarnation-1",
+            },
+        } as never,
+        snapshotSource: source,
         mutationBarrier: new SessionMutationBarrier(),
-        hasRunningHostedCommands: () => false,
+        hasRunningHostedCommands: () => options.hosted ?? false,
         processOwner: Owner,
         onCheckpointCommitted,
         dependencies,
     });
     return {
         manager,
-        harness,
-        order,
-        store,
+        source,
+        writerLeases,
+        release,
         pending,
-        session,
         entries,
+        onCheckpointCommitted,
         async emit(event: AgentHarnessEvent) {
-            for (const listener of listeners) {
-                await listener(event);
-            }
+            for (const listener of listeners) await listener(event);
         },
     };
 }
 
+async function startBoundary(fixture: ReturnType<typeof makeFixture>, token = "boundary-1"): Promise<void> {
+    await fixture.emit({
+        type: "session_before_user_turn",
+        boundaryToken: token,
+        userMessage: { role: "user", content: [] },
+    } as AgentHarnessEvent);
+}
+
+async function bindBoundary(
+    fixture: ReturnType<typeof makeFixture>,
+    token = "boundary-1",
+    userEntryId = "user-1"
+): Promise<void> {
+    await fixture.emit({
+        type: "session_user_turn_committed",
+        boundaryToken: token,
+        userEntryId,
+    } as AgentHarnessEvent);
+}
+
+async function finishBoundary(fixture: ReturnType<typeof makeFixture>, token = "boundary-1"): Promise<void> {
+    await fixture.emit({
+        type: "session_user_turn_terminal",
+        boundaryToken: token,
+        reason: "agent_end",
+    } as AgentHarnessEvent);
+}
+
 describe("WorkspaceCheckpointManager", () => {
-    it("uses an injected snapshot source for ordered capture and diff while retaining store identity", async () => {
+    it("creates boundary metadata without scanning, capturing, leasing, or persisting pending state", async () => {
         const fixture = makeFixture();
-        const before = snapshot("source-before");
-        const after = snapshot("source-after");
-        const sourceOrder: string[] = [];
-        const snapshotSource: WorkspaceCheckpointSnapshotSource = {
-            capture: vi
-                .fn()
-                .mockImplementationOnce(async (options) => {
-                    sourceOrder.push(`capture:${options.profile}`);
-                    return {
-                        ref: before,
-                        coverage: { complete: true, eligibleEntryCount: 2, newlyHashedBytes: 3, exclusions: [] },
-                    };
-                })
-                .mockImplementationOnce(async (options) => {
-                    sourceOrder.push(`capture:${options.profile}`);
-                    return {
-                        ref: after,
-                        coverage: { complete: true, eligibleEntryCount: 4, newlyHashedBytes: 5, exclusions: [] },
-                    };
-                }),
-            diff: vi.fn(async (actualBefore, actualAfter): Promise<WorkspacePathChangeV1[]> => {
-                sourceOrder.push("diff");
-                expect(actualBefore).toBe(before);
-                expect(actualAfter).toBe(after);
-                return [
-                    {
-                        path: "changed.txt",
-                        before: { state: "absent" },
-                        after: { state: "file", oid: OidA, executable: false },
-                    },
-                ];
-            }),
-        };
-        await fixture.manager.dispose();
-        const manager = registerWorkspaceCheckpointManager({
-            harness: fixture.harness,
-            session: fixture.session as never,
-            sessionId: "session-1",
-            workspaceRoot: "/workspace",
-            store: fixture.store as never,
-            snapshotSource,
-            mutationBarrier: new SessionMutationBarrier(),
-            hasRunningHostedCommands: () => false,
-            processOwner: Owner,
-            onCheckpointCommitted: async () => undefined,
-            dependencies: { pendingStore: fixture.pending as never },
-        });
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-source",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-source",
-            userEntryId: "user-source",
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-source",
-            reason: "agent_end",
-        } as AgentHarnessEvent);
+        await startBoundary(fixture);
 
-        expect(sourceOrder).toEqual(["capture:pre-turn", "capture:terminal", "diff"]);
-        expect(fixture.store.capture).not.toHaveBeenCalled();
-        expect(fixture.store.diff).not.toHaveBeenCalled();
-        expect(fixture.pending.begin).toHaveBeenCalledWith(
-            expect.objectContaining({
-                workspaceIdentity: "workspace-1",
-                workspaceIncarnation: "incarnation-1",
-                before,
-            })
-        );
-        expect(fixture.entries.at(-1)).toMatchObject({
-            data: {
-                status: "available",
-                turnId: "user-source",
-                workspaceIdentity: "workspace-1",
-                workspaceIncarnation: "incarnation-1",
-                before,
-                after,
-                changes: [{ path: "changed.txt" }],
-                coverage: { eligibleEntryCount: 4, newlyHashedBytes: 5 },
-            },
-        });
-        await manager.dispose();
+        expect(fixture.source.readHead).not.toHaveBeenCalled();
+        expect(fixture.source.synchronizeExternal).not.toHaveBeenCalled();
+        expect(fixture.source.captureOwnedTurn).not.toHaveBeenCalled();
+        expect(fixture.writerLeases.acquire).not.toHaveBeenCalled();
+        expect(fixture.pending.begin).not.toHaveBeenCalled();
     });
 
-    it("persists the exact capture, bind, terminal checkpoint, refresh, and pending removal order", async () => {
+    it("writes one no-tool checkpoint from one authoritative head read without a physical capture", async () => {
         const fixture = makeFixture();
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-1",
-            userMessage: { role: "user", content: [{ type: "text", text: "hello" }] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-1",
-            userEntryId: "user-1",
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-1",
-            reason: "agent_end",
-        } as AgentHarnessEvent);
+        await finishBoundary(fixture);
 
-        expect(fixture.order).toEqual([
-            "capture:pre-turn",
-            "pending:begin",
-            "pending:bind",
-            "capture:terminal",
-            "pending:after",
-            "diff",
-            "append",
-            "pending:complete",
-            "refresh:false",
-        ]);
+        expect(fixture.source.readHead).toHaveBeenCalledOnce();
+        expect(fixture.source.synchronizeExternal).not.toHaveBeenCalled();
+        expect(fixture.source.captureOwnedTurn).not.toHaveBeenCalled();
+        expect(fixture.writerLeases.acquire).not.toHaveBeenCalled();
         expect(fixture.entries).toHaveLength(1);
         expect(fixture.entries[0]).toMatchObject({
             type: "custom",
             customType: WorkspaceControlCustomTypes.checkpoint,
-            parentId: null,
             data: {
                 status: "available",
                 turnId: "user-1",
                 before: { id: OidA },
-                after: { id: OidB },
+                after: { id: OidA },
+                changes: [],
             },
         });
     });
 
-    it("records expected terminal capture failure as unavailable without rejecting the lifecycle", async () => {
+    it.each(["read", "grep", "find", "ls", "web_fetch"])("keeps the safe %s tool lease-free", async (toolName) => {
         const fixture = makeFixture();
-        fixture.store.capture
-            .mockReset()
-            .mockResolvedValueOnce({
-                ref: snapshot(OidA),
-                coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-            })
-            .mockRejectedValueOnce(new WorkspaceSnapshotStoreError("capture_timeout", "deadline"));
+        await startBoundary(fixture);
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-1",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-1",
-            userEntryId: "user-1",
-        } as AgentHarnessEvent);
-        await expect(
-            fixture.emit({
-                type: "session_user_turn_terminal",
-                boundaryToken: "boundary-1",
-                reason: "provider_failed",
-            } as AgentHarnessEvent)
-        ).resolves.toBeUndefined();
+        await fixture.manager.beforeWorkspaceTool(toolName);
 
-        expect(fixture.entries[0]).toMatchObject({
-            data: { status: "unavailable", turnId: "user-1", reasonCode: "capture_timeout" },
-        });
-        expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-1");
-        expect(fixture.pending.complete).not.toHaveBeenCalled();
+        expect(fixture.writerLeases.acquire).not.toHaveBeenCalled();
+        expect(fixture.source.synchronizeExternal).not.toHaveBeenCalled();
     });
 
-    it("persists an actual tracker incremental deadline as capture-timeout unavailable", async () => {
+    it("acquires once for the first writing tool and treats unknown future tools as write-capable", async () => {
         const fixture = makeFixture();
-        await fixture.manager.dispose();
-        const tracker = makeIncrementalTimeoutTracker();
-        const manager = registerWorkspaceCheckpointManager({
-            harness: fixture.harness,
-            session: fixture.session as never,
+        await startBoundary(fixture);
+
+        await fixture.manager.beforeWorkspaceTool("future_workspace_mutator");
+        await fixture.manager.beforeWorkspaceTool("edit");
+
+        expect(fixture.writerLeases.acquire).toHaveBeenCalledOnce();
+        expect(fixture.writerLeases.acquire).toHaveBeenCalledWith({
+            workspaceKey: "workspace-1:incarnation-1",
             sessionId: "session-1",
-            workspaceRoot: "/workspace",
-            store: fixture.store as never,
-            snapshotSource: tracker,
-            mutationBarrier: new SessionMutationBarrier(),
-            hasRunningHostedCommands: () => false,
-            processOwner: Owner,
-            onCheckpointCommitted: async () => undefined,
-            dependencies: { pendingStore: fixture.pending as never },
+            boundaryToken: "boundary-1",
+            signal: expect.any(AbortSignal),
         });
+        expect(fixture.source.synchronizeExternal).toHaveBeenCalledOnce();
+    });
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-tracker-timeout",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-tracker-timeout",
-            userEntryId: "user-tracker-timeout",
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-tracker-timeout",
-            reason: "agent_end",
-        } as AgentHarnessEvent);
+    it("captures exactly one owned turn result and releases its writer lease at terminal", async () => {
+        const fixture = makeFixture();
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
 
+        expect(fixture.pending.begin).toHaveBeenCalledWith(
+            expect.objectContaining({
+                boundaryToken: "boundary-1",
+                sessionId: "session-1",
+                before: expect.objectContaining({ id: OidA }),
+            })
+        );
+        expect(fixture.pending.bind).toHaveBeenCalledWith("boundary-1", "user-1");
+
+        await finishBoundary(fixture);
+
+        expect(fixture.source.captureOwnedTurn).toHaveBeenCalledWith({
+            base: expect.objectContaining({ id: OidA }),
+            sessionId: "session-1",
+            turnId: "user-1",
+        });
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.pending.recordAfter).toHaveBeenCalledWith("boundary-1", expect.objectContaining({ id: OidB }));
+        expect(fixture.pending.complete).toHaveBeenCalledWith("boundary-1");
         expect(fixture.entries.at(-1)).toMatchObject({
             data: {
-                status: "unavailable",
-                turnId: "user-tracker-timeout",
-                reasonCode: "capture_timeout",
+                status: "available",
+                before: { id: OidA },
+                after: { id: OidB },
+                changes: [{ path: "changed.txt" }],
             },
         });
-        await manager.dispose();
-        await tracker.dispose();
     });
 
-    it("maps a final tracker reconcile failure to an unstable-file unavailable checkpoint", async () => {
+    it("releases the writer lease when terminal capture fails", async () => {
         const fixture = makeFixture();
-        fixture.store.capture
-            .mockReset()
-            .mockResolvedValueOnce({
-                ref: snapshot(OidA),
-                coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-            })
-            .mockRejectedValueOnce(new WorkspaceSnapshotStoreError("unstable_file", "Workspace did not settle"));
+        vi.mocked(fixture.source.captureOwnedTurn).mockRejectedValueOnce(
+            new WorkspaceSnapshotStoreError("capture_timeout", "deadline")
+        );
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-reconcile",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-reconcile",
-            userEntryId: "user-reconcile",
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-reconcile",
-            reason: "agent_end",
-        } as AgentHarnessEvent);
+        await expect(finishBoundary(fixture)).resolves.toBeUndefined();
 
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-1");
         expect(fixture.entries.at(-1)).toMatchObject({
-            data: { status: "unavailable", turnId: "user-reconcile", reasonCode: "unstable_file" },
+            data: { status: "unavailable", turnId: "user-1", reasonCode: "capture_timeout" },
         });
-        expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-reconcile");
     });
 
-    it("retires an uncommitted preparation failure without appending a checkpoint", async () => {
+    it("releases an acquired writer lease when preparation terminates before the user entry commits", async () => {
         const fixture = makeFixture();
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-1",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-1",
-            reason: "preparation_failed",
-        } as AgentHarnessEvent);
+        await startBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
 
-        expect(fixture.session.appendEntries).not.toHaveBeenCalled();
+        await finishBoundary(fixture);
+
+        expect(fixture.entries).toHaveLength(0);
+        expect(fixture.release).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a detached hosted command unavailable while still releasing the writer lease", async () => {
+        const fixture = makeFixture({ hosted: true });
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeHostedCommand();
+
+        await finishBoundary(fixture);
+
+        expect(fixture.source.captureOwnedTurn).not.toHaveBeenCalled();
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: { status: "unavailable", reasonCode: "hosted_pty_running" },
+        });
+    });
+
+    it("releases a held writer lease during disposal", async () => {
+        const fixture = makeFixture();
+        await startBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        await fixture.manager.dispose();
+
+        expect(fixture.release).toHaveBeenCalledOnce();
         expect(fixture.pending.retireUnbound).toHaveBeenCalledWith("boundary-1", Owner);
     });
 
-    it("marks a bound turn unavailable while a hosted PTY is active", async () => {
+    it("retires a bound pending record during graceful disposal", async () => {
         const fixture = makeFixture();
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
         await fixture.manager.dispose();
-        fixture.store.capture.mockReset().mockResolvedValue({
-            ref: snapshot(OidA),
-            coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-        });
-        const manager = registerWorkspaceCheckpointManager({
-            harness: fixture.harness,
-            session: fixture.session as never,
-            sessionId: "session-1",
-            workspaceRoot: "/workspace",
-            store: fixture.store as never,
-            mutationBarrier: new SessionMutationBarrier(),
-            hasRunningHostedCommands: () => true,
-            processOwner: Owner,
-            onCheckpointCommitted: async () => undefined,
-            dependencies: { pendingStore: fixture.pending as never },
-        });
 
-        await fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-pty",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_committed",
-            boundaryToken: "boundary-pty",
-            userEntryId: "user-pty",
-        } as AgentHarnessEvent);
-        await fixture.emit({
-            type: "session_user_turn_terminal",
-            boundaryToken: "boundary-pty",
-            reason: "agent_end",
-        } as AgentHarnessEvent);
-
-        expect(fixture.entries.at(-1)).toMatchObject({
-            data: { status: "unavailable", turnId: "user-pty", reasonCode: "hosted_pty_running" },
-        });
-        await manager.dispose();
+        expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-1");
+        expect(fixture.release).toHaveBeenCalledOnce();
     });
 
-    it("recovers a dead-owner bound pending boundary as unavailable", async () => {
+    it("still releases the writer lease when graceful pending cleanup fails", async () => {
+        const fixture = makeFixture();
+        const cleanupFailure = new Error("pending cleanup failed");
+        fixture.pending.retireUnavailable.mockRejectedValueOnce(cleanupFailure);
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+        await fixture.manager.beforeWorkspaceTool("bash");
+
+        await expect(fixture.manager.dispose()).rejects.toBe(cleanupFailure);
+
+        expect(fixture.release).toHaveBeenCalledOnce();
+    });
+
+    it("fails closed when a workspace-capable tool has no active user-turn boundary", async () => {
+        const fixture = makeFixture();
+
+        await expect(fixture.manager.beforeWorkspaceTool("bash")).rejects.toThrow(/active user-turn boundary/i);
+
+        expect(fixture.writerLeases.acquire).not.toHaveBeenCalled();
+    });
+
+    it("releases acquisition and records unavailable when external synchronization fails", async () => {
+        const fixture = makeFixture();
+        vi.mocked(fixture.source.synchronizeExternal).mockRejectedValueOnce(
+            new WorkspaceSnapshotStoreError("unstable_file", "Workspace did not settle")
+        );
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+
+        await expect(fixture.manager.beforeWorkspaceTool("bash")).rejects.toThrow(/did not settle/);
+        await finishBoundary(fixture);
+
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: { status: "unavailable", reasonCode: "unstable_file" },
+        });
+    });
+
+    it("retires an unbound pending record when its immediate user-entry bind fails", async () => {
+        const fixture = makeFixture();
+        fixture.pending.bind.mockRejectedValueOnce(new Error("bind failed"));
+        await startBoundary(fixture);
+        await bindBoundary(fixture);
+
+        await expect(fixture.manager.beforeWorkspaceTool("bash")).rejects.toThrow("bind failed");
+
+        expect(fixture.release).toHaveBeenCalledOnce();
+        expect(fixture.pending.retireUnbound).toHaveBeenCalledWith("boundary-1", Owner);
+        await expect(finishBoundary(fixture)).resolves.toBeUndefined();
+        expect(fixture.pending.retireUnavailable).not.toHaveBeenCalled();
+        expect(fixture.source.captureOwnedTurn).not.toHaveBeenCalled();
+        expect(fixture.entries.at(-1)).toMatchObject({
+            data: { status: "unavailable", turnId: "user-1" },
+        });
+    });
+
+    it("retains dead-owner recovery for legacy pending boundaries without creating new ones", async () => {
         const fixture = makeFixture();
         fixture.pending.recover.mockResolvedValueOnce([
             {
@@ -462,92 +405,6 @@ describe("WorkspaceCheckpointManager", () => {
             },
         });
         expect(fixture.pending.retireUnavailable).toHaveBeenCalledWith("boundary-crash");
-    });
-
-    it("dispose waits for manager-owned lifecycle work without waiting on the outer barrier", async () => {
-        const fixture = makeFixture();
-        let releaseCapture!: () => void;
-        const captureGate = new Promise<void>((resolve) => {
-            releaseCapture = resolve;
-        });
-        fixture.store.capture.mockReset().mockImplementationOnce(async () => {
-            await captureGate;
-            return {
-                ref: snapshot(OidA),
-                coverage: { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] },
-            };
-        });
-        const lifecycle = fixture.emit({
-            type: "session_before_user_turn",
-            boundaryToken: "boundary-dispose",
-            userMessage: { role: "user", content: [] },
-        } as AgentHarnessEvent);
-        await vi.waitFor(() => expect(fixture.manager.isBusy()).toBe(true));
-        let disposed = false;
-        const disposal = fixture.manager.dispose().then(() => {
-            disposed = true;
-        });
-
-        await Promise.resolve();
-        expect(disposed).toBe(false);
-        releaseCapture();
-        await lifecycle;
-        await disposal;
-        expect(disposed).toBe(true);
+        expect(fixture.pending.begin).not.toHaveBeenCalled();
     });
 });
-
-function makeIncrementalTimeoutTracker(): WorkspaceSnapshotTracker {
-    const coverage = { complete: true, eligibleEntryCount: 1, newlyHashedBytes: 1, exclusions: [] };
-    const ref = snapshot(OidA);
-    return new WorkspaceSnapshotTracker({
-        store: {
-            storeRoot: "/private/store.git",
-            identity: {
-                canonicalRoot: "/workspace",
-                workspaceIdentity: "workspace-1",
-                workspaceIncarnation: "incarnation-1",
-                storeKey: "test-store",
-                ancestorIdentityChain: [],
-            },
-            git: {},
-            captureFullReconcile: async () => ({ ref, coverage }),
-            readIncrementalSnapshotMetadata: async () => ({
-                scope: {
-                    schemaVersion: 1,
-                    policy: {
-                        maxEntries: 200_000,
-                        maxUntrackedBytes: 2 * 1024 ** 2,
-                        gitGlobalExcludes: "disabled-by-isolated-runner",
-                    },
-                    ignoreInputs: [],
-                    nestedRepositoryBoundaries: [],
-                },
-                coverage: { complete: true, eligibleEntryCount: 1, exclusions: [] },
-            }),
-        } as never,
-        feed: {
-            start: async () => undefined,
-            drain: async () => ({
-                status: "complete",
-                changedPaths: ["a.txt"],
-            }),
-            isTrusted: () => true,
-            dispose: async () => undefined,
-        } as never,
-        state: {
-            load: async () => ({ status: "untrusted" }),
-            publish: async () => undefined,
-        },
-        makePathCapture: () => ({
-            capture: async () => {
-                throw new AnchoredReaderError("timeout", "Incremental path capture timed out");
-            },
-            consumeCaptured: async () => {
-                throw new Error("unreachable");
-            },
-            discardCaptured: async () => undefined,
-            dispose: async () => undefined,
-        }),
-    });
-}

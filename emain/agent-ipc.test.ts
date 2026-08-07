@@ -94,10 +94,17 @@ vi.mock("./agent-rewind-feature", () => {
 vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
     makeDisabledWorkspaceCheckpointManager: vi.fn(() => ({
         isBusy: () => false,
+        beforeWorkspaceTool: vi.fn(),
+        beforeHostedCommand: vi.fn(),
         recover: vi.fn(),
         dispose: vi.fn(),
     })),
     registerWorkspaceCheckpointManager: vi.fn(),
+}));
+vi.mock("@crest/coding-agent/workspace-rewind/snapshot-source", () => ({
+    initializeWorkspaceCheckpointSnapshotSource: vi.fn(
+        async (input: { legacyCapture: unknown }) => input.legacyCapture
+    ),
 }));
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
@@ -981,6 +988,8 @@ describe("agent-ipc command helpers", () => {
         };
         const manager = {
             isBusy: () => false,
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(async () => {
                 order.push("recover");
             }),
@@ -1058,6 +1067,8 @@ describe("agent-ipc command helpers", () => {
         });
         vi.mocked(registerWorkspaceCheckpointManager).mockReturnValueOnce({
             isBusy: () => false,
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: managerDispose,
         });
@@ -1101,7 +1112,13 @@ describe("agent-ipc command helpers", () => {
         const managerDispose = vi.fn(() => managerGate.promise);
         const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
         const owned = releaseTrackerAfterCheckpointManager(
-            { isBusy: () => false, recover: vi.fn(), dispose: managerDispose },
+            {
+                isBusy: () => false,
+                beforeWorkspaceTool: vi.fn(async () => undefined),
+                beforeHostedCommand: vi.fn(async () => undefined),
+                recover: vi.fn(),
+                dispose: managerDispose,
+            },
             release
         );
 
@@ -1125,7 +1142,13 @@ describe("agent-ipc command helpers", () => {
         const managerDispose = vi.fn(async () => Promise.reject(managerFailure));
         const release = vi.fn().mockRejectedValueOnce(releaseFailure).mockResolvedValueOnce(undefined);
         const owned = releaseTrackerAfterCheckpointManager(
-            { isBusy: () => false, recover: vi.fn(), dispose: managerDispose },
+            {
+                isBusy: () => false,
+                beforeWorkspaceTool: vi.fn(async () => undefined),
+                beforeHostedCommand: vi.fn(async () => undefined),
+                recover: vi.fn(),
+                dispose: managerDispose,
+            },
             release
         );
 
@@ -1161,6 +1184,8 @@ describe("agent-ipc command helpers", () => {
         } as never);
         vi.mocked(registerWorkspaceCheckpointManager).mockReturnValueOnce({
             isBusy: () => false,
+            beforeWorkspaceTool: vi.fn(async () => undefined),
+            beforeHostedCommand: vi.fn(async () => undefined),
             recover: vi.fn(),
             dispose: managerDispose,
         });
@@ -1282,6 +1307,8 @@ describe("agent-ipc command helpers", () => {
                 });
                 return {
                     isBusy: () => false,
+                    beforeWorkspaceTool: vi.fn(async () => undefined),
+                    beforeHostedCommand: vi.fn(async () => undefined),
                     recover: stage === "recover" ? vi.fn(async () => Promise.reject(failure)) : vi.fn(),
                     dispose: managerDispose,
                 };
@@ -1428,6 +1455,8 @@ describe("agent-ipc command helpers", () => {
                 runFinalizer = (operation) => input.mutationBarrier.run(operation);
                 return {
                     isBusy: () => input.mutationBarrier.isBusy(),
+                    beforeWorkspaceTool: vi.fn(async () => undefined),
+                    beforeHostedCommand: vi.fn(async () => undefined),
                     recover: vi.fn(),
                     dispose: vi.fn(),
                 };

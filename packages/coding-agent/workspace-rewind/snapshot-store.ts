@@ -913,6 +913,25 @@ export class WorkspaceSnapshotStore {
         });
     }
 
+    readSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    }> {
+        return this.withWorkspaceLock(async () => {
+            const manifest = await this.#readStoredManifest(snapshot);
+            const coverage = manifest.getCoverage();
+            if (!coverage) throw new Error("Workspace snapshot does not contain coverage metadata");
+            return {
+                scope: manifest.getScope(),
+                coverage: {
+                    complete: coverage.complete,
+                    eligibleEntryCount: coverage.eligibleEntryCount,
+                    exclusions: coverage.exclusions.map(cloneCoverageExclusion),
+                },
+            };
+        });
+    }
+
     computeIncrementalSnapshotCoverage(
         snapshot: WorkspaceSnapshotRefV1,
         mutations: IncrementalPathMutation[]
@@ -1205,11 +1224,20 @@ export class WorkspaceSnapshotStore {
     }
 
     async #listCrestRefsUnlocked(): Promise<Array<{ name: string; oid: string }>> {
-        const result = await this.git.run(["for-each-ref", "--format=%(refname)%00%(objectname)", "refs/crest"], {
-            gitDir: this.storeRoot,
-            timeoutMs: StoreGitTimeoutMs,
-            maxStdoutBytes: QuotaMaxRefOutputBytes,
-        });
+        const result = await this.git.run(
+            [
+                "for-each-ref",
+                "--format=%(refname)%00%(objectname)",
+                "refs/crest/snapshots",
+                "refs/crest/pending",
+                "refs/crest/ops",
+            ],
+            {
+                gitDir: this.storeRoot,
+                timeoutMs: StoreGitTimeoutMs,
+                maxStdoutBytes: QuotaMaxRefOutputBytes,
+            }
+        );
         if (result.stdout.length === 0) {
             return [];
         }

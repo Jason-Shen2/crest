@@ -293,8 +293,11 @@ export class AgentSessionRuntime {
         this.host.setAuthResolver(config.authResolver);
         this.permissionsToolCallHook = config.toolCallHook;
         this.host.setToolCallHook(async (event) => {
+            const permission = await this.permissionsToolCallHook?.(event);
+            if (permission?.block) return permission;
             await this.assertWorkspaceWritableWithStateRefresh();
-            return await this.permissionsToolCallHook?.(event);
+            await this.checkpointManager?.beforeWorkspaceTool(event.toolName);
+            return permission;
         });
         const currentModel = this.host.harness.getModel();
         const sameModel =
@@ -693,6 +696,7 @@ export class AgentSessionRuntime {
         context: import("./agent-execution-context").AgentExecutionContext
     ): Promise<{ port: AgentPtyCommandPort; snapshot: AgentPtySnapshot }> {
         await this.assertWorkspaceWritableWithStateRefresh();
+        await this.checkpointManager?.beforeHostedCommand();
         const snapshot = await this.ptyHost.start(command, context);
         const port = this.ptyHost.getCommandPort(snapshot.commandId);
         this.emitSessionState();
@@ -705,6 +709,7 @@ export class AgentSessionRuntime {
 
     async writeHostedCommand(commandId: string, input: string): Promise<void> {
         await this.assertWorkspaceWritableWithStateRefresh();
+        await this.checkpointManager?.beforeHostedCommand();
         await this.ptyHost.write(commandId, input);
     }
 

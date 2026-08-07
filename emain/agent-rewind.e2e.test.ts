@@ -98,6 +98,7 @@ vi.mock("../frontend/app/agent/assistant-ui/diff-viewer", () => ({
 vi.mock("./emain-wsh", () => ({ ElectronWshClient: {} }));
 
 import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
+import type { AgentHarnessEvent } from "@crest/agent/harness/types";
 import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
 import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
 import { SessionMutationBarrier } from "@crest/coding-agent/session-mutation-barrier";
@@ -117,6 +118,7 @@ import {
     decodeWorkspaceCheckpointEntry,
     decodeWorkspaceStateEntry,
 } from "@crest/coding-agent/workspace-rewind/session-state";
+import { initializeWorkspaceCheckpointSnapshotSource } from "@crest/coding-agent/workspace-rewind/snapshot-source";
 import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "@crest/coding-agent/workspace-rewind/snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "@crest/coding-agent/workspace-rewind/types";
 import {
@@ -314,6 +316,14 @@ function installPromptHarness(mutate: () => Promise<void>) {
         maxTokens: 1_000,
     };
     let settledCount = 0;
+    let runToolCallHook:
+        | ((event: {
+              type: "tool_call";
+              toolCallId: string;
+              toolName: string;
+              input: Record<string, unknown>;
+          }) => Promise<unknown>)
+        | undefined;
     let terminalFailure: { cause: unknown } | undefined;
     const settledWaiters = new Set<{ count: number; resolve: () => void; reject: (error: unknown) => void }>();
     const waitForSettled = (count: number) => {
@@ -340,6 +350,12 @@ function installPromptHarness(mutate: () => Promise<void>) {
             const output = new AssistantMessageEventStream();
             void (async () => {
                 try {
+                    await runToolCallHook?.({
+                        type: "tool_call",
+                        toolCallId: "rewind-e2e-write",
+                        toolName: "future_workspace_writer",
+                        input: {},
+                    });
                     await mutate();
                     const message = makePromptHarnessMessage(activeModel, "stop");
                     output.push({ type: "start", partial: message });
@@ -386,7 +402,9 @@ function installPromptHarness(mutate: () => Promise<void>) {
                 options.session.appendCustomEntry(customType, data).then(() => undefined),
             promptWithCustomEntry: vi.fn(),
             setAuthResolver: vi.fn(),
-            setToolCallHook: vi.fn(),
+            setToolCallHook: vi.fn((hook) => {
+                runToolCallHook = hook;
+            }),
             resolveAuth: vi.fn(),
             runToolCallHook: vi.fn(),
             getCwd: () => options.promptInputs.cwd,
@@ -507,12 +525,17 @@ async function makeFixture() {
     const emit = async (event: AgentHarnessEvent) => {
         await Promise.all([...listeners].map(async (listener) => await listener(event)));
     };
+    const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+        store,
+        legacyCapture: store,
+    });
     const manager = registerWorkspaceCheckpointManager({
         harness: harness as never,
         session,
         sessionId: metadata.id,
         workspaceRoot,
         store,
+        snapshotSource,
         mutationBarrier: new SessionMutationBarrier(),
         hasRunningHostedCommands: () => false,
         processOwner: await makeProcessOwnerIdentity(),
@@ -603,6 +626,7 @@ async function makeFixture() {
             timestamp: Date.now(),
         } as never);
         await emit({ type: "session_user_turn_committed", boundaryToken, userEntryId: turnId } as AgentHarnessEvent);
+        await manager.beforeWorkspaceTool("future_workspace_writer");
         await mutate();
         await emit({
             type: "session_user_turn_terminal",

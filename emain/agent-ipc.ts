@@ -165,6 +165,7 @@ import {
     collectSessionSnapshotOwners,
     reconcileSnapshotRefsLocked,
 } from "@crest/coding-agent/workspace-rewind/snapshot-retention";
+import { initializeWorkspaceCheckpointSnapshotSource } from "@crest/coding-agent/workspace-rewind/snapshot-source";
 import {
     resolveCanonicalWorkspaceIdentity,
     type CanonicalWorkspaceIdentity,
@@ -1089,6 +1090,13 @@ async function createAgentRuntimeFromSession(
     let checkpointManager: WorkspaceCheckpointManager | undefined;
     let runtime: AgentSessionRuntime | undefined;
     try {
+        const checkpointSnapshotSource =
+            rewindFeature.state === "enabled"
+                ? await initializeWorkspaceCheckpointSnapshotSource({
+                      store: rewindFeature.store,
+                      legacyCapture: rewindFeature.tracker,
+                  })
+                : undefined;
         const registeredCheckpointManager =
             rewindFeature.state === "enabled"
                 ? registerWorkspaceCheckpointManager({
@@ -1097,7 +1105,7 @@ async function createAgentRuntimeFromSession(
                       sessionId: metadata.id,
                       workspaceRoot: rewindFeature.store.identity.canonicalRoot,
                       store: rewindFeature.store,
-                      snapshotSource: rewindFeature.tracker,
+                      snapshotSource: checkpointSnapshotSource!,
                       mutationBarrier,
                       hasRunningHostedCommands: () => ptyHost.hasRunningCommands(),
                       processOwner: rewindFeature.processOwner,
@@ -1243,6 +1251,8 @@ export function releaseTrackerAfterCheckpointManager(
     let currentAttempt: Promise<void> | undefined;
     return {
         isBusy: () => manager.isBusy(),
+        beforeWorkspaceTool: (toolName, signal) => manager.beforeWorkspaceTool(toolName, signal),
+        beforeHostedCommand: (signal) => manager.beforeHostedCommand(signal),
         recover: () => manager.recover(),
         dispose: () => {
             if (currentAttempt) return currentAttempt;

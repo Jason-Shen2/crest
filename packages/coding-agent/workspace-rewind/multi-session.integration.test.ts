@@ -15,6 +15,7 @@ import { applyCapturedPath } from "./filesystem-apply";
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceRewindEngine, type WorkspaceRewindEngineOptions } from "./rewind-engine";
 import { decodeWorkspaceCheckpointEntry } from "./session-state";
+import { initializeWorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
 import {
@@ -180,7 +181,7 @@ class DeterministicWatcher implements WorkspaceChangeWatcher {
 }
 
 describe("workspace rewind across sessions", () => {
-    it("shares one tracker baseline across interleaved Session boundaries without weakening live drift checks", async () => {
+    it("does not attribute another Session's write to an overlapping no-tool turn", async () => {
         const value = await makeFixture();
         await writeFile(join(value.workspaceRoot, "shared.txt"), "base");
         const openStore = vi.fn(async () => value.store);
@@ -204,13 +205,23 @@ describe("workspace rewind across sessions", () => {
 
         try {
             expect(leaseB.tracker).toBe(leaseA.tracker);
+            const [snapshotSourceA, snapshotSourceB] = await Promise.all([
+                initializeWorkspaceCheckpointSnapshotSource({
+                    store: leaseA.store,
+                    legacyCapture: leaseA.tracker,
+                }),
+                initializeWorkspaceCheckpointSnapshotSource({
+                    store: leaseB.store,
+                    legacyCapture: leaseB.tracker,
+                }),
+            ]);
             managerA = registerWorkspaceCheckpointManager({
                 harness: harnessA.harness,
                 session: value.sessions.a,
                 sessionId: "session-a",
                 workspaceRoot: value.workspaceRoot,
                 store: value.store,
-                snapshotSource: leaseA.tracker,
+                snapshotSource: snapshotSourceA,
                 mutationBarrier: new SessionMutationBarrier(),
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
@@ -222,7 +233,7 @@ describe("workspace rewind across sessions", () => {
                 sessionId: "session-b",
                 workspaceRoot: value.workspaceRoot,
                 store: value.store,
-                snapshotSource: leaseB.tracker,
+                snapshotSource: snapshotSourceB,
                 mutationBarrier: new SessionMutationBarrier(),
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
@@ -260,6 +271,7 @@ describe("workspace rewind across sessions", () => {
                 userEntryId: turnB,
             } as AgentHarnessEvent);
 
+            await managerB.beforeWorkspaceTool("write");
             await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-during-overlap");
             watcher.record({ type: "update", path: join(value.workspaceRoot, "shared.txt") });
             await harnessB.emit({
@@ -280,6 +292,8 @@ describe("workspace rewind across sessions", () => {
             expect(checkpointAItem.checkpoint.originSessionId).toBe("session-a");
             expect(checkpointBItem.checkpoint.originSessionId).toBe("session-b");
             expect(checkpointAItem.checkpoint.after).toEqual(checkpointBItem.checkpoint.after);
+            expect(checkpointAItem.checkpoint.changes).toEqual([]);
+            expect(checkpointBItem.checkpoint.changes).toEqual([expect.objectContaining({ path: "shared.txt" })]);
 
             await writeFile(join(value.workspaceRoot, "shared.txt"), "session-b-after-boundaries");
             const planned = await value.engine.previewRewind({
@@ -289,21 +303,7 @@ describe("workspace rewind across sessions", () => {
                 semanticLeafId: checkpointAItem.entry.id,
                 targetTurnId: turnA,
             });
-            expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
-            expect(planned.files).toEqual([
-                expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" }),
-            ]);
-            await expect(
-                value.engine.applyRewind({
-                    session: value.sessions.a,
-                    sessionId: "session-a",
-                    workspace: value.identity,
-                    semanticLeafId: checkpointAItem.entry.id,
-                    targetTurnId: turnA,
-                    mode: "normal",
-                    confirmation: value.confirmations.take(planned.confirmationToken!),
-                })
-            ).rejects.toThrow(/force/i);
+            expect(planned).toMatchObject({ forceRequired: false, hardBlocked: false, files: [] });
             expect(await readFile(join(value.workspaceRoot, "shared.txt"), "utf8")).toBe("session-b-after-boundaries");
         } finally {
             try {
