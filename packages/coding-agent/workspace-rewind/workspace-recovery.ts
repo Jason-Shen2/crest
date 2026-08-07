@@ -3,30 +3,26 @@
 
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
 
-import { removeCreatedWorkspaceDirectories } from "./created-directory-cleanup";
 import { encodeDurableJson } from "./durability";
-import {
-    applyCapturedPath,
-    reconcileInterruptedCapturedPathArtifacts,
-    type WorkspacePathApplyProgress,
-} from "./filesystem-apply";
+import { applyCapturedPath, reconcileInterruptedCapturedPathArtifacts } from "./filesystem-apply";
 import { inspectLivePath, type LiveCapturedPathState } from "./live-path-state";
 import {
     PendingWorkspaceRestoreStore,
-    type PendingWorkspaceRestoreV1,
+    type PendingWorkspaceRestoreV2,
     type ScannedPendingWorkspaceRestore,
 } from "./pending-restore-store";
-import { decodeWorkspaceStateEntry } from "./session-state";
-import type { CapturedPathStateV1, WorkspaceSnapshotRefV1 } from "./types";
+import type { WorkspaceSnapshotStore } from "./snapshot-store";
+import { WorkspaceControlCustomTypes, type CapturedPathStateV1 } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
-import { workspaceStateFromPending } from "./workspace-restore-executor";
+import { deriveWorkspaceRestoreState, type DerivedWorkspaceRestoreState } from "./workspace-restore-state";
+import { ProcessWorkspaceWriterLeases, type WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
 export interface WorkspaceRecoveryView {
     operationId: string;
     corrupt: boolean;
     message: string;
     paths: Array<{ path: string; classification?: "before" | "target" | "unknown" }>;
-    allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
+    allowedActions: Array<"retry">;
 }
 
 export type WorkspaceRecoveryDecision =
@@ -35,19 +31,19 @@ export type WorkspaceRecoveryDecision =
     | { state: "not-committed"; operationId: string }
     | { state: "needs-user"; view: WorkspaceRecoveryView };
 
-export type WorkspaceRecoveryMutationGuard = () => Promise<void>;
-
 export interface WorkspaceRecoverySession {
     getLeafId(): Promise<string | null>;
     getEntry(id: string): Promise<SessionTreeEntry | undefined>;
+    appendEntries?(entries: SessionTreeEntry[], options: { expectedLeafId: string | null }): Promise<void>;
 }
 
 export interface WorkspaceRecoveryStore {
     storeRoot: string;
     identity: CanonicalWorkspaceIdentity;
-    readBlob(oid: string): Promise<Buffer>;
-    readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1>;
-    verify(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
+    mutationLog: Pick<WorkspaceSnapshotStore["mutationLog"], "readHead">;
+    readCommitSnapshot: WorkspaceSnapshotStore["readCommitSnapshot"];
+    readBlob: WorkspaceSnapshotStore["readBlob"];
+    readPathState: WorkspaceSnapshotStore["readPathState"];
     withWorkspaceLock?<T>(operation: () => Promise<T>): Promise<T>;
 }
 
@@ -62,23 +58,24 @@ export interface WorkspaceRecoveryOptions {
         path: string;
         expectedCurrent: CapturedPathStateV1;
         target: CapturedPathStateV1;
-        progress: WorkspacePathApplyProgress;
     }) => Promise<void>;
     verifyWorkspace?: (workspace: CanonicalWorkspaceIdentity) => Promise<void>;
-    withSessionLease?: <T>(sessionId: string, operation: () => Promise<T>) => Promise<T>;
+    writerLeases?: Pick<WorkspaceWriterLeaseRegistry, "acquire">;
+    withSessionMutation?<T>(sessionPath: string, operation: () => Promise<T>): Promise<T>;
     assertCurrent?: () => Promise<void>;
 }
 
-interface ClassifiedPending {
-    record: PendingWorkspaceRestoreV1;
-    leafId: string | null;
-    markerExists: boolean;
-    exactMarker: boolean;
-    markerFailure?: string;
-    paths: Array<{
-        path: PendingWorkspaceRestoreV1["paths"][number];
-        classification: "before" | "target" | "unknown";
-    }>;
+interface RecoveryFacts {
+    record: PendingWorkspaceRestoreV2;
+    head?: string;
+    derived: DerivedWorkspaceRestoreState;
+}
+
+interface ClassifiedPath {
+    path: string;
+    source: CapturedPathStateV1;
+    planned: CapturedPathStateV1;
+    classification: "before" | "target" | "unknown";
 }
 
 export class WorkspaceFrozenError extends Error {
@@ -99,33 +96,43 @@ export class WorkspaceRecovery {
     readonly inspectPath: NonNullable<WorkspaceRecoveryOptions["inspectPath"]>;
     readonly applyPath: NonNullable<WorkspaceRecoveryOptions["applyPath"]>;
     readonly verifyWorkspace: NonNullable<WorkspaceRecoveryOptions["verifyWorkspace"]>;
-    readonly withSessionLease: NonNullable<WorkspaceRecoveryOptions["withSessionLease"]>;
+    readonly writerLeases: Pick<WorkspaceWriterLeaseRegistry, "acquire">;
+    readonly withSessionMutation: NonNullable<WorkspaceRecoveryOptions["withSessionMutation"]>;
     readonly assertCurrent: NonNullable<WorkspaceRecoveryOptions["assertCurrent"]>;
-    readonly reconcileFilesystemArtifacts: boolean;
+    readonly reconcileArtifacts: boolean;
 
     constructor(options: WorkspaceRecoveryOptions) {
         this.workspace = options.workspace;
         this.store = options.store;
-        this.pending = options.pending ?? new PendingWorkspaceRestoreStore(options.store as never);
+        this.pending = options.pending ?? new PendingWorkspaceRestoreStore(options.store as WorkspaceSnapshotStore);
         this.locateSession = options.locateSession;
-        this.reconcileFilesystemArtifacts = options.inspectPath == null;
+        this.reconcileArtifacts = options.inspectPath == null;
         this.inspectPath =
             options.inspectPath ??
             (async (path) => capturedFromLive(await inspectLivePath(this.workspace.canonicalRoot, path)));
         this.applyPath =
             options.applyPath ??
-            (async ({ operationId, path, expectedCurrent, target, progress }) => {
+            (async ({ operationId, path, expectedCurrent, target }) => {
                 await applyCapturedPath({
                     root: this.workspace.canonicalRoot,
                     path,
                     expectedCurrent,
                     target,
                     readBlob: (oid) => this.store.readBlob(oid),
-                    progress: { ...progress, operationId },
+                    progress: {
+                        operationId,
+                        createdParentDirectories: new Set(),
+                        onPathReplaced: async () => {},
+                    },
                 });
             });
         this.verifyWorkspace = options.verifyWorkspace ?? verifyCanonicalWorkspaceIdentity;
-        this.withSessionLease = options.withSessionLease ?? (async (_sessionId, operation) => operation());
+        this.writerLeases = options.writerLeases ?? ProcessWorkspaceWriterLeases;
+        this.withSessionMutation =
+            options.withSessionMutation ??
+            (async () => {
+                throw new Error("Workspace recovery requires an exclusive Session mutation lease");
+            });
         this.assertCurrent = options.assertCurrent ?? (async () => {});
     }
 
@@ -137,51 +144,8 @@ export class WorkspaceRecovery {
         return this.runPublic(true, expectedOperationId);
     }
 
-    async resolvePendingLocked(record: PendingWorkspaceRestoreV1): Promise<WorkspaceRecoveryDecision> {
-        const session = await this.locateSession(record.sessionId, record.sessionPath);
-        if (!session) {
-            return this.needsUser(
-                record,
-                undefined,
-                "Owning Session is missing; keep the current workspace explicitly"
-            );
-        }
-        return this.classifyLocked(record, session, true);
-    }
-
-    async keepCurrent(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void> {
-        const candidate = await this.pending.readCandidate();
-        if (candidate.kind !== "valid") {
-            throw new Error("Only a decoded pending restore can keep the current workspace");
-        }
-        this.assertOperation(candidate.record.operationId, operationId);
-        const session = await this.locateSession(candidate.record.sessionId, candidate.record.sessionPath);
-        const mutate = () =>
-            this.withWorkspaceLock(async () => {
-                const current = await this.pending.readLocked();
-                if (current.kind !== "valid") throw new Error("Pending restore changed before keep current");
-                this.assertOperation(current.record.operationId, operationId);
-                await assertCurrent?.();
-                await this.pending.resolveToAuditLocked(operationId, "keep-current");
-            });
-        if (!session) {
-            await mutate();
-            return;
-        }
-        await this.withSessionLease(candidate.record.sessionId, mutate);
-    }
-
-    async quarantine(operationId: string, assertCurrent?: WorkspaceRecoveryMutationGuard): Promise<void> {
-        const candidate = await this.pending.readCandidate();
-        if (candidate.kind !== "corrupt") throw new Error("Only a corrupt pending restore can be quarantined");
-        this.assertOperation(candidate.operationId, operationId);
-        await this.withWorkspaceLock(async () => {
-            const current = await this.pending.readLocked();
-            if (current.kind !== "corrupt") throw new Error("Pending restore changed before quarantine");
-            this.assertOperation(current.operationId, operationId);
-            await assertCurrent?.();
-            await this.pending.resolveToAuditLocked(operationId, "quarantine");
-        });
+    resolvePendingUnderLease(record: PendingWorkspaceRestoreV2): Promise<WorkspaceRecoveryDecision> {
+        return this.resolveRecord(record, true, undefined, true);
     }
 
     async assertWorkspaceWritable(): Promise<void> {
@@ -193,215 +157,208 @@ export class WorkspaceRecovery {
     async runPublic(resolve: boolean, expectedOperationId?: string): Promise<WorkspaceRecoveryDecision> {
         const candidate = await this.pending.readCandidate();
         if (candidate.kind === "none") return { state: "none" };
-        if (expectedOperationId) this.assertOperation(operationIdOf(candidate), expectedOperationId);
-        if (candidate.kind === "corrupt") {
-            return this.withWorkspaceLock(async () => {
-                const current = await this.pending.readLocked();
-                if (current.kind === "none" && expectedOperationId == null) return { state: "none" } as const;
-                this.assertSameCandidate(candidate, current, expectedOperationId);
-                return this.decisionForCorrupt(current as Extract<ScannedPendingWorkspaceRestore, { kind: "corrupt" }>);
+        const operationId = operationIdOf(candidate);
+        if (expectedOperationId && operationId !== expectedOperationId) {
+            throw new Error("Pending restore belongs to another operation");
+        }
+        if (candidate.kind === "corrupt") return this.corruptDecision(candidate);
+        if (!resolve) return this.resolveRecord(candidate.record, false, expectedOperationId);
+        return this.withSessionMutation(candidate.record.sessionPath, async () => {
+            const lease = await this.writerLeases.acquire({
+                workspaceKey: `${this.workspace.workspaceIdentity}:${this.workspace.workspaceIncarnation}`,
+                sessionId: candidate.record.sessionId,
+                boundaryToken: `recovery-${candidate.record.operationId}`,
             });
-        }
-        const session = await this.locateSession(candidate.record.sessionId, candidate.record.sessionPath);
-        const classify = () =>
-            this.withWorkspaceLock(async () => {
-                const current = await this.pending.readLocked();
-                if (current.kind === "none" && expectedOperationId == null) return { state: "none" } as const;
-                this.assertSameCandidate(candidate, current, expectedOperationId);
-                if (current.kind !== "valid") throw new Error("Pending restore changed before authoritative reread");
-                await this.verifyWorkspace(this.workspace);
-                if (!session) {
-                    return this.needsUser(
-                        current.record,
-                        undefined,
-                        "Owning Session is missing; keep the current workspace explicitly"
-                    );
-                }
-                return this.classifyLocked(current.record, session, resolve);
-            });
-        if (!session) return classify();
-        return this.withSessionLease(candidate.record.sessionId, classify);
-    }
-
-    async classifyLocked(
-        initialRecord: PendingWorkspaceRestoreV1,
-        session: WorkspaceRecoverySession,
-        resolve: boolean
-    ): Promise<WorkspaceRecoveryDecision> {
-        let record = initialRecord;
-        if (resolve && this.reconcileFilesystemArtifacts) {
-            for (const item of record.paths) {
-                const live = await this.inspectPath(item.path);
-                if (
-                    live === "unknown" ||
-                    live.state === "excluded" ||
-                    item.before.state === "excluded" ||
-                    item.target.state === "excluded"
-                ) {
-                    continue;
-                }
-                await reconcileInterruptedCapturedPathArtifacts({
-                    root: this.workspace.canonicalRoot,
-                    path: item.path,
-                    live,
-                    desired: item.before,
-                    alternate: item.target,
-                    operationId: record.operationId,
-                    onPathRecovered: async () => {
-                        record = await this.pending.updateCreatedParentDirectoriesLocked(
-                            record.operationId,
-                            item.path,
-                            item.createdParentDirectories
-                        );
-                    },
-                });
-            }
-        }
-        const classified = await this.classifyAll(record, session);
-        if (classified.exactMarker && classified.paths.every((path) => path.classification === "target")) {
-            if (resolve) {
-                await this.verifyTargets(classified.record);
-                await this.pending.removeLocked(record.operationId);
-            }
-            return { state: "committed", operationId: record.operationId };
-        }
-        const canRollback =
-            !classified.markerExists &&
-            classified.leafId === record.expectedSemanticLeafId &&
-            classified.paths.every((path) => path.classification !== "unknown");
-        if (!canRollback) {
-            return this.needsUser(
-                record,
-                classified,
-                classified.markerFailure ?? "Pending workspace restore does not match a safe terminal state"
-            );
-        }
-        if (resolve) await this.rollback(classified);
-        return { state: "not-committed", operationId: record.operationId };
-    }
-
-    async classifyAll(
-        record: PendingWorkspaceRestoreV1,
-        session: WorkspaceRecoverySession
-    ): Promise<ClassifiedPending> {
-        const leafId = await session.getLeafId();
-        const entry = await session.getEntry(record.workspaceStateEntryId);
-        let exactMarker = false;
-        let markerFailure: string | undefined;
-        if (entry) {
             try {
-                exactMarker = await this.isExactMarker(record, entry, leafId);
-                if (!exactMarker) markerFailure = "Session marker does not exactly match the pending restore";
-            } catch (error) {
-                markerFailure = error instanceof Error ? error.message : "Session marker verification failed";
+                return await this.resolveRecord(candidate.record, resolve, expectedOperationId, true);
+            } finally {
+                lease.release();
             }
-        }
-        const paths: ClassifiedPending["paths"] = [];
-        for (const path of record.paths) {
-            const live = await this.inspectPath(path.path);
-            paths.push({ path, classification: classifyWorkspaceRecoveryPath(live, path.before, path.target) });
-        }
-        return { record, leafId, markerExists: entry != null, exactMarker, markerFailure, paths };
+        });
     }
 
-    async isExactMarker(
-        record: PendingWorkspaceRestoreV1,
-        entry: SessionTreeEntry,
-        leafId: string | null
-    ): Promise<boolean> {
-        if (leafId !== record.workspaceStateEntryId) throw new Error("Session marker is not the current leaf");
-        if (entry.id !== record.workspaceStateEntryId)
-            throw new Error("Session marker entry ID does not match pending");
-        if (entry.parentId !== record.commitParentId) throw new Error("Session marker parent does not match pending");
-        const state = decodeWorkspaceStateEntry(entry);
-        if (!state) throw new Error("Session marker type or payload is invalid");
-        await this.store.verify(state.currentSnapshot);
-        for (const path of record.paths) {
-            const captured = await this.store.readPathState(state.currentSnapshot, path.path);
-            if (!sameCapturedState(captured, path.target)) {
-                throw new Error(
-                    `Session marker snapshot does not contain target state: ${path.path} (${JSON.stringify(captured)} != ${JSON.stringify(path.target)})`
-                );
+    async resolveRecord(
+        candidate: PendingWorkspaceRestoreV2,
+        resolve: boolean,
+        expectedOperationId?: string,
+        sessionMutationHeld = false
+    ): Promise<WorkspaceRecoveryDecision> {
+        const facts = await this.readFacts(candidate, expectedOperationId);
+        if (!facts) return { state: "none" };
+        if (facts.head === facts.record.sourceCommit) {
+            if (resolve) await this.reconcileInterruptedArtifacts(facts);
+            const paths = await this.classifyPaths(facts);
+            if (paths.some((path) => path.classification === "unknown")) {
+                return this.needsUser(facts.record, paths, "Workspace paths do not match either restore commit");
             }
+            if (resolve) {
+                await this.restoreSourcePaths(facts.record, paths);
+                await this.verifyClassifications(facts, "before");
+                await this.clearPending(facts.record, facts.record.sourceCommit);
+            }
+            return { state: "not-committed", operationId: facts.record.operationId };
         }
-        if (!sameDurableValue(state, workspaceStateFromPending(record, state.currentSnapshot))) {
-            throw new Error("Session marker payload does not match pending");
+        if (facts.head === facts.record.plannedCommit) {
+            if (resolve && !sessionMutationHeld) {
+                throw new Error("Planned workspace recovery requires an exclusive Session mutation lease");
+            }
+            return this.completePlanned(facts, resolve);
         }
-        return true;
+        const paths = await this.classifyPaths(facts);
+        return this.needsUser(facts.record, paths, "Workspace mutation head does not match the pending restore");
     }
 
-    async rollback(classified: ClassifiedPending): Promise<void> {
-        let record = classified.record;
-        for (const item of [...classified.paths].reverse()) {
-            if (item.classification !== "target") continue;
-            const currentPath = record.paths.find((path) => path.path === item.path.path)!;
-            const createdParentDirectories = new Set(currentPath.createdParentDirectories);
-            const persistProgress = async () => {
-                record = await this.pending.updateCreatedParentDirectoriesLocked(record.operationId, currentPath.path, [
-                    ...createdParentDirectories,
-                ]);
-            };
+    async completePlanned(facts: RecoveryFacts, resolve: boolean): Promise<WorkspaceRecoveryDecision> {
+        if (resolve) await this.reconcileInterruptedArtifacts(facts);
+        const paths = await this.classifyPaths(facts);
+        if (paths.some((path) => path.classification !== "target")) {
+            return this.needsUser(facts.record, paths, "Published restore commit does not match live paths");
+        }
+        const marker = await this.classifyMarker(facts);
+        if (marker === "unknown") {
+            return this.needsUser(facts.record, paths, "Session leaf does not match the pending restore");
+        }
+        if (resolve) {
+            if (marker === "expected") await this.appendMarker(facts);
+            await this.verifyExactMarker(facts);
+            await this.verifyClassifications(facts, "target");
+            await this.clearPending(facts.record, facts.record.plannedCommit);
+        }
+        return { state: "committed", operationId: facts.record.operationId };
+    }
+
+    async readFacts(
+        candidate: PendingWorkspaceRestoreV2,
+        expectedOperationId?: string
+    ): Promise<RecoveryFacts | undefined> {
+        return this.withWorkspaceLock(async () => {
+            await this.assertCurrent();
+            const current = await this.pending.readLocked();
+            if (current.kind === "none" && expectedOperationId == null) return undefined;
+            if (current.kind !== "valid" || current.record.operationId !== candidate.operationId) {
+                throw new Error("Pending restore operation changed before authoritative reread");
+            }
+            if (expectedOperationId && current.record.operationId !== expectedOperationId) {
+                throw new Error("Pending restore belongs to another operation");
+            }
+            await this.verifyWorkspace(this.workspace);
+            const [head, derived] = await Promise.all([
+                this.store.mutationLog.readHead(),
+                deriveWorkspaceRestoreState(this.store as never, current.record),
+            ]);
+            return { record: current.record, head, derived };
+        });
+    }
+
+    async reconcileInterruptedArtifacts(facts: RecoveryFacts): Promise<void> {
+        if (!this.reconcileArtifacts) return;
+        const desired = facts.head === facts.record.plannedCommit ? facts.derived.plannedStates : facts.derived.sourceStates;
+        const alternate = facts.head === facts.record.plannedCommit ? facts.derived.sourceStates : facts.derived.plannedStates;
+        for (let index = 0; index < facts.record.affectedPaths.length; index++) {
+            const live = await this.inspectPath(facts.record.affectedPaths[index]!);
+            if (live === "unknown" || live.state === "excluded") continue;
+            await reconcileInterruptedCapturedPathArtifacts({
+                root: this.workspace.canonicalRoot,
+                path: facts.record.affectedPaths[index]!,
+                live,
+                desired: desired[index]!.state,
+                alternate: alternate[index]!.state,
+                operationId: facts.record.operationId,
+                onPathRecovered: async () => {},
+            });
+        }
+    }
+
+    async classifyPaths(facts: RecoveryFacts): Promise<ClassifiedPath[]> {
+        const paths: ClassifiedPath[] = [];
+        for (let index = 0; index < facts.record.affectedPaths.length; index++) {
+            const path = facts.record.affectedPaths[index]!;
+            const source = facts.derived.sourceStates[index]!.state;
+            const planned = facts.derived.plannedStates[index]!.state;
+            const live = await this.inspectPath(path);
+            paths.push({ path, source, planned, classification: classifyWorkspaceRecoveryPath(live, source, planned) });
+        }
+        return paths;
+    }
+
+    async restoreSourcePaths(record: PendingWorkspaceRestoreV2, paths: ClassifiedPath[]): Promise<void> {
+        for (const path of [...paths].reverse()) {
+            if (path.classification !== "target") continue;
             await this.applyPath({
                 operationId: record.operationId,
-                path: currentPath.path,
-                expectedCurrent: currentPath.target,
-                target: currentPath.before,
-                progress: {
-                    operationId: record.operationId,
-                    createdParentDirectories,
-                    onParentDirectoryCreated: persistProgress,
-                    onPathReplaced: persistProgress,
-                },
+                path: path.path,
+                expectedCurrent: path.planned,
+                target: path.source,
             });
         }
-        for (const path of record.paths) {
-            const live = await this.inspectPath(path.path);
-            if (classifyWorkspaceRecoveryPath(live, path.before, path.before) !== "before") {
-                throw new Error(`Workspace recovery verification failed: ${path.path}`);
-            }
-        }
-        await removeCreatedWorkspaceDirectories(
-            this.workspace.canonicalRoot,
-            record.paths.flatMap((path) => path.createdParentDirectories)
-        );
-        await this.pending.removeLocked(record.operationId);
     }
 
-    async verifyTargets(record: PendingWorkspaceRestoreV1): Promise<void> {
-        for (const path of record.paths) {
-            const live = await this.inspectPath(path.path);
-            if (classifyWorkspaceRecoveryPath(live, path.target, path.target) !== "before") {
-                throw new Error(`Committed workspace verification failed: ${path.path}`);
-            }
+    async classifyMarker(facts: RecoveryFacts): Promise<"expected" | "exact" | "unknown"> {
+        const session = await this.locateSession(facts.record.sessionId, facts.record.sessionPath);
+        if (!session) return "unknown";
+        const leaf = await session.getLeafId();
+        if (leaf === facts.record.expectedSemanticLeafId) return "expected";
+        if (leaf !== facts.record.workspaceStateEntryId) return "unknown";
+        return (await this.isExactMarker(facts, session)) ? "exact" : "unknown";
+    }
+
+    async appendMarker(facts: RecoveryFacts): Promise<void> {
+        const session = await this.locateSession(facts.record.sessionId, facts.record.sessionPath);
+        if (!session?.appendEntries) {
+            throw new Error("Owning Session cannot append the pending restore marker");
+        }
+        await session.appendEntries([makeMarkerEntry(facts)], {
+            expectedLeafId: facts.record.expectedSemanticLeafId,
+        });
+    }
+
+    async verifyExactMarker(facts: RecoveryFacts): Promise<void> {
+        const session = await this.locateSession(facts.record.sessionId, facts.record.sessionPath);
+        if (!session || !(await this.isExactMarker(facts, session))) {
+            throw new Error("Pending restore Session marker is not exact");
         }
     }
 
-    needsUser(
-        record: PendingWorkspaceRestoreV1,
-        classified: ClassifiedPending | undefined,
-        message: string
-    ): WorkspaceRecoveryDecision {
+    async isExactMarker(facts: RecoveryFacts, session: WorkspaceRecoverySession): Promise<boolean> {
+        if ((await session.getLeafId()) !== facts.record.workspaceStateEntryId) return false;
+        const entry = await session.getEntry(facts.record.workspaceStateEntryId);
+        return entry != null && encodeDurableJson(entry).equals(encodeDurableJson(makeMarkerEntry(facts)));
+    }
+
+    async verifyClassifications(facts: RecoveryFacts, expected: "before" | "target"): Promise<void> {
+        const classified = await this.classifyPaths(facts);
+        if (classified.some((path) => path.classification !== expected)) {
+            throw new Error("Workspace restore verification no longer matches its commit facts");
+        }
+    }
+
+    async clearPending(record: PendingWorkspaceRestoreV2, expectedHead: string): Promise<void> {
+        await this.withWorkspaceLock(async () => {
+            const current = await this.pending.readLocked();
+            if (current.kind !== "valid" || current.record.operationId !== record.operationId) {
+                throw new Error("Pending restore changed before cleanup");
+            }
+            if ((await this.store.mutationLog.readHead()) !== expectedHead) {
+                throw new Error("Workspace mutation head changed before pending cleanup");
+            }
+            await this.pending.removeLocked(record.operationId);
+        });
+    }
+
+    needsUser(record: PendingWorkspaceRestoreV2, paths: ClassifiedPath[], message: string): WorkspaceRecoveryDecision {
         return {
             state: "needs-user",
             view: {
                 operationId: record.operationId,
                 corrupt: false,
                 message,
-                paths: record.paths.map((path) => ({
-                    path: path.path,
-                    ...(classified == null
-                        ? {}
-                        : {
-                              classification: classified.paths.find((item) => item.path.path === path.path)!
-                                  .classification,
-                          }),
-                })),
-                allowedActions: ["retry", "abandon-current"],
+                paths: paths.map((path) => ({ path: path.path, classification: path.classification })),
+                allowedActions: ["retry"],
             },
         };
     }
 
-    decisionForCorrupt(
+    corruptDecision(
         candidate: Extract<ScannedPendingWorkspaceRestore, { kind: "corrupt" }>
     ): WorkspaceRecoveryDecision {
         return {
@@ -411,48 +368,43 @@ export class WorkspaceRecovery {
                 corrupt: true,
                 message: candidate.message,
                 paths: [],
-                allowedActions: ["quarantine-corrupt"],
+                allowedActions: ["retry"],
             },
         };
     }
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
-        const guarded = async () => {
-            await this.assertCurrent();
-            return operation();
-        };
-        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(guarded) : guarded();
-    }
-
-    assertSameCandidate(
-        candidate: ScannedPendingWorkspaceRestore,
-        current: ScannedPendingWorkspaceRestore,
-        expectedOperationId?: string
-    ): void {
-        if (candidate.kind === "none") throw new Error("Pending restore candidate disappeared");
-        if (current.kind === "none") throw new Error("Pending restore disappeared before authoritative reread");
-        const candidateId = operationIdOf(candidate);
-        const currentId = operationIdOf(current);
-        if (candidateId !== currentId) throw new Error("Pending restore operation changed before authoritative reread");
-        if (expectedOperationId) this.assertOperation(currentId, expectedOperationId);
-    }
-
-    assertOperation(actual: string, expected: string): void {
-        if (actual !== expected) throw new Error("Pending restore belongs to another operation");
+        return this.store.withWorkspaceLock ? this.store.withWorkspaceLock(operation) : operation();
     }
 }
 
 export function classifyWorkspaceRecoveryPath(
     live: CapturedPathStateV1 | "unknown",
-    before: CapturedPathStateV1,
-    target: CapturedPathStateV1
+    source: CapturedPathStateV1,
+    planned: CapturedPathStateV1
 ): "before" | "target" | "unknown" {
-    if (live === "unknown" || live.state === "excluded" || before.state === "excluded" || target.state === "excluded") {
+    if (
+        live === "unknown" ||
+        live.state === "excluded" ||
+        source.state === "excluded" ||
+        planned.state === "excluded"
+    ) {
         return "unknown";
     }
-    if (sameCapturedState(live, before)) return "before";
-    if (sameCapturedState(live, target)) return "target";
+    if (sameCapturedState(live, source)) return "before";
+    if (sameCapturedState(live, planned)) return "target";
     return "unknown";
+}
+
+function makeMarkerEntry(facts: RecoveryFacts): SessionTreeEntry {
+    return {
+        type: "custom",
+        id: facts.record.workspaceStateEntryId,
+        parentId: facts.record.commitParentId,
+        timestamp: facts.record.workspaceStateTimestamp,
+        customType: WorkspaceControlCustomTypes.state,
+        data: facts.derived.markerState,
+    };
 }
 
 function capturedFromLive(live: LiveCapturedPathState): CapturedPathStateV1 | "unknown" {
@@ -470,10 +422,6 @@ function sameCapturedState(left: CapturedPathStateV1, right: CapturedPathStateV1
     if (left.state === "symlink" && right.state === "symlink") return left.oid === right.oid;
     if (left.state === "excluded" && right.state === "excluded") return left.reason === right.reason;
     return true;
-}
-
-function sameDurableValue(left: unknown, right: unknown): boolean {
-    return encodeDurableJson(left).equals(encodeDurableJson(right));
 }
 
 function operationIdOf(candidate: Exclude<ScannedPendingWorkspaceRestore, { kind: "none" }>): string {

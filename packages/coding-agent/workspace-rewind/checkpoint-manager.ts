@@ -23,11 +23,9 @@ import {
     type WorkspaceCheckpointV1,
     type WorkspaceSnapshotCoverage,
 } from "./types";
-import { WorkspaceWriterLeaseRegistry, type WorkspaceWriterLease } from "./workspace-writer-lease";
+import { ProcessWorkspaceWriterLeases, type WorkspaceWriterLease } from "./workspace-writer-lease";
 
 const ReadOnlyWorkspaceTools = new Set(["read", "grep", "find", "ls", "web_fetch"]);
-const ProcessWorkspaceWriterLeases = new WorkspaceWriterLeaseRegistry();
-
 interface ActiveBoundary {
     token: string;
     userEntryId?: string;

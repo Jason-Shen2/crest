@@ -153,7 +153,8 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
             activeRestore.record.workspaceIncarnation,
             input.store
         );
-        addOwned(activeRestore.record.safetySnapshot, input.store, snapshots);
+        addOwned(await input.store.readCommitSnapshot(activeRestore.record.sourceCommit), input.store, snapshots);
+        addOwned(await input.store.readCommitSnapshot(activeRestore.record.plannedCommit), input.store, snapshots);
     }
     const workspaceHead = await input.store.mutationLog.readHead();
     if (workspaceHead) {

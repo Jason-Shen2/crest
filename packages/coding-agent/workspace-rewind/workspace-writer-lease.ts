@@ -147,6 +147,8 @@ export class WorkspaceWriterLeaseRegistry {
     }
 }
 
+export const ProcessWorkspaceWriterLeases = new WorkspaceWriterLeaseRegistry();
+
 function assertValidInput(input: WorkspaceWriterLeaseInput): void {
     assertNonEmptyString("workspaceKey", input?.workspaceKey);
     assertNonEmptyString("sessionId", input?.sessionId);

@@ -152,7 +152,7 @@ export interface AgentWorkspaceRecoveryView {
     corrupt: boolean;
     message: string;
     paths: Array<{ path: string; classification?: "before" | "target" | "unknown" }>;
-    allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
+    allowedActions: Array<"retry">;
 }
 
 export interface AgentGetWorkspaceRecoveryInput {
@@ -162,7 +162,7 @@ export interface AgentGetWorkspaceRecoveryInput {
 export interface AgentResolveWorkspaceRecoveryInput {
     sessionMetadata: JsonlSessionMetadata;
     operationId: string;
-    action: "retry" | "abandon-current" | "quarantine-corrupt";
+    action: "retry";
 }
 
 export interface AgentCheckpointQuotaView {

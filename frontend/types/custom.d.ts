@@ -936,13 +936,13 @@ declare global {
         corrupt: boolean;
         message: string;
         paths: Array<{ path: string; classification?: "before" | "target" | "unknown" }>;
-        allowedActions: Array<"retry" | "abandon-current" | "quarantine-corrupt">;
+        allowedActions: Array<"retry">;
     };
     type AgentGetWorkspaceRecoveryInput = { sessionMetadata: AgentSessionMeta };
     type AgentResolveWorkspaceRecoveryInput = {
         sessionMetadata: AgentSessionMeta;
         operationId: string;
-        action: "retry" | "abandon-current" | "quarantine-corrupt";
+        action: "retry";
     };
     type AgentCheckpointQuotaView = {
         status: "ok" | "soft-quota-exceeded" | "referenced-over-quota";

@@ -2,112 +2,268 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
-import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+import { afterEach, expect, test, vi } from "vitest";
 
 import { RewindConfirmationRegistry } from "./confirmation-token";
-import type { PendingWorkspaceRestoreV1 } from "./pending-restore-store";
+import { WorkspaceGitRunner } from "./git-runner";
+import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
 import type { RestorePlanV1, RestoreTargetV1 } from "./restore-plan";
-import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
-import { WorkspaceFrozenError } from "./workspace-recovery";
-import {
-    WorkspaceRestoreExecutor,
-    workspaceStateFromPending,
-    type WorkspaceRestoreCommitStrategy,
-} from "./workspace-restore-executor";
+import { WorkspaceSnapshotStore } from "./snapshot-store";
+import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "./types";
+import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { WorkspaceRecovery } from "./workspace-recovery";
+import { WorkspaceRestoreExecutor, type WorkspaceRestoreCommitStrategy } from "./workspace-restore-executor";
 
-const Identity = "1".repeat(64);
-const Incarnation = "2".repeat(64);
-const Before = { state: "file", oid: "a".repeat(40), executable: false } as const;
-const Target = { state: "file", oid: "b".repeat(40), executable: false } as const;
+const CleanupRoots: string[] = [];
 
-function snapshot(id: string): WorkspaceSnapshotRefV1 {
-    return {
-        id,
-        tree: "3".repeat(40),
-        scopeManifest: "4".repeat(40),
-        workspaceIdentity: Identity,
-        workspaceIncarnation: Incarnation,
-    };
+afterEach(async () => {
+    vi.restoreAllMocks();
+    await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+test("executes a result-commit restore without any restore-time workspace capture", async () => {
+    const fixture = await makeFixture();
+    const capture = vi.spyOn(fixture.store, "capture");
+    const onCommitted = vi.fn(async () => {});
+    const executor = makeExecutor(fixture, { onCommitted });
+
+    const result = await execute(executor, fixture, fixture.plan);
+
+    expect(capture).not.toHaveBeenCalled();
+    expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("planned\n");
+    const head = await fixture.store.mutationLog.readHead();
+    expect(head).toBeDefined();
+    const mutation = await fixture.store.mutationLog.read(head!);
+    expect(mutation).toMatchObject({
+        parent: fixture.source.id,
+        metadata: {
+            kind: "turn-undo",
+            sessionid: "session-1",
+            operationid: "operation-1",
+            turnid: "turn-1",
+        },
+    });
+    await expect(fixture.store.mutationLog.changedPaths(head!)).resolves.toEqual(["file.txt"]);
+    await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
+    const marker = fixture.entries.at(-1) as Extract<SessionTreeEntry, { type: "custom" }>;
+    expect(marker).toMatchObject({
+        customType: WorkspaceControlCustomTypes.state,
+        data: { kind: "turn-undo", currentSnapshot: { id: head }, sourceTurnId: "turn-1" },
+    });
+    expect(result).toMatchObject({ semanticLeafId: marker.id, displayLeafId: "current-leaf" });
+    expect(onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
+});
+
+test.each([
+    { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
+    { target: { kind: "redo" }, expectedTurn: undefined },
+    { target: { kind: "turn-undo", sourceTurnId: "turn-1" }, expectedTurn: "turn-1" },
+    {
+        target: { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+        expectedTurn: "turn-1",
+    },
+] satisfies Array<{ target: RestoreTargetV1; expectedTurn: string | undefined }>)(
+    "prepares authoritative $target.kind result metadata",
+    async ({ target, expectedTurn }) => {
+        const fixture = await makeFixture();
+        const executor = makeExecutor(fixture);
+        const operationId = `operation-${target.kind}`;
+
+        const result = await executor.prepareResultCommit(
+            { ...executionInput(fixture, { ...fixture.plan, target }), plan: { ...fixture.plan, target } },
+            operationId,
+            fixture.plan.paths
+        );
+
+        const mutation = await fixture.store.mutationLog.read(result.prepared.commit);
+        expect(mutation.parent).toBe(fixture.source.id);
+        expect(mutation.metadata).toMatchObject({
+            kind: target.kind,
+            sessionid: "session-1",
+            operationid: operationId,
+            ...(expectedTurn ? { turnid: expectedTurn } : {}),
+        });
+        expect(mutation.metadata.turnid).toBe(expectedTurn);
+        await expect(fixture.store.mutationLog.changedPaths(result.prepared.commit)).resolves.toEqual(["file.txt"]);
+    }
+);
+
+test("rolls a partially applied file back when verification fails before head publication", async () => {
+    const fixture = await makeFixture();
+    const executor = makeExecutor(fixture, {
+        verifyPath: vi.fn(async () => {
+            throw new Error("verification failed");
+        }) as never,
+    });
+
+    await expect(execute(executor, fixture, fixture.plan)).rejects.toThrow("verification failed");
+
+    expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("source\n");
+    expect(await fixture.store.mutationLog.readHead()).toBe(fixture.source.id);
+    await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
+});
+
+test("completes the exact leaf marker after result head publication if the first leaf CAS throws", async () => {
+    const fixture = await makeFixture({ failFirstAppend: true });
+    const executor = makeExecutor(fixture);
+
+    await expect(execute(executor, fixture, fixture.plan)).resolves.toMatchObject({
+        semanticLeafId: "workspace-state-1",
+    });
+
+    expect(fixture.appendEntries).toHaveBeenCalledTimes(2);
+    expect(await fixture.store.mutationLog.readHead()).not.toBe(fixture.source.id);
+    await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
+});
+
+interface Fixture {
+    workspace: CanonicalWorkspaceIdentity;
+    store: WorkspaceSnapshotStore;
+    source: WorkspaceSnapshotRefV1;
+    target: CapturedPathStateV1;
+    plan: RestorePlanV1;
+    session: never;
+    entries: SessionTreeEntry[];
+    appendEntries: ReturnType<typeof vi.fn>;
 }
 
-const Safety = snapshot("5".repeat(40));
-const Result = snapshot("6".repeat(40));
-const Workspace = {
-    canonicalRoot: "/workspace",
-    workspaceIdentity: Identity,
-    workspaceIncarnation: Incarnation,
-    storeKey: "workspace",
-    ancestorIdentityChain: [],
-};
-
-function plan(target: RestoreTargetV1, withPath = false): RestorePlanV1 {
-    return {
-        target,
+async function makeFixture(options: { failFirstAppend?: boolean } = {}): Promise<Fixture> {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "crest-restore-executor-v2-")));
+    CleanupRoots.push(root);
+    const workspaceRoot = join(root, "workspace");
+    const sessionsRoot = join(root, "sessions");
+    await mkdir(workspaceRoot);
+    await mkdir(sessionsRoot);
+    await writeFile(join(workspaceRoot, "file.txt"), "source\n");
+    const workspace: CanonicalWorkspaceIdentity = {
+        canonicalRoot: workspaceRoot,
+        workspaceIdentity: "1".repeat(64),
+        workspaceIncarnation: "2".repeat(64),
+        storeKey: "workspace",
+        ancestorIdentityChain: await ancestorIdentityChain(workspaceRoot),
+    };
+    const store = await WorkspaceSnapshotStore.open({
+        dataRoot: join(root, "data"),
+        identity: workspace,
+        git: new WorkspaceGitRunner(),
+        processOwner: { pid: process.pid, processStartToken: "test-start", nonce: "a".repeat(64) },
+    });
+    const sourceCaptured = await store.capture({ profile: "terminal" });
+    const source = await appendExternal(store, sourceCaptured.ref);
+    await writeFile(join(workspaceRoot, "file.txt"), "planned\n");
+    const plannedCaptured = await store.capture({ profile: "terminal" });
+    const target = await store.readPathState(plannedCaptured.ref, "file.txt");
+    if (target.state === "excluded") throw new Error("test path unexpectedly excluded");
+    await writeFile(join(workspaceRoot, "file.txt"), "source\n");
+    const expectedCurrent = await store.readPathState(source, "file.txt");
+    if (expectedCurrent.state === "excluded") throw new Error("test path unexpectedly excluded");
+    const plan: RestorePlanV1 = {
+        target: { kind: "turn-undo", sourceTurnId: "turn-1" },
         sessionId: "session-1",
-        workspaceIdentity: Identity,
-        workspaceIncarnation: Incarnation,
+        workspaceIdentity: workspace.workspaceIdentity,
+        workspaceIncarnation: workspace.workspaceIncarnation,
         semanticLeafId: "current-leaf",
         commitParentId: "current-leaf",
-        paths: withPath
-            ? [
-                  {
-                      path: "file.txt",
-                      operation: "write",
-                      target: Target,
-                      expectedCurrent: Before,
-                      liveFingerprint: "7".repeat(64),
-                      conflict: "none",
-                  },
-              ]
-            : [],
+        paths: [
+            {
+                path: "file.txt",
+                operation: "write",
+                target,
+                expectedCurrent,
+                liveFingerprint: fingerprint(expectedCurrent),
+                conflict: "none",
+            },
+        ],
         coverageWarnings: [],
         forceRequired: false,
         hardBlocked: false,
     };
-}
-
-function sessionFixture(appendError?: Error, appendAfterCommit = false, getEntriesError?: Error) {
     const metadata: JsonlSessionMetadata = {
         id: "session-1",
-        cwd: "/workspace",
-        path: "/sessions/session-1.db",
-        createdAt: new Date(0).toISOString(),
+        cwd: workspaceRoot,
+        path: join(sessionsRoot, "session-1.db"),
+        createdAt: "2026-08-08T00:00:00.000Z",
     };
     const entries: SessionTreeEntry[] = [
         {
             type: "message",
             id: "current-leaf",
             parentId: null,
-            timestamp: new Date(0).toISOString(),
-            message: { role: "user", content: "visible", timestamp: 0 },
+            timestamp: "2026-08-08T00:00:00.000Z",
+            message: { role: "user", content: "change", timestamp: 0 },
         } as SessionTreeEntry,
     ];
-    let leafId: string | null = "current-leaf";
-    const appendEntries = vi.fn(async (next: SessionTreeEntry[]) => {
-        if (appendError && !appendAfterCommit) throw appendError;
-        entries.push(...next);
-        leafId = next.at(-1)!.id;
-        if (appendError) throw appendError;
+    let leaf: string | null = "current-leaf";
+    let failed = false;
+    const appendEntries = vi.fn(async (next: SessionTreeEntry[], input: { expectedLeafId: string | null }) => {
+        if (leaf !== input.expectedLeafId) throw new Error("leaf CAS failed");
+        if (options.failFirstAppend && !failed) {
+            failed = true;
+            throw new Error("first leaf append failed");
+        }
+        entries.push(...structuredClone(next));
+        leaf = next.at(-1)!.id;
     });
+    const session = {
+        getMetadata: vi.fn(async () => metadata),
+        getEntries: vi.fn(async () => structuredClone(entries)),
+        getLeafId: vi.fn(async () => leaf),
+        getEntry: vi.fn(async (id: string) => entries.find((entry) => entry.id === id)),
+        getStorage: vi.fn(() => ({ createEntryId: vi.fn(async () => "workspace-state-1") })),
+        appendEntries,
+    };
+    return { workspace, store, source, target, plan, session: session as never, entries, appendEntries };
+}
+
+function makeExecutor(
+    fixture: Fixture,
+    options: {
+        verifyPath?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["verifyPath"];
+        onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
+    } = {}
+): WorkspaceRestoreExecutor {
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const recovery = new WorkspaceRecovery({
+        workspace: fixture.workspace,
+        store: fixture.store,
+        pending,
+        locateSession: async () => fixture.session,
+    });
+    return new WorkspaceRestoreExecutor({
+        store: fixture.store,
+        pending,
+        recovery,
+        createOperationId: () => "operation-1",
+        now: () => new Date("2026-08-08T00:00:01.000Z"),
+        ...(options.verifyPath ? { verifyPath: options.verifyPath } : {}),
+        ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+    });
+}
+
+async function execute(executor: WorkspaceRestoreExecutor, fixture: Fixture, plan: RestorePlanV1) {
+    return executor.execute(executionInput(fixture, plan));
+}
+
+function executionInput(fixture: Fixture, plan: RestorePlanV1) {
+    const confirmations = new RewindConfirmationRegistry();
     return {
-        session: {
-            getMetadata: vi.fn(async () => metadata),
-            getEntries: vi.fn(async () => {
-                if (getEntriesError) throw getEntriesError;
-                return [...entries];
-            }),
-            getLeafId: vi.fn(async () => leafId),
-            getEntry: vi.fn(async (id: string) => entries.find((entry) => entry.id === id)),
-            getStorage: vi.fn(() => ({ createEntryId: vi.fn(async () => "operation-leaf") })),
-            appendEntries,
-        } as never,
-        entries,
+        session: fixture.session,
+        workspace: fixture.workspace,
+        source: fixture.source,
+        plan,
+        confirmation: confirmations.take(confirmations.issue(plan)),
+        mode: "normal" as const,
+        commit: strategy(),
     };
 }
 
 function strategy(): WorkspaceRestoreCommitStrategy {
     return {
-        makeWorkspaceState: workspaceStateFromPending,
         makeResult: ({ folded, sessionMetadata }) => ({
             sessionMetadata,
             semanticLeafId: folded.semanticLeafId,
@@ -116,287 +272,57 @@ function strategy(): WorkspaceRestoreCommitStrategy {
     };
 }
 
-function harness(
-    input: {
-        decision?: "committed" | "not-committed" | "needs-user";
-        fail?: "safety" | "apply" | "result";
-        appendError?: Error;
-        appendAfterCommit?: boolean;
-        onCommittedError?: Error;
-        publishError?: Error;
-        publishVisibleOnError?: "matching" | "corrupt" | "different-operation";
-        getEntriesError?: Error;
-        withPath?: boolean;
-    } = {}
-) {
-    const order: string[] = [];
-    let captures = 0;
-    let record: PendingWorkspaceRestoreV1;
-    const store = {
-        identity: Workspace,
-        withWorkspaceLock: vi.fn(async (operation: () => Promise<unknown>) => {
-            order.push("lock");
-            const result = await operation();
-            order.push("unlock");
-            return result;
-        }),
-        capture: vi.fn(async () => {
-            captures++;
-            if (captures === 1) {
-                order.push("safety");
-                if (input.fail === "safety") throw new Error("safety failed");
-                return { ref: Safety, coverage: {} };
-            }
-            order.push("result");
-            if (input.fail === "result") throw new Error("result failed");
-            return { ref: Result, coverage: {} };
-        }),
-        readPathState: vi.fn(async (ref: WorkspaceSnapshotRefV1) => (ref.id === Safety.id ? Before : Target)),
-        readBlob: vi.fn(),
-        verify: vi.fn(async () => order.push("verify-result")),
-    };
-    const pending = {
-        publishLocked: vi.fn(async (next: PendingWorkspaceRestoreV1) => {
-            record = structuredClone(next);
-            order.push("publish-pending");
-            if (input.publishError) throw input.publishError;
-        }),
-        updateCreatedParentDirectoriesLocked: vi.fn(async () => {
-            order.push("persist-parent-progress");
-            return structuredClone(record);
-        }),
-        removeLocked: vi.fn(async () => order.push("remove-pending")),
-        readLocked: vi.fn(async () => {
-            order.push("read-pending");
-            if (input.publishVisibleOnError === "matching") return { kind: "valid", record } as const;
-            if (input.publishVisibleOnError === "corrupt") {
-                return {
-                    kind: "corrupt",
-                    operationId: "operation-1",
-                    message: "corrupt pending",
-                    bytes: Buffer.from("{"),
-                } as const;
-            }
-            if (input.publishVisibleOnError === "different-operation") {
-                return { kind: "valid", record: { ...record, operationId: "operation-2" } } as const;
-            }
-            return { kind: "none" } as const;
-        }),
-    };
-    const recovery = {
-        resolvePendingLocked: vi.fn(async () => {
-            order.push("resolve-pending");
-            const decision = input.decision ?? "committed";
-            if (decision === "committed") {
-                order.push("verify-marker-and-live");
-                await pending.removeLocked();
-                return { state: "committed", operationId: "operation-1" } as const;
-            }
-            if (decision === "not-committed") {
-                return { state: "not-committed", operationId: "operation-1" } as const;
-            }
+async function appendExternal(
+    store: WorkspaceSnapshotStore,
+    captured: WorkspaceSnapshotRefV1
+): Promise<WorkspaceSnapshotRefV1> {
+    const prepared = await store.mutationLog.prepare({
+        tree: captured.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "external",
+        },
+    });
+    const metadata = await store.readSnapshotMetadata(captured);
+    const source = await store.publishCommitSnapshot({
+        commit: prepared.commit,
+        scope: metadata.scope,
+        coverage: metadata.coverage,
+    });
+    await store.mutationLog.publishPrepared(prepared);
+    return source;
+}
+
+function fingerprint(state: Exclude<CapturedPathStateV1, { state: "excluded" }>): string {
+    const value =
+        state.state === "absent"
+            ? ["absent"]
+            : state.state === "file"
+              ? ["file", state.oid, state.executable]
+              : ["symlink", state.oid];
+    return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceIdentity["ancestorIdentityChain"]> {
+    const paths: string[] = [];
+    let cursor = path;
+    while (true) {
+        paths.unshift(cursor);
+        const parent = dirname(cursor);
+        if (parent === cursor) break;
+        cursor = parent;
+    }
+    return Promise.all(
+        paths.map(async (absolutePath) => {
+            const stats = await lstat(absolutePath, { bigint: true });
             return {
-                state: "needs-user",
-                view: {
-                    operationId: "operation-1",
-                    corrupt: false,
-                    message: "Workspace recovery required",
-                    paths: [],
-                    allowedActions: ["retry"] as ["retry"],
-                },
-            } as const;
-        }),
-    };
-    const applyPath = vi.fn(async ({ progress }) => {
-        order.push("apply");
-        await progress.onParentDirectoryCreated?.("created");
-        if (input.fail === "apply") throw new Error("apply failed");
-        await progress.onPathReplaced?.();
-    });
-    const verifyPath = vi.fn(async () => {
-        order.push("verify-live");
-    });
-    const onCommitted = vi.fn(async () => {
-        order.push("refresh");
-        if (input.onCommittedError) throw input.onCommittedError;
-    });
-    const session = sessionFixture(input.appendError, input.appendAfterCommit, input.getEntriesError);
-    const executor = new WorkspaceRestoreExecutor({
-        store: store as never,
-        pending: pending as never,
-        recovery: recovery as never,
-        inspectLivePaths: vi.fn(
-            async (paths: readonly string[]) =>
-                new Map(paths.map((path) => [path, { ...Before, fingerprint: "7".repeat(64) } as never]))
-        ),
-        applyPath,
-        verifyPath,
-        createOperationId: () => "operation-1",
-        now: () => new Date(1),
-        onCommitted,
-    });
-    return {
-        executor,
-        store,
-        pending,
-        recovery,
-        applyPath,
-        verifyPath,
-        onCommitted,
-        session,
-        order,
-        record: () => record!,
-    };
-}
-
-async function execute(value: ReturnType<typeof harness>, target: RestoreTargetV1, withPath = false) {
-    const restorePlan = plan(target, withPath);
-    const confirmations = new RewindConfirmationRegistry();
-    return value.executor.execute({
-        session: value.session.session,
-        workspace: Workspace,
-        plan: restorePlan,
-        confirmation: confirmations.take(confirmations.issue(restorePlan)),
-        mode: "normal",
-        commit: strategy(),
-    });
-}
-
-describe("WorkspaceRestoreExecutor pending transaction", () => {
-    it.each([
-        { kind: "rewind", targetTurnId: "turn-1" },
-        { kind: "redo" },
-        { kind: "turn-undo", sourceTurnId: "turn-1" },
-        { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
-    ] satisfies RestoreTargetV1[])("executes the phase-free transaction for $kind", async (target) => {
-        const value = harness();
-        await execute(value, target);
-
-        expect(value.order).toEqual([
-            "lock",
-            "safety",
-            "publish-pending",
-            "result",
-            "verify-result",
-            "resolve-pending",
-            "verify-marker-and-live",
-            "remove-pending",
-            "unlock",
-            "refresh",
-        ]);
-        expect(value.record()).not.toHaveProperty("phase");
-        const marker = value.session.entries.at(-1) as Extract<SessionTreeEntry, { type: "custom" }>;
-        expect(marker).toMatchObject({
-            id: "operation-leaf",
-            parentId: "current-leaf",
-            customType: WorkspaceControlCustomTypes.state,
-            data: workspaceStateFromPending(value.record(), Result),
-        });
-    });
-
-    it("applies paths while durably persisting created parent progress", async () => {
-        const value = harness({ withPath: true });
-        await execute(value, { kind: "redo" }, true);
-        expect(value.order).toContain("persist-parent-progress");
-        expect(value.verifyPath).toHaveBeenCalledWith(expect.objectContaining({ path: "file.txt", expected: Target }));
-    });
-
-    it.each(["apply", "result"] as const)(
-        "uses the locked Resolver once and rethrows the original %s failure after rollback",
-        async (failure) => {
-            const value = harness({ fail: failure, decision: "not-committed", withPath: failure === "apply" });
-            await expect(execute(value, { kind: "redo" }, failure === "apply")).rejects.toThrow(`${failure} failed`);
-            expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-        }
+                absolutePath,
+                dev: stats.dev.toString(),
+                ino: stats.ino.toString(),
+                birthtimeNs: stats.birthtimeNs.toString(),
+            };
+        })
     );
-
-    it("uses the locked Resolver once and rethrows the original SQLite CAS failure", async () => {
-        const error = new Error("SQLite CAS failed");
-        const value = harness({ appendError: error, decision: "not-committed" });
-        await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
-        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-    });
-
-    it("returns success when an error occurs after SQLite committed and the Resolver says committed", async () => {
-        const value = harness({
-            appendError: new Error("wrapper failed"),
-            appendAfterCommit: true,
-            decision: "committed",
-        });
-        await expect(execute(value, { kind: "redo" })).resolves.toMatchObject({ semanticLeafId: "operation-leaf" });
-        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-    });
-
-    it("throws Recovery required when the Resolver cannot prove either terminal state", async () => {
-        const value = harness({ fail: "result", decision: "needs-user" });
-        await expect(execute(value, { kind: "redo" })).rejects.toBeInstanceOf(WorkspaceFrozenError);
-        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-    });
-
-    it("does not invoke the Resolver before pending publication", async () => {
-        const value = harness({ fail: "safety" });
-        await expect(execute(value, { kind: "redo" })).rejects.toThrow("safety failed");
-        expect(value.pending.publishLocked).not.toHaveBeenCalled();
-        expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
-    });
-
-    it("propagates a failed pending publication without invoking the Resolver", async () => {
-        const error = new Error("pending publication failed");
-        const value = harness({ publishError: error });
-
-        await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
-
-        expect(value.pending.publishLocked).toHaveBeenCalledOnce();
-        expect(value.pending.readLocked).toHaveBeenCalledOnce();
-        expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
-    });
-
-    it("resolves an ambiguous publication failure when the matching pending record is durable", async () => {
-        const value = harness({
-            publishError: new Error("publish acknowledgement failed"),
-            publishVisibleOnError: "matching",
-            decision: "committed",
-        });
-
-        await expect(execute(value, { kind: "redo" })).resolves.toMatchObject({ semanticLeafId: "current-leaf" });
-
-        expect(value.pending.readLocked).toHaveBeenCalledOnce();
-        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-    });
-
-    it.each(["corrupt", "different-operation"] as const)(
-        "requires recovery when ambiguous publication leaves %s pending state",
-        async (publishVisibleOnError) => {
-            const value = harness({
-                publishError: new Error("publish acknowledgement failed"),
-                publishVisibleOnError,
-            });
-
-            await expect(execute(value, { kind: "redo" })).rejects.toBeInstanceOf(WorkspaceFrozenError);
-
-            expect(value.pending.readLocked).toHaveBeenCalledOnce();
-            expect(value.recovery.resolvePendingLocked).not.toHaveBeenCalled();
-        }
-    );
-
-    it("reports response construction failure after publishing the committed outcome", async () => {
-        const error = new Error("session response read failed");
-        const value = harness({ getEntriesError: error });
-
-        await expect(execute(value, { kind: "redo" })).rejects.toBe(error);
-
-        expect(value.recovery.resolvePendingLocked).toHaveBeenCalledOnce();
-        expect(value.onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
-        expect(value.order).toContain("unlock");
-        expect(value.order).toContain("refresh");
-    });
-
-    it("logs renderer refresh failure after unlocking without changing the transaction result", async () => {
-        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-        const value = harness({ onCommittedError: new Error("refresh failed") });
-        await expect(execute(value, { kind: "redo" })).resolves.toMatchObject({ semanticLeafId: "operation-leaf" });
-        expect(value.order.slice(-2)).toEqual(["unlock", "refresh"]);
-        expect(warning).toHaveBeenCalled();
-        warning.mockRestore();
-    });
-});
+}

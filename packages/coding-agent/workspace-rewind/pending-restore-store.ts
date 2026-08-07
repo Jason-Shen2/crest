@@ -11,58 +11,41 @@ import {
     readAnchoredJournalPublication,
     recoverAnchoredJournalPublication,
     removeAnchoredJournalEntry,
-    renameAnchoredJournalEntry,
-    writeAnchoredJournalEntry,
     type AnchoredJournalDirectoryIdentity,
     type AnchoredJournalEntry,
 } from "./journal-directory";
 import type { RestoreTargetV1 } from "./restore-plan";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
-import type { CapturedPathStateV1, WorkspaceCoverageReason, WorkspaceSnapshotRefV1 } from "./types";
-import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 
-export interface PendingWorkspaceRestorePathV1 {
-    path: string;
-    before: CapturedPathStateV1;
-    target: CapturedPathStateV1;
-    createdParentDirectories: string[];
-}
-
-export interface PendingWorkspaceRestoreV1 {
-    schemaVersion: 1;
+export interface PendingWorkspaceRestoreV2 {
+    schemaVersion: 2;
     operationId: string;
     workspaceIdentity: string;
     workspaceIncarnation: string;
     sessionId: string;
     sessionPath: string;
     target: RestoreTargetV1;
-    commitParentId: string | null;
     applyMode: "normal" | "force-drift";
     forcedPaths: string[];
     expectedSemanticLeafId: string | null;
+    commitParentId: string | null;
     workspaceStateEntryId: string;
-    safetySnapshot: WorkspaceSnapshotRefV1;
-    paths: PendingWorkspaceRestorePathV1[];
+    workspaceStateTimestamp: string;
+    sourceCommit: string;
+    plannedCommit: string;
+    affectedPaths: string[];
 }
 
 export type ScannedPendingWorkspaceRestore =
     | { kind: "none" }
-    | { kind: "valid"; record: PendingWorkspaceRestoreV1 }
+    | { kind: "valid"; record: PendingWorkspaceRestoreV2 }
     | { kind: "corrupt"; operationId: string; message: string; bytes: Buffer };
 
 const TokenPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const IdentityPattern = /^[0-9a-f]{64}$/;
-const MaximumPendingBytes = 64 * 1024 * 1024;
+const OidPattern = /^[0-9a-f]{40}$/;
+const MaximumPendingBytes = 4 * 1024 * 1024;
 const MaximumRestorePaths = 4_096;
-const CoverageReasons = new Set<WorkspaceCoverageReason>([
-    "ignored",
-    "nested-repository",
-    "oversized-untracked",
-    "non-utf8-path",
-    "hard-linked",
-    "special-entry",
-    "capture-budget",
-]);
 
 export class PendingWorkspaceRestoreStore {
     readonly store: WorkspaceSnapshotStore;
@@ -85,14 +68,13 @@ export class PendingWorkspaceRestoreStore {
         return this.scanActive(true);
     }
 
-    async publishLocked(record: PendingWorkspaceRestoreV1): Promise<void> {
-        const decoded = decodePendingWorkspaceRestoreV1(record);
+    async publishLocked(record: PendingWorkspaceRestoreV2): Promise<void> {
+        const decoded = decodePendingWorkspaceRestoreV2(record);
         if (!decoded) {
             throw new Error("Invalid pending workspace restore");
         }
         this.assertIdentity(decoded);
-        await this.store.verify(decoded.safetySnapshot);
-        await this.store.anchorSnapshot(decoded.safetySnapshot);
+        await this.validateCommitFacts(decoded);
         await makePrivateDirectory(this.root);
         const active = await this.readActiveEntry(true);
         if (!active) {
@@ -109,82 +91,13 @@ export class PendingWorkspaceRestoreStore {
         });
     }
 
-    async updateCreatedParentDirectoriesLocked(
-        operationId: string,
-        path: string,
-        directories: readonly string[]
-    ): Promise<PendingWorkspaceRestoreV1> {
-        validateToken(operationId);
-        const { rootIdentity, source, record } = await this.requireValidActive();
-        if (record.operationId !== operationId) {
-            throw new Error("Pending restore belongs to another operation");
-        }
-        const index = record.paths.findIndex((item) => item.path === path);
-        if (index < 0) {
-            throw new Error("Pending restore path does not belong to the operation");
-        }
-        if (!isValidCreatedDirectories(directories, path)) {
-            throw new Error("Invalid pending restore created parent directories");
-        }
-        const recordedDirectories = record.paths[index]!.createdParentDirectories;
-        if (recordedDirectories.some((directory) => !directories.includes(directory))) {
-            throw new Error("Created parent directory progress is monotonic and cannot remove directories");
-        }
-        const paths = record.paths.map((item, itemIndex) =>
-            itemIndex === index ? { ...item, createdParentDirectories: [...directories] } : item
-        );
-        const next = decodePendingWorkspaceRestoreV1({ ...record, paths });
-        if (!next) {
-            throw new Error("Invalid pending restore path progress");
-        }
-        await writeAnchoredJournalEntry({
-            root: this.root,
-            rootIdentity,
-            destinationName: source.name,
-            bytes: encodeDurableJson(next),
-            expectedDestination: source,
-        });
-        return next;
-    }
-
     async removeLocked(operationId: string): Promise<void> {
         validateToken(operationId);
         const { rootIdentity, source, record } = await this.requireValidActive();
         if (record.operationId !== operationId) {
             throw new Error("Pending restore belongs to another operation");
         }
-        await removeAnchoredJournalEntry({
-            root: this.root,
-            rootIdentity,
-            source,
-        });
-    }
-
-    async resolveToAuditLocked(operationId: string, disposition: "keep-current" | "quarantine"): Promise<void> {
-        validateToken(operationId);
-        const active = await this.readActiveEntry(true);
-        if (!active?.source) {
-            throw new Error("No workspace restore is pending");
-        }
-        const source = active.source;
-        const candidate = decodeCandidate(source.bytes, this.store);
-        const candidateOperationId = candidate.kind === "valid" ? candidate.record.operationId : candidate.operationId;
-        if (candidateOperationId !== operationId) {
-            throw new Error("Pending restore belongs to another operation");
-        }
-        if (
-            (disposition === "keep-current" && candidate.kind !== "valid") ||
-            (disposition === "quarantine" && candidate.kind !== "corrupt")
-        ) {
-            throw new Error("Pending restore audit disposition does not match the active record");
-        }
-        const destinationName = `resolved-${operationId}-${Date.now()}-${disposition}.json`;
-        await renameAnchoredJournalEntry({
-            root: this.root,
-            rootIdentity: active.identity,
-            source,
-            destinationName,
-        });
+        await removeAnchoredJournalEntry({ root: this.root, rootIdentity, source });
     }
 
     async scanActive(recoverPublication: boolean): Promise<ScannedPendingWorkspaceRestore> {
@@ -198,7 +111,7 @@ export class PendingWorkspaceRestoreStore {
     async requireValidActive(): Promise<{
         rootIdentity: AnchoredJournalDirectoryIdentity;
         source: AnchoredJournalEntry;
-        record: PendingWorkspaceRestoreV1;
+        record: PendingWorkspaceRestoreV2;
     }> {
         const active = await this.readActiveEntry(true);
         if (!active?.source) {
@@ -233,7 +146,7 @@ export class PendingWorkspaceRestoreStore {
         return { identity: active.identity, ...(active.entry ? { source: active.entry } : {}) };
     }
 
-    assertIdentity(record: PendingWorkspaceRestoreV1): void {
+    assertIdentity(record: PendingWorkspaceRestoreV2): void {
         if (
             record.workspaceIdentity !== this.store.identity.workspaceIdentity ||
             record.workspaceIncarnation !== this.store.identity.workspaceIncarnation
@@ -241,9 +154,31 @@ export class PendingWorkspaceRestoreStore {
             throw new Error("Pending restore belongs to another workspace incarnation");
         }
     }
+
+    async validateCommitFacts(record: PendingWorkspaceRestoreV2): Promise<void> {
+        const [, , changedPaths] = await Promise.all([
+            this.store.readCommitSnapshot(record.sourceCommit),
+            this.store.readCommitSnapshot(record.plannedCommit),
+            this.store.mutationLog.changedPaths(record.plannedCommit),
+        ]);
+        const planned = await this.store.mutationLog.read(record.plannedCommit);
+        const expectedTurnId = turnIdFor(record.target);
+        if (
+            planned.parent !== record.sourceCommit ||
+            planned.metadata.kind !== record.target.kind ||
+            planned.metadata.sessionid !== record.sessionId ||
+            planned.metadata.operationid !== record.operationId ||
+            planned.metadata.turnid !== expectedTurnId
+        ) {
+            throw new Error("Pending restore result commit does not match its operation");
+        }
+        if (!samePaths(changedPaths, record.affectedPaths)) {
+            throw new Error("Pending restore paths do not match the result commit");
+        }
+    }
 }
 
-export function decodePendingWorkspaceRestoreV1(value: unknown): PendingWorkspaceRestoreV1 | undefined {
+export function decodePendingWorkspaceRestoreV2(value: unknown): PendingWorkspaceRestoreV2 | undefined {
     if (
         !isRecord(value) ||
         !hasExactKeys(value, [
@@ -254,27 +189,33 @@ export function decodePendingWorkspaceRestoreV1(value: unknown): PendingWorkspac
             "sessionId",
             "sessionPath",
             "target",
-            "commitParentId",
             "applyMode",
             "forcedPaths",
             "expectedSemanticLeafId",
+            "commitParentId",
             "workspaceStateEntryId",
-            "safetySnapshot",
-            "paths",
+            "workspaceStateTimestamp",
+            "sourceCommit",
+            "plannedCommit",
+            "affectedPaths",
         ]) ||
-        value.schemaVersion !== 1 ||
+        value.schemaVersion !== 2 ||
         !TokenPattern.test(String(value.operationId ?? "")) ||
         !isIdentity(value.workspaceIdentity) ||
         !isIdentity(value.workspaceIncarnation) ||
         !isSafeString(value.sessionId) ||
         !isAbsoluteSafePath(value.sessionPath) ||
+        (value.expectedSemanticLeafId != null && !isSafeString(value.expectedSemanticLeafId)) ||
         (value.commitParentId != null && !isSafeString(value.commitParentId)) ||
+        !isSafeString(value.workspaceStateEntryId) ||
+        !isCanonicalTimestamp(value.workspaceStateTimestamp) ||
+        !isOid(value.sourceCommit) ||
+        !isOid(value.plannedCommit) ||
+        value.sourceCommit === value.plannedCommit ||
         (value.applyMode !== "normal" && value.applyMode !== "force-drift") ||
         !Array.isArray(value.forcedPaths) ||
-        (value.expectedSemanticLeafId != null && !isSafeString(value.expectedSemanticLeafId)) ||
-        !isSafeString(value.workspaceStateEntryId) ||
-        !Array.isArray(value.paths) ||
-        value.paths.length > MaximumRestorePaths
+        !Array.isArray(value.affectedPaths) ||
+        value.affectedPaths.length > MaximumRestorePaths
     ) {
         return undefined;
     }
@@ -285,102 +226,36 @@ export function decodePendingWorkspaceRestoreV1(value: unknown): PendingWorkspac
     if (value.applyMode === "force-drift" && target.kind !== "rewind" && target.kind !== "turn-undo") {
         return undefined;
     }
-    const safetySnapshot = decodeWorkspaceSnapshotRefV1(value.safetySnapshot);
-    if (
-        !safetySnapshot ||
-        safetySnapshot.workspaceIdentity !== value.workspaceIdentity ||
-        safetySnapshot.workspaceIncarnation !== value.workspaceIncarnation
-    ) {
-        return undefined;
-    }
-    const paths: PendingWorkspaceRestorePathV1[] = [];
-    for (const item of value.paths) {
-        const decoded = decodePendingPath(item);
-        if (!decoded) {
-            return undefined;
-        }
-        paths.push(decoded);
-    }
-    if (!isSortedUnique(paths.map((item) => item.path))) {
-        return undefined;
-    }
+    const affectedPaths = value.affectedPaths as unknown[];
     const forcedPaths = value.forcedPaths as unknown[];
     if (
+        !affectedPaths.every(isCanonicalRelativePath) ||
+        !isSortedUnique(affectedPaths as string[]) ||
         !forcedPaths.every(isCanonicalRelativePath) ||
         !isSortedUnique(forcedPaths as string[]) ||
-        forcedPaths.some((path) => !paths.some((item) => item.path === path)) ||
+        (forcedPaths as string[]).some((path) => !(affectedPaths as string[]).includes(path)) ||
         (value.applyMode === "normal" && forcedPaths.length > 0)
     ) {
         return undefined;
     }
     return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         operationId: value.operationId as string,
         workspaceIdentity: value.workspaceIdentity as string,
         workspaceIncarnation: value.workspaceIncarnation as string,
         sessionId: value.sessionId as string,
         sessionPath: value.sessionPath as string,
         target,
-        commitParentId: value.commitParentId as string | null,
         applyMode: value.applyMode,
-        forcedPaths: forcedPaths as string[],
+        forcedPaths: [...(value.forcedPaths as string[])],
         expectedSemanticLeafId: value.expectedSemanticLeafId as string | null,
+        commitParentId: value.commitParentId as string | null,
         workspaceStateEntryId: value.workspaceStateEntryId as string,
-        safetySnapshot,
-        paths,
+        workspaceStateTimestamp: value.workspaceStateTimestamp as string,
+        sourceCommit: value.sourceCommit as string,
+        plannedCommit: value.plannedCommit as string,
+        affectedPaths: [...(value.affectedPaths as string[])],
     };
-}
-
-function decodePendingPath(value: unknown): PendingWorkspaceRestorePathV1 | undefined {
-    if (
-        !isRecord(value) ||
-        !hasExactKeys(value, ["path", "before", "target", "createdParentDirectories"]) ||
-        !isCanonicalRelativePath(value.path) ||
-        !Array.isArray(value.createdParentDirectories)
-    ) {
-        return undefined;
-    }
-    const before = decodeCapturedState(value.before);
-    const target = decodeCapturedState(value.target);
-    if (!before || !target || before.state === "excluded" || target.state === "excluded") {
-        return undefined;
-    }
-    if (!isValidCreatedDirectories(value.createdParentDirectories, value.path)) {
-        return undefined;
-    }
-    return {
-        path: value.path,
-        before,
-        target,
-        createdParentDirectories: [...value.createdParentDirectories],
-    };
-}
-
-function decodeCapturedState(value: unknown): CapturedPathStateV1 | undefined {
-    if (!isRecord(value) || typeof value.state !== "string") {
-        return undefined;
-    }
-    if (value.state === "absent") {
-        return hasExactKeys(value, ["state"]) ? { state: "absent" } : undefined;
-    }
-    if (value.state === "file") {
-        return hasExactKeys(value, ["state", "oid", "executable"]) &&
-            isOid(value.oid) &&
-            typeof value.executable === "boolean"
-            ? { state: "file", oid: value.oid, executable: value.executable }
-            : undefined;
-    }
-    if (value.state === "symlink") {
-        return hasExactKeys(value, ["state", "oid"]) && isOid(value.oid)
-            ? { state: "symlink", oid: value.oid }
-            : undefined;
-    }
-    if (value.state === "excluded") {
-        return hasExactKeys(value, ["state", "reason"]) && CoverageReasons.has(value.reason as WorkspaceCoverageReason)
-            ? { state: "excluded", reason: value.reason as WorkspaceCoverageReason }
-            : undefined;
-    }
-    return undefined;
 }
 
 function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
@@ -406,11 +281,7 @@ function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
         isSafeString(value.sourceTurnId) &&
         isSafeString(value.undoOperationId)
     ) {
-        return {
-            kind: "turn-redo",
-            sourceTurnId: value.sourceTurnId,
-            undoOperationId: value.undoOperationId,
-        };
+        return { kind: "turn-redo", sourceTurnId: value.sourceTurnId, undoOperationId: value.undoOperationId };
     }
     return undefined;
 }
@@ -425,9 +296,9 @@ function decodeCandidate(
     } catch {
         return corruptCandidate(bytes, "Pending workspace restore is not valid JSON");
     }
-    const record = decodePendingWorkspaceRestoreV1(value);
+    const record = decodePendingWorkspaceRestoreV2(value);
     if (!record || !bytes.equals(encodeDurableJson(record))) {
-        return corruptCandidate(bytes, "Pending workspace restore is not canonical or has an invalid schema");
+        return corruptCandidate(bytes, "Pending workspace restore is not canonical or has an incompatible schema");
     }
     if (
         record.workspaceIdentity !== store.identity.workspaceIdentity ||
@@ -447,19 +318,16 @@ function corruptCandidate(
     bytes: Buffer,
     message: string
 ): Extract<ScannedPendingWorkspaceRestore, { kind: "corrupt" }> {
-    const text = bytes.toString("utf8");
-    const matched = /"operationId"\s*:\s*"([^"\\]*)"/.exec(text)?.[1];
+    const matched = /"operationId"\s*:\s*"([^"\\]*)"/.exec(bytes.toString("utf8"))?.[1];
     const operationId =
         matched && TokenPattern.test(matched) ? matched : `corrupt-${createHash("sha1").update(bytes).digest("hex")}`;
     return { kind: "corrupt", operationId, message, bytes };
 }
 
-function isValidCreatedDirectories(value: readonly unknown[], path: string): value is readonly string[] {
-    return (
-        value.every(isCanonicalRelativePath) &&
-        isSortedUnique(value as string[]) &&
-        value.every((directory) => path.startsWith(`${directory}/`))
-    );
+function turnIdFor(target: RestoreTargetV1): string | undefined {
+    if (target.kind === "rewind") return target.targetTurnId;
+    if (target.kind === "turn-undo" || target.kind === "turn-redo") return target.sourceTurnId;
+    return undefined;
 }
 
 function isCanonicalRelativePath(path: unknown): path is string {
@@ -497,20 +365,25 @@ function isSafeString(value: unknown): value is string {
     );
 }
 
+function isCanonicalTimestamp(value: unknown): value is string {
+    if (typeof value !== "string") return false;
+    try {
+        return new Date(value).toISOString() === value;
+    } catch {
+        return false;
+    }
+}
+
 function hasWellFormedUtf16(value: string): boolean {
     for (let index = 0; index < value.length; index++) {
         const code = value.charCodeAt(index);
         if (code >= 0xd800 && code <= 0xdbff) {
             const next = value.charCodeAt(index + 1);
-            if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
-                return false;
-            }
+            if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) return false;
             index++;
             continue;
         }
-        if (code >= 0xdc00 && code <= 0xdfff) {
-            return false;
-        }
+        if (code >= 0xdc00 && code <= 0xdfff) return false;
     }
     return true;
 }
@@ -520,7 +393,7 @@ function isIdentity(value: unknown): value is string {
 }
 
 function isOid(value: unknown): value is string {
-    return typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
+    return typeof value === "string" && OidPattern.test(value);
 }
 
 function validateToken(value: string): void {
@@ -534,11 +407,11 @@ function hasExactKeys(value: Record<string, unknown>, required: readonly string[
 }
 
 function isSortedUnique(paths: readonly string[]): boolean {
-    return paths.every((path, index) => index === 0 || comparePathBytes(paths[index - 1]!, path) < 0);
+    return paths.every((path, index) => index === 0 || Buffer.from(paths[index - 1]!).compare(Buffer.from(path)) < 0);
 }
 
-function comparePathBytes(left: string, right: string): number {
-    return Buffer.from(left).compare(Buffer.from(right));
+function samePaths(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
 async function makePrivateDirectory(path: string): Promise<void> {

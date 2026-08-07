@@ -5,11 +5,11 @@ import type { AgentWorkspaceRecoveryView } from "@crest/coding-agent/workspace-r
 import type { CanonicalWorkspaceIdentity } from "@crest/coding-agent/workspace-rewind/workspace-identity";
 import type { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 
-export type AgentWorkspaceRecoveryAction = "retry" | "abandon-current" | "quarantine-corrupt";
+export type AgentWorkspaceRecoveryAction = "retry";
 
 type AgentWorkspaceRecoveryResolver = Pick<
     WorkspaceRecovery,
-    "resolvePending" | "assertWorkspaceWritable" | "keepCurrent" | "quarantine"
+    "resolvePending" | "assertWorkspaceWritable"
 >;
 
 export interface AgentWorkspaceRecoveryGate {
@@ -59,15 +59,8 @@ export function makeAgentWorkspaceRecoveryGate(
         getRecovery,
         async resolveRecovery(workspace, operationId, action, assertCurrent) {
             const recovery = await dependencies.recoveryFor(workspace, assertCurrent);
-            if (action === "retry") {
-                await recovery.resolvePending(operationId);
-                return;
-            }
-            if (action === "abandon-current") {
-                await recovery.keepCurrent(operationId, assertCurrent);
-                return;
-            }
-            await recovery.quarantine(operationId, assertCurrent);
+            if (action !== "retry") throw new Error("Unsupported workspace recovery action");
+            await recovery.resolvePending(operationId);
         },
     };
 }

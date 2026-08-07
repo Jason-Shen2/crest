@@ -165,7 +165,10 @@ import {
     collectSessionSnapshotOwners,
     reconcileSnapshotRefsLocked,
 } from "@crest/coding-agent/workspace-rewind/snapshot-retention";
-import { initializeWorkspaceCheckpointSnapshotSource } from "@crest/coding-agent/workspace-rewind/snapshot-source";
+import {
+    initializeWorkspaceCheckpointSnapshotSource,
+    type WorkspaceCheckpointSnapshotSource,
+} from "@crest/coding-agent/workspace-rewind/snapshot-source";
 import {
     resolveCanonicalWorkspaceIdentity,
     type CanonicalWorkspaceIdentity,
@@ -194,12 +197,8 @@ const runtimeRegistry = new AgentRuntimeRegistry<AgentSessionRuntime>({
     idleTtlMs: AgentRuntimeIdleTtlMs,
 });
 
-function withRecoverySessionMutation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-    return withSessionIdMutationFence(sessionId, async () => {
-        const metadata = await getSessionsRepo().findById(sessionId);
-        const mutationKey = metadata?.path ?? `agent-session-id:${sessionId}`;
-        return runtimeRegistry.withRetainedSessionMutation(mutationKey, { rejectIfRunning: false }, operation);
-    });
+function withRecoverySessionMutation<T>(sessionPath: string, operation: () => Promise<T>): Promise<T> {
+    return runtimeRegistry.withRetainedSessionMutation(sessionPath, { rejectIfRunning: false }, operation);
 }
 
 export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): AgentWorkspaceRecoveryGate {
@@ -255,9 +254,17 @@ export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): Agen
                             session.close();
                         }
                     },
+                    async appendEntries(entries, options) {
+                        const session = await openPaneSessionByPath(metadata.path);
+                        try {
+                            await session.appendEntries(entries, options);
+                        } finally {
+                            session.close();
+                        }
+                    },
                 };
             },
-            withSessionLease: withRecoverySessionMutation,
+            withSessionMutation: withRecoverySessionMutation,
             assertCurrent,
         });
     };
@@ -3345,15 +3352,36 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         resolveWorkspace: async (input) => {
             const { sessionMetadata } = input;
             const { getWaveDataDir } = await import("./emain-platform");
-            const feature = await openAgentRewindFeature({
-                workspaceRoot: sessionMetadata.cwd,
-                dataRoot: getWaveDataDir(),
-            });
-            if (feature.state !== "enabled") {
-                throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
+            let feature: Extract<AgentRewindFeature, { state: "enabled" }>;
+            let snapshotSource: WorkspaceCheckpointSnapshotSource | undefined;
+            let release: (() => Promise<void>) | undefined;
+            if (input.mode === "mutation") {
+                const liveFeature = await acquireAgentRewindFeature({
+                    workspaceRoot: sessionMetadata.cwd,
+                    dataRoot: getWaveDataDir(),
+                });
+                if (liveFeature.state !== "enabled") {
+                    throw new Error(liveFeature.message);
+                }
+                feature = liveFeature;
+                snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+                    store: liveFeature.store,
+                    legacyCapture: liveFeature.tracker,
+                });
+                release = liveFeature.release;
+            } else {
+                const readFeature = await openAgentRewindFeature({
+                    workspaceRoot: sessionMetadata.cwd,
+                    dataRoot: getWaveDataDir(),
+                });
+                if (readFeature.state !== "enabled") {
+                    throw new Error(readFeature.message);
+                }
+                feature = readFeature;
             }
             const engine = new WorkspaceRewindEngine({
                 store: feature.store,
+                ...(snapshotSource ? { snapshotSource } : {}),
                 locateSession: async (sessionId, sessionPath) => {
                     if (sessionId !== sessionMetadata.id || sessionPath !== sessionMetadata.path) return undefined;
                     return {
@@ -3373,9 +3401,16 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                                 session.close();
                             }
                         },
+                        async appendEntries(entries, options) {
+                            const session = await openPaneSessionByPath(sessionMetadata.path);
+                            try {
+                                await session.appendEntries(entries, options);
+                            } finally {
+                                session.close();
+                            }
+                        },
                     };
                 },
-                withSessionLease: withRecoverySessionMutation,
                 confirmations,
                 ...(input.mode === "mutation"
                     ? {
@@ -3383,7 +3418,12 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                       }
                     : {}),
             });
-            return { workspace: feature.store.identity, store: feature.store, engine };
+            return {
+                workspace: feature.store.identity,
+                store: feature.store,
+                engine,
+                ...(release ? { release } : {}),
+            };
         },
         broadcaster: sessionStateBroadcaster,
     });
@@ -3929,7 +3969,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         const authorized = await authenticateRecoveryInput(event, requestContext, input, "resolve-recovery");
         const operationId = requireNonEmptyString(authorized.input.operationId, "operationId");
         const action = authorized.input.action;
-        if (action !== "retry" && action !== "abandon-current" && action !== "quarantine-corrupt") {
+        if (action !== "retry") {
             throw new Error("agent IPC: invalid recovery action");
         }
         const workspace = await (options.resolveWorkspaceIdentity ?? resolveCanonicalWorkspaceIdentity)(

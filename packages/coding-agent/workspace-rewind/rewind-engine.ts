@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/agent/harness/types";
+import { randomUUID } from "node:crypto";
 
 import { textFromContent } from "../commands/session-views";
 import type {
@@ -30,11 +31,16 @@ import {
 } from "./restore-plan";
 import { countRevertedMessages, foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
+import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
-import type { WorkspaceCheckpointV1, WorkspaceStateV1 } from "./types";
+import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
-import { WorkspaceRestoreExecutor, workspaceStateFromPending } from "./workspace-restore-executor";
+import { WorkspaceRestoreExecutor } from "./workspace-restore-executor";
+import {
+    ProcessWorkspaceWriterLeases,
+    type WorkspaceWriterLeaseRegistry,
+} from "./workspace-writer-lease";
 
 type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
 
@@ -108,7 +114,8 @@ export interface WorkspaceRewindEngineOptions {
     pending?: PendingWorkspaceRestoreStore;
     recovery?: WorkspaceRecovery;
     locateSession?: WorkspaceRecoveryOptions["locateSession"];
-    withSessionLease?: WorkspaceRecoveryOptions["withSessionLease"];
+    snapshotSource?: WorkspaceCheckpointSnapshotSource;
+    writerLeases?: Pick<WorkspaceWriterLeaseRegistry, "acquire">;
     confirmations: RewindConfirmationRegistry;
     planRewind?: (input: PlanRewindInput) => Promise<RestorePlanV1>;
     planRedo?: (input: PlanRedoInput) => Promise<RestorePlanV1>;
@@ -230,6 +237,8 @@ export class WorkspaceRewindEngine {
     private readonly planTurnRedoImpl: NonNullable<WorkspaceRewindEngineOptions["planTurnRedo"]>;
     private readonly inspectPath: NonNullable<WorkspaceRewindEngineOptions["inspectLivePath"]>;
     private readonly inspectPaths: NonNullable<WorkspaceRewindEngineOptions["inspectLivePaths"]>;
+    private readonly snapshotSource?: WorkspaceCheckpointSnapshotSource;
+    private readonly writerLeases: Pick<WorkspaceWriterLeaseRegistry, "acquire">;
     readonly executor: WorkspaceRestoreExecutor;
 
     constructor(options: WorkspaceRewindEngineOptions) {
@@ -248,7 +257,7 @@ export class WorkspaceRewindEngine {
                 store: options.store,
                 pending: this.pending,
                 locateSession: options.locateSession!,
-                withSessionLease: options.withSessionLease,
+                writerLeases: options.writerLeases,
             });
         this.confirmations = options.confirmations;
         this.planRewindImpl = options.planRewind ?? planRewind;
@@ -259,6 +268,8 @@ export class WorkspaceRewindEngine {
             options.inspectLivePath ?? ((path) => inspectLivePath(this.store.identity.canonicalRoot, path));
         this.inspectPaths =
             options.inspectLivePaths ?? ((paths) => inspectLivePaths(this.store.identity.canonicalRoot, paths));
+        this.snapshotSource = options.snapshotSource;
+        this.writerLeases = options.writerLeases ?? ProcessWorkspaceWriterLeases;
         this.executor = new WorkspaceRestoreExecutor({
             store: options.store,
             pending: this.pending,
@@ -557,7 +568,7 @@ export class WorkspaceRewindEngine {
         compute: () => Promise<PlannedRestore>
     ): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        const operation = async () => {
+        return this.withRestoreLease(input.sessionId, async (source) => {
             const planned = await compute();
             assertRestorePlanMatchesConfirmation({
                 confirmation: input.confirmation,
@@ -567,12 +578,12 @@ export class WorkspaceRewindEngine {
             return this.executor.execute({
                 session: input.session,
                 workspace: input.workspace,
+                source,
                 plan: planned.plan,
                 confirmation: input.confirmation,
                 mode: input.mode,
                 assertCurrent: input.assertCurrent,
                 commit: {
-                    makeWorkspaceState: workspaceStateFromPending,
                     makeResult: ({ folded, sessionMetadata }) => ({
                         sessionMetadata,
                         semanticLeafId: folded.semanticLeafId,
@@ -580,13 +591,12 @@ export class WorkspaceRewindEngine {
                     }),
                 },
             });
-        };
-        return operation();
+        });
     }
 
     private async apply(input: ApplyRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        const operation = async () => {
+        return this.withRestoreLease(input.sessionId, async (source) => {
             const planned =
                 input.kind === "rewind"
                     ? await this.computeRewind({
@@ -607,24 +617,24 @@ export class WorkspaceRewindEngine {
                 plan: planned.plan,
                 mode: input.mode,
             });
-            return this.applyPlanned(input, planned);
-        };
-        return operation();
+            return this.applyPlanned(input, planned, source);
+        });
     }
 
     private async applyPlanned(
         input: ApplyRestoreInput,
-        planned: PlannedRestore
+        planned: PlannedRestore,
+        source: WorkspaceSnapshotRefV1
     ): Promise<WorkspaceRewindCommitResult> {
         return this.executor.execute({
             session: input.session,
             workspace: input.workspace,
+            source,
             plan: planned.plan,
             confirmation: input.confirmation,
             mode: input.mode,
             assertCurrent: input.assertCurrent,
             commit: {
-                makeWorkspaceState: workspaceStateFromPending,
                 makeResult: ({ entries, folded, sessionMetadata }) => {
                     const targetEntry =
                         input.kind === "rewind"
@@ -643,6 +653,25 @@ export class WorkspaceRewindEngine {
                 },
             },
         });
+    }
+
+    private async withRestoreLease<T>(
+        sessionId: string,
+        operation: (source: WorkspaceSnapshotRefV1) => Promise<T>
+    ): Promise<T> {
+        if (!this.snapshotSource) {
+            throw new Error("Workspace rewind mutation requires the shared checkpoint snapshot source");
+        }
+        const lease = await this.writerLeases.acquire({
+            workspaceKey: `${this.store.identity.workspaceIdentity}:${this.store.identity.workspaceIncarnation}`,
+            sessionId,
+            boundaryToken: `restore-${randomUUID()}`,
+        });
+        try {
+            return await operation((await this.snapshotSource.synchronizeExternal()).ref);
+        } finally {
+            lease.release();
+        }
     }
 
     private assertWorkspace(workspace: CanonicalWorkspaceIdentity): void {

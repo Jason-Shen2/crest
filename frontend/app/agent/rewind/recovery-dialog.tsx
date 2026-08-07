@@ -17,13 +17,10 @@ export interface RecoveryDialogProps {
 
 const RecoveryActionLabels: Record<AgentResolveWorkspaceRecoveryInput["action"], string> = {
     retry: "Retry",
-    "abandon-current": "Keep current and abandon operation",
-    "quarantine-corrupt": "Quarantine corrupt record and keep current",
 };
 
 export function RecoveryDialog({ open, recovery, busy, errorMessage, onAction, onClose }: RecoveryDialogProps) {
-    const allowedActions =
-        recovery?.allowedActions.filter((action) => action !== "quarantine-corrupt" || recovery.corrupt) ?? [];
+    const allowedActions = recovery?.allowedActions ?? [];
 
     return (
         <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && !busy && onClose()}>

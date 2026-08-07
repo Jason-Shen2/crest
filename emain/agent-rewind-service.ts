@@ -37,6 +37,7 @@ export interface AgentRewindResolvedWorkspace {
     workspace: CanonicalWorkspaceIdentity;
     store: Pick<WorkspaceSnapshotStore, "withWorkspaceLock">;
     engine: WorkspaceRewindEngine;
+    release?: () => Promise<void>;
 }
 
 export type ResolveAgentRewindWorkspaceInput =
@@ -341,16 +342,15 @@ export class AgentRewindService {
                 });
                 const session = await this.openSession(sessionMetadata);
                 try {
-                    return await resolved.store.withWorkspaceLock(async () => {
-                        await assertCurrent();
-                        return await operation({
-                            session,
-                            workspace: resolved.workspace,
-                            engine: resolved.engine,
-                        });
+                    await assertCurrent();
+                    return await operation({
+                        session,
+                        workspace: resolved.workspace,
+                        engine: resolved.engine,
                     });
                 } finally {
                     session.close();
+                    await resolved.release?.();
                 }
             }
         );

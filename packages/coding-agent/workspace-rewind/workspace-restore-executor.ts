@@ -3,34 +3,30 @@
 
 import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/agent/harness/types";
 import { createHash, randomUUID } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import { assertRestorePlanMatchesConfirmation, type ConfirmedRestorePlanV1 } from "./confirmation-token";
-import { applyCapturedPath, verifyCapturedPath, type WorkspacePathApplyProgress } from "./filesystem-apply";
+import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
 import { inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
-import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV1 } from "./pending-restore-store";
+import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV2 } from "./pending-restore-store";
 import type { RestorePlanV1 } from "./restore-plan";
 import type { WorkspaceRewindCommitResult } from "./rewind-engine";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
-import {
-    WorkspaceControlCustomTypes,
-    type CapturedPathStateV1,
-    type FoldedWorkspaceSessionState,
-    type WorkspaceSnapshotRefV1,
-    type WorkspaceStateBaseV1,
-    type WorkspaceStateV1,
-} from "./types";
+import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, type WorkspaceRecovery } from "./workspace-recovery";
+import { deriveWorkspaceRestoreState } from "./workspace-restore-state";
 
 type ApplyPath = typeof applyCapturedPath;
 type VerifyPath = typeof verifyCapturedPath;
 
 export interface WorkspaceRestoreCommitStrategy {
-    makeWorkspaceState(pending: PendingWorkspaceRestoreV1, resultSnapshot: WorkspaceSnapshotRefV1): WorkspaceStateV1;
     makeResult(input: {
         entries: SessionTreeEntry[];
-        folded: FoldedWorkspaceSessionState;
+        folded: ReturnType<typeof foldWorkspaceSessionState>;
         sessionMetadata: JsonlSessionMetadata;
     }): WorkspaceRewindCommitResult;
 }
@@ -38,7 +34,7 @@ export interface WorkspaceRestoreCommitStrategy {
 export interface WorkspaceRestoreExecutorOptions {
     store: WorkspaceSnapshotStore;
     pending?: PendingWorkspaceRestoreStore;
-    recovery: Pick<WorkspaceRecovery, "resolvePendingLocked">;
+    recovery: Pick<WorkspaceRecovery, "resolvePendingUnderLease">;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
     applyPath?: ApplyPath;
     verifyPath?: VerifyPath;
@@ -50,6 +46,7 @@ export interface WorkspaceRestoreExecutorOptions {
 export interface ExecuteWorkspaceRestoreInput {
     session: Session<JsonlSessionMetadata>;
     workspace: CanonicalWorkspaceIdentity;
+    source: WorkspaceSnapshotRefV1;
     plan: RestorePlanV1;
     confirmation: ConfirmedRestorePlanV1;
     mode: "normal" | "force-drift";
@@ -57,44 +54,11 @@ export interface ExecuteWorkspaceRestoreInput {
     commit: WorkspaceRestoreCommitStrategy;
 }
 
-export function workspaceStateFromPending(
-    pending: PendingWorkspaceRestoreV1,
-    resultSnapshot: WorkspaceSnapshotRefV1
-): WorkspaceStateV1 {
-    const base = {
-        schemaVersion: 1,
-        sessionId: pending.sessionId,
-        operationId: pending.operationId,
-        workspaceIdentity: pending.workspaceIdentity,
-        workspaceIncarnation: pending.workspaceIncarnation,
-        applyMode: pending.applyMode,
-        forcedPaths: pending.forcedPaths,
-        currentSnapshot: resultSnapshot,
-        currentStates: pending.paths.map((path) => ({ path: path.path, state: path.target })),
-    } satisfies WorkspaceStateBaseV1;
-    if (pending.target.kind === "redo") return { ...base, kind: "redo" };
-    if (pending.target.kind === "turn-undo") {
-        return { ...base, kind: "turn-undo", sourceTurnId: pending.target.sourceTurnId };
-    }
-    if (pending.target.kind === "turn-redo") {
-        return {
-            ...base,
-            kind: "turn-redo",
-            sourceTurnId: pending.target.sourceTurnId,
-            undoOperationId: pending.target.undoOperationId,
-        };
-    }
-    return {
-        ...base,
-        kind: "rewind",
-        rewind: {
-            fromLeafId: pending.expectedSemanticLeafId,
-            targetTurnId: pending.target.targetTurnId,
-            targetBoundaryId: pending.commitParentId,
-            redoSnapshot: pending.safetySnapshot,
-            redoStates: pending.paths.map((path) => ({ path: path.path, state: path.before })),
-        },
-    };
+export async function workspaceStateFromPending(
+    store: Pick<WorkspaceSnapshotStore, "readCommitSnapshot" | "readPathState">,
+    pending: PendingWorkspaceRestoreV2
+) {
+    return (await deriveWorkspaceRestoreState(store, pending)).markerState;
 }
 
 export class WorkspaceRestoreExecutor {
@@ -123,10 +87,7 @@ export class WorkspaceRestoreExecutor {
 
     async execute(input: ExecuteWorkspaceRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        const operation = () => this.executeLocked(input);
-        const committed = this.store.withWorkspaceLock
-            ? await this.store.withWorkspaceLock(operation)
-            : await operation();
+        const committed = await this.executeUnderLease(input);
         try {
             await this.onCommitted(input.plan.sessionId, committed.operationId);
         } catch (error) {
@@ -135,156 +96,150 @@ export class WorkspaceRestoreExecutor {
         return this.makeResult(input, committed.sessionMetadata);
     }
 
-    async executeLocked(
+    async executeUnderLease(
         input: ExecuteWorkspaceRestoreInput
     ): Promise<{ sessionMetadata: JsonlSessionMetadata; operationId: string }> {
         const assertCurrent = input.assertCurrent ?? (async () => {});
         await assertCurrent();
         assertRestorePlanMatchesConfirmation({ confirmation: input.confirmation, plan: input.plan, mode: input.mode });
+        this.store.assertSnapshotIdentity(input.source);
+        if ((await this.store.mutationLog.readHead()) !== input.source.id) {
+            throw new Error("Workspace mutation head moved before restore execution");
+        }
         const orderedPaths = [...input.plan.paths].sort((left, right) => comparePathBytes(left.path, right.path));
         const forcedPaths =
             input.mode === "force-drift"
                 ? orderedPaths.filter((path) => path.conflict === "forceable-drift").map((path) => path.path)
                 : [];
-        const safety = await this.store.capture({ profile: "safety", requiredPaths: forcedPaths });
-        const beforeStates = new Map<string, CapturedPathStateV1>();
+        const sourceStates = new Map<string, CapturedPathStateV1>();
         for (const path of orderedPaths) {
-            const state = await this.store.readPathState(safety.ref, path.path);
+            const state = await this.store.readPathState(input.source, path.path);
             if (state.state === "excluded") {
-                throw new Error(`Safety snapshot could not capture the full path state: ${path.path}`);
+                throw new Error(`Source commit excludes a restore path: ${path.path}`);
             }
-            beforeStates.set(path.path, state);
+            sourceStates.set(path.path, state);
         }
-        await this.verifySafetyCapture(orderedPaths, beforeStates, new Set(forcedPaths));
+        await this.verifySourceStates(orderedPaths, sourceStates, new Set(forcedPaths));
 
         const operationId = this.createOperationId();
         const workspaceStateEntryId = await input.session.getStorage().createEntryId();
         const sessionMetadata = await input.session.getMetadata();
-        let pending: PendingWorkspaceRestoreV1 = {
-            schemaVersion: 1,
+        const planned = await this.prepareResultCommit(input, operationId, orderedPaths);
+        const pending: PendingWorkspaceRestoreV2 = {
+            schemaVersion: 2,
             operationId,
             workspaceIdentity: input.workspace.workspaceIdentity,
             workspaceIncarnation: input.workspace.workspaceIncarnation,
             sessionId: input.plan.sessionId,
             sessionPath: sessionMetadata.path,
             target: structuredClone(input.plan.target),
-            commitParentId: input.plan.commitParentId,
             applyMode: input.mode,
             forcedPaths,
             expectedSemanticLeafId: input.plan.semanticLeafId,
+            commitParentId: input.plan.commitParentId,
             workspaceStateEntryId,
-            safetySnapshot: safety.ref,
-            paths: orderedPaths.map((path) => {
-                const before = beforeStates.get(path.path)!;
-                if (sameCapturedState(before, path.target)) {
-                    throw new Error(`Safety pre-state already equals the restore target: ${path.path}`);
-                }
-                return { path: path.path, before, target: path.target, createdParentDirectories: [] };
-            }),
+            workspaceStateTimestamp: this.now().toISOString(),
+            sourceCommit: input.source.id,
+            plannedCommit: planned.prepared.commit,
+            affectedPaths: orderedPaths.map((path) => path.path),
         };
-        let publicationStarted = false;
-        let publicationSucceeded = false;
-        let resolutionAttempted = false;
+        let pendingVisible = false;
         try {
             await assertCurrent();
-            publicationStarted = true;
-            await this.pending.publishLocked(pending);
-            publicationSucceeded = true;
-            for (const item of pending.paths) {
+            await this.store.withWorkspaceLock(() => this.pending.publishLocked(pending));
+            pendingVisible = true;
+            for (const path of orderedPaths) {
                 await assertCurrent();
-                const createdParentDirectories = new Set(item.createdParentDirectories);
-                const persistProgress = async () => {
-                    pending = await this.pending.updateCreatedParentDirectoriesLocked(operationId, item.path, [
-                        ...createdParentDirectories,
-                    ]);
-                };
-                const progress: WorkspacePathApplyProgress = {
-                    operationId,
-                    createdParentDirectories,
-                    onParentDirectoryCreated: persistProgress,
-                    onPathReplaced: persistProgress,
-                };
                 await this.applyPath({
                     root: input.workspace.canonicalRoot,
-                    path: item.path,
-                    expectedCurrent: item.before,
-                    target: item.target,
+                    path: path.path,
+                    expectedCurrent: sourceStates.get(path.path)!,
+                    target: path.target,
                     readBlob: (oid) => this.store.readBlob(oid),
-                    progress,
+                    progress: {
+                        operationId,
+                        createdParentDirectories: new Set(),
+                        onPathReplaced: async () => {},
+                    },
                 });
             }
-            const resultSnapshot = await this.store.capture({
-                profile: "safety",
-                requiredPaths: pending.paths.map((path) => path.path),
-            });
-            await this.store.verify(resultSnapshot.ref);
-            for (const path of pending.paths) {
-                const captured = await this.store.readPathState(resultSnapshot.ref, path.path);
-                if (!sameCapturedState(captured, path.target)) {
-                    throw new Error(`Post-apply snapshot verification failed: ${path.path}`);
-                }
-                await this.verifyPath({
-                    root: input.workspace.canonicalRoot,
-                    path: path.path,
-                    expected: path.target,
-                });
+            for (const path of orderedPaths) {
+                await this.verifyPath({ root: input.workspace.canonicalRoot, path: path.path, expected: path.target });
             }
             await assertCurrent();
+            await this.store.withWorkspaceLock(() => this.store.mutationLog.publishPrepared(planned.prepared));
+            const derived = await deriveWorkspaceRestoreState(this.store, pending);
             const entry: SessionTreeEntry = {
                 type: "custom",
-                id: workspaceStateEntryId,
-                parentId: input.plan.commitParentId,
-                timestamp: this.now().toISOString(),
+                id: pending.workspaceStateEntryId,
+                parentId: pending.commitParentId,
+                timestamp: pending.workspaceStateTimestamp,
                 customType: WorkspaceControlCustomTypes.state,
-                data: input.commit.makeWorkspaceState(pending, resultSnapshot.ref),
+                data: derived.markerState,
             };
-            await input.session.appendEntries([entry], { expectedLeafId: input.plan.semanticLeafId });
-            resolutionAttempted = true;
-            const decision = await this.recovery.resolvePendingLocked(pending);
+            await input.session.appendEntries([entry], { expectedLeafId: pending.expectedSemanticLeafId });
+            const decision = await this.recovery.resolvePendingUnderLease(pending);
             if (decision.state !== "committed") {
                 throw this.recoveryRequired(pending, decision);
             }
             return { sessionMetadata, operationId };
         } catch (error) {
-            if (!publicationSucceeded) {
-                if (!publicationStarted) throw error;
-                let current;
-                try {
-                    current = await this.pending.readLocked();
-                } catch (readError) {
-                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: readError });
-                }
-                if (current.kind === "none") throw error;
-                if (current.kind !== "valid" || current.record.operationId !== operationId) {
-                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: error });
-                }
-                let decision;
-                try {
-                    decision = await this.recovery.resolvePendingLocked(current.record);
-                } catch (recoveryError) {
-                    throw new WorkspaceFrozenError(operationId, "Workspace recovery required", {
-                        cause: recoveryError,
-                    });
-                }
-                if (decision.state === "committed") return { sessionMetadata, operationId };
-                if (decision.state === "not-committed") throw error;
-                throw this.recoveryRequired(current.record, decision, error);
+            if (!pendingVisible) {
+                const current = await this.pending.readCandidate();
+                if (current.kind !== "valid" || current.record.operationId !== operationId) throw error;
+                pendingVisible = true;
             }
-            if (resolutionAttempted) {
-                if (error instanceof WorkspaceFrozenError) throw error;
-                throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: error });
-            }
+            if (!pendingVisible) throw error;
             let decision;
             try {
-                decision = await this.recovery.resolvePendingLocked(pending);
+                decision = await this.recovery.resolvePendingUnderLease(pending);
             } catch (recoveryError) {
                 throw new WorkspaceFrozenError(operationId, "Workspace recovery required", { cause: recoveryError });
             }
-            if (decision.state === "committed") {
-                return { sessionMetadata, operationId };
-            }
+            if (decision.state === "committed") return { sessionMetadata, operationId };
             if (decision.state === "not-committed") throw error;
             throw this.recoveryRequired(pending, decision, error);
+        }
+    }
+
+    async prepareResultCommit(
+        input: ExecuteWorkspaceRestoreInput,
+        operationId: string,
+        paths: RestorePlanV1["paths"]
+    ) {
+        const indexFile = join(this.store.storeRoot, "journal", `restore-index-${operationId}`);
+        await mkdir(dirname(indexFile), { recursive: true, mode: 0o700 });
+        try {
+            const index = new ShadowWorkspaceIndex({
+                git: this.store.git,
+                gitDir: this.store.storeRoot,
+                indexFile,
+            });
+            await index.load(input.source.tree);
+            await index.apply(paths.map((path) => ({ path: path.path, state: path.target })));
+            const tree = await index.writeTree();
+            const prepared = await this.store.mutationLog.prepare({
+                expectedHead: input.source.id,
+                tree,
+                metadata: {
+                    schemaversion: 1,
+                    workspaceidentity: input.workspace.workspaceIdentity,
+                    workspaceincarnation: input.workspace.workspaceIncarnation,
+                    kind: input.plan.target.kind,
+                    sessionid: input.plan.sessionId,
+                    operationid: operationId,
+                    ...(turnIdFor(input.plan.target) ? { turnid: turnIdFor(input.plan.target) } : {}),
+                },
+            });
+            const metadata = await this.store.readSnapshotMetadata(input.source);
+            const snapshot = await this.store.publishCommitSnapshot({
+                commit: prepared.commit,
+                scope: metadata.scope,
+                coverage: metadata.coverage,
+            });
+            return { prepared, snapshot };
+        } finally {
+            await Promise.all([rm(indexFile, { force: true }), rm(`${indexFile}.lock`, { force: true })]);
         }
     }
 
@@ -301,37 +256,32 @@ export class WorkspaceRestoreExecutor {
     }
 
     recoveryRequired(
-        pending: PendingWorkspaceRestoreV1,
-        decision: Awaited<ReturnType<WorkspaceRecovery["resolvePendingLocked"]>>,
+        pending: PendingWorkspaceRestoreV2,
+        decision: Awaited<ReturnType<WorkspaceRecovery["resolvePendingUnderLease"]>>,
         cause?: unknown
     ): WorkspaceFrozenError {
         const message = decision.state === "needs-user" ? decision.view.message : "Workspace recovery required";
         return new WorkspaceFrozenError(pending.operationId, message || "Workspace recovery required", { cause });
     }
 
-    async verifySafetyCapture(
+    async verifySourceStates(
         paths: RestorePlanV1["paths"],
-        beforeStates: ReadonlyMap<string, CapturedPathStateV1>,
-        conflictPaths: ReadonlySet<string>
+        sourceStates: ReadonlyMap<string, CapturedPathStateV1>,
+        forcedPaths: ReadonlySet<string>
     ): Promise<void> {
         const inspected = await this.inspectPaths(paths.map((path) => path.path));
         for (const path of paths) {
-            const before = beforeStates.get(path.path)!;
+            const source = sourceStates.get(path.path)!;
             const live = inspected.get(path.path);
-            const liveCaptured = live == null ? undefined : capturedFromLive(live);
-            if (
-                !live ||
-                !liveCaptured ||
-                live.fingerprint !== path.liveFingerprint ||
-                !sameCapturedState(liveCaptured, before)
-            ) {
+            const captured = live == null ? undefined : capturedFromLive(live);
+            if (!live || !captured || live.fingerprint !== path.liveFingerprint || !sameCapturedState(captured, source)) {
                 throw new Error(`Workspace changed after restore confirmation: ${path.path}`);
             }
-            if (!conflictPaths.has(path.path) && !sameCapturedState(before, path.expectedCurrent)) {
+            if (!forcedPaths.has(path.path) && !sameCapturedState(source, path.expectedCurrent)) {
                 throw new Error(`Workspace changed after restore confirmation: ${path.path}`);
             }
-            if (conflictPaths.has(path.path) && fingerprintCaptured(before) !== path.liveFingerprint) {
-                throw new Error(`Force safety snapshot does not match the confirmed bytes: ${path.path}`);
+            if (forcedPaths.has(path.path) && fingerprintCaptured(source) !== path.liveFingerprint) {
+                throw new Error(`Force source commit does not match the confirmed bytes: ${path.path}`);
             }
         }
     }
@@ -347,8 +297,14 @@ export class WorkspaceRestoreExecutor {
     }
 }
 
+function turnIdFor(target: RestorePlanV1["target"]): string | undefined {
+    if (target.kind === "rewind") return target.targetTurnId;
+    if (target.kind === "turn-undo" || target.kind === "turn-redo") return target.sourceTurnId;
+    return undefined;
+}
+
 function comparePathBytes(left: string, right: string): number {
-    return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
+    return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
 function sameCapturedState(left: CapturedPathStateV1, right: CapturedPathStateV1): boolean {
