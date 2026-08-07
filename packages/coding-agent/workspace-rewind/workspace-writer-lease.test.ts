@@ -180,6 +180,97 @@ describe("WorkspaceWriterLeaseRegistry", () => {
         next.release();
     });
 
+    test("skips an aborted queue head when an earlier abort listener releases the holder", async () => {
+        const registry = new WorkspaceWriterLeaseRegistry();
+        const active = await registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-a",
+            boundaryToken: "boundary-1",
+        });
+        const controller = new AbortController();
+        controller.signal.addEventListener("abort", () => active.release(), { once: true });
+        const cancelled = new Error("cancelled during reentrant release");
+        const abortedPromise = registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-b",
+            boundaryToken: "boundary-2",
+            signal: controller.signal,
+        });
+        const nextPromise = registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-c",
+            boundaryToken: "boundary-3",
+        });
+
+        controller.abort(cancelled);
+
+        await expect(abortedPromise).rejects.toBe(cancelled);
+        const next = await nextPromise;
+        next.release();
+    });
+
+    test("snapshots a queued turn identity before caller input can mutate", async () => {
+        const registry = new WorkspaceWriterLeaseRegistry();
+        const active = await registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-a",
+            boundaryToken: "boundary-1",
+        });
+        const input = {
+            workspaceKey: "workspace-a",
+            sessionId: "session-b",
+            boundaryToken: "boundary-2",
+        };
+        const queuedPromise = registry.acquire(input);
+
+        input.workspaceKey = "workspace-mutated";
+        input.sessionId = "session-mutated";
+        input.boundaryToken = "boundary-mutated";
+        active.release();
+
+        const queued = await queuedPromise;
+        expect(queued).toMatchObject({
+            workspaceKey: "workspace-a",
+            sessionId: "session-b",
+            boundaryToken: "boundary-2",
+        });
+        queued.release();
+    });
+
+    test("keeps queued cancellation bound to the snapshotted signal", async () => {
+        const registry = new WorkspaceWriterLeaseRegistry();
+        const active = await registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-a",
+            boundaryToken: "boundary-1",
+        });
+        const originalController = new AbortController();
+        const replacementController = new AbortController();
+        const removeEventListener = vi.spyOn(originalController.signal, "removeEventListener");
+        const input = {
+            workspaceKey: "workspace-a",
+            sessionId: "session-b",
+            boundaryToken: "boundary-2",
+            signal: originalController.signal,
+        };
+        const cancelled = new Error("cancelled through original signal");
+        const abortedPromise = registry.acquire(input);
+        const nextPromise = registry.acquire({
+            workspaceKey: "workspace-a",
+            sessionId: "session-c",
+            boundaryToken: "boundary-3",
+        });
+
+        input.signal = replacementController.signal;
+        originalController.abort(cancelled);
+
+        await expect(abortedPromise).rejects.toBe(cancelled);
+        expect(removeEventListener).toHaveBeenCalledWith("abort", expect.any(Function));
+        active.release();
+        const next = await nextPromise;
+        next.release();
+    });
+
     test("allows different workspaces to hold leases concurrently", async () => {
         const registry = new WorkspaceWriterLeaseRegistry();
         const first = await registry.acquire({
@@ -198,6 +289,25 @@ describe("WorkspaceWriterLeaseRegistry", () => {
         expect(second.workspaceKey).toBe("workspace-b");
         first.release();
         second.release();
+    });
+
+    test("removes workspace states after their leases become idle", async () => {
+        const registry = new WorkspaceWriterLeaseRegistry();
+        const leases = await Promise.all(
+            ["workspace-a", "workspace-b", "workspace-c"].map((workspaceKey, index) =>
+                registry.acquire({
+                    workspaceKey,
+                    sessionId: `session-${index}`,
+                    boundaryToken: `boundary-${index}`,
+                })
+            )
+        );
+
+        expect(registry.workspaces.size).toBe(3);
+        for (const lease of leases) {
+            lease.release();
+        }
+        expect(registry.workspaces.size).toBe(0);
     });
 
     test.each([

@@ -2,22 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export interface WorkspaceWriterLease {
-    workspaceKey: string;
-    sessionId: string;
-    boundaryToken: string;
+    readonly workspaceKey: string;
+    readonly sessionId: string;
+    readonly boundaryToken: string;
     release(): void;
 }
 
 interface WorkspaceWriterLeaseInput {
-    workspaceKey: string;
-    sessionId: string;
-    boundaryToken: string;
-    signal?: AbortSignal;
+    readonly workspaceKey: string;
+    readonly sessionId: string;
+    readonly boundaryToken: string;
+    readonly signal?: AbortSignal;
 }
 
 interface PendingAcquisition {
     key: string;
-    input: WorkspaceWriterLeaseInput;
+    snapshot: WorkspaceWriterLeaseInput;
     promise: Promise<WorkspaceWriterLease>;
     resolve: (lease: WorkspaceWriterLease) => void;
     reject: (reason: unknown) => void;
@@ -25,6 +25,7 @@ interface PendingAcquisition {
 }
 
 interface WorkspaceLeaseState {
+    readonly workspaceKey: string;
     active?: PendingAcquisition;
     queue: PendingAcquisition[];
     acquisitions: Map<string, PendingAcquisition>;
@@ -34,19 +35,25 @@ export class WorkspaceWriterLeaseRegistry {
     workspaces = new Map<string, WorkspaceLeaseState>();
 
     acquire(input: WorkspaceWriterLeaseInput): Promise<WorkspaceWriterLease> {
-        assertValidInput(input);
-        const key = JSON.stringify([input.sessionId, input.boundaryToken]);
-        let state = this.workspaces.get(input.workspaceKey);
+        const snapshot: WorkspaceWriterLeaseInput = {
+            workspaceKey: input?.workspaceKey,
+            sessionId: input?.sessionId,
+            boundaryToken: input?.boundaryToken,
+            signal: input?.signal,
+        };
+        assertValidInput(snapshot);
+        const key = JSON.stringify([snapshot.sessionId, snapshot.boundaryToken]);
+        let state = this.workspaces.get(snapshot.workspaceKey);
         const existing = state?.acquisitions.get(key);
         if (existing) {
             return existing.promise;
         }
-        if (input.signal?.aborted) {
-            return Promise.reject(abortReason(input.signal));
+        if (snapshot.signal?.aborted) {
+            return Promise.reject(abortReason(snapshot.signal));
         }
         if (!state) {
-            state = { queue: [], acquisitions: new Map() };
-            this.workspaces.set(input.workspaceKey, state);
+            state = { workspaceKey: snapshot.workspaceKey, queue: [], acquisitions: new Map() };
+            this.workspaces.set(snapshot.workspaceKey, state);
         }
         let resolve!: (lease: WorkspaceWriterLease) => void;
         let reject!: (reason: unknown) => void;
@@ -54,12 +61,12 @@ export class WorkspaceWriterLeaseRegistry {
             resolve = done;
             reject = fail;
         });
-        const pending: PendingAcquisition = { key, input, promise, resolve, reject };
+        const pending: PendingAcquisition = { key, snapshot, promise, resolve, reject };
         state.acquisitions.set(key, pending);
         state.queue.push(pending);
-        if (input.signal) {
+        if (snapshot.signal) {
             pending.abortListener = () => this.abortQueued(state, pending);
-            input.signal.addEventListener("abort", pending.abortListener, { once: true });
+            snapshot.signal.addEventListener("abort", pending.abortListener, { once: true });
         }
         this.grantNext(state);
         return promise;
@@ -69,15 +76,31 @@ export class WorkspaceWriterLeaseRegistry {
         if (state.active) {
             return;
         }
-        const pending = state.queue.shift();
-        if (!pending) {
+        while (true) {
+            const pending = state.queue.shift();
+            if (!pending) {
+                this.deleteIdleState(state.workspaceKey, state);
+                return;
+            }
+            if (pending.snapshot.signal?.aborted) {
+                if (state.acquisitions.get(pending.key) === pending) {
+                    state.acquisitions.delete(pending.key);
+                }
+                this.cleanupAbortListener(pending);
+                pending.reject(abortReason(pending.snapshot.signal));
+                continue;
+            }
+            this.grant(state, pending);
             return;
         }
+    }
+
+    grant(state: WorkspaceLeaseState, pending: PendingAcquisition): void {
         this.cleanupAbortListener(pending);
         const lease: WorkspaceWriterLease = {
-            workspaceKey: pending.input.workspaceKey,
-            sessionId: pending.input.sessionId,
-            boundaryToken: pending.input.boundaryToken,
+            workspaceKey: pending.snapshot.workspaceKey,
+            sessionId: pending.snapshot.sessionId,
+            boundaryToken: pending.snapshot.boundaryToken,
             release: () => {
                 if (state.active !== pending) {
                     throw new Error("Only the active workspace writer lease can be released");
@@ -101,16 +124,26 @@ export class WorkspaceWriterLeaseRegistry {
             state.acquisitions.delete(pending.key);
         }
         this.cleanupAbortListener(pending);
-        pending.reject(abortReason(pending.input.signal!));
+        pending.reject(abortReason(pending.snapshot.signal!));
         this.grantNext(state);
     }
 
     cleanupAbortListener(pending: PendingAcquisition): void {
-        if (!pending.input.signal || !pending.abortListener) {
+        if (!pending.snapshot.signal || !pending.abortListener) {
             return;
         }
-        pending.input.signal.removeEventListener("abort", pending.abortListener);
+        pending.snapshot.signal.removeEventListener("abort", pending.abortListener);
         pending.abortListener = undefined;
+    }
+
+    deleteIdleState(workspaceKey: string, state: WorkspaceLeaseState): void {
+        if (state.active || state.queue.length > 0 || state.acquisitions.size > 0) {
+            return;
+        }
+        if (this.workspaces.get(workspaceKey) !== state) {
+            return;
+        }
+        this.workspaces.delete(workspaceKey);
     }
 }
 
