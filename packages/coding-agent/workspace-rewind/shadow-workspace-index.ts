@@ -53,6 +53,7 @@ export class ShadowWorkspaceIndex {
     }
 
     async load(tree?: string): Promise<void> {
+        this.loaded = false;
         if (tree != null) {
             validateOid(tree);
             const type = await this.git.run(["cat-file", "-t", tree], {
@@ -64,7 +65,6 @@ export class ShadowWorkspaceIndex {
                 throw new Error("Shadow Workspace index base must be a tree");
             }
         }
-        this.loaded = false;
         await this.git.run(["read-tree", tree ?? "--empty"], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,

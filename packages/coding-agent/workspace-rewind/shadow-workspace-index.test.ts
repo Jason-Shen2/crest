@@ -264,6 +264,27 @@ describe.sequential("ShadowWorkspaceIndex", () => {
         await fixture.index.load(baseTree);
         await expect(fixture.index.writeTree()).resolves.toBe(baseTree);
     });
+
+    test.each(["invalid-oid", "blob"] as const)(
+        "fails closed before validating an already-loaded %s reload",
+        async (kind) => {
+            const fixture = await makeFixture(roots);
+            await fixture.index.load();
+            const baseTree = await fixture.index.writeTree();
+            const reloadTree =
+                kind === "invalid-oid" ? "not-an-oid" : await writeRawBlob(fixture, Buffer.from("not a tree"));
+
+            await expect(fixture.index.load(reloadTree)).rejects.toThrow(
+                kind === "invalid-oid" ? /object id/i : /tree/i
+            );
+            expect(fixture.index.loaded).toBe(false);
+            await expect(fixture.index.writeTree()).rejects.toThrow(/load/i);
+            await expect(fixture.index.apply([])).rejects.toThrow(/load/i);
+
+            await fixture.index.load(baseTree);
+            await expect(fixture.index.writeTree()).resolves.toBe(baseTree);
+        }
+    );
 });
 
 async function makeFixture(roots: string[]): Promise<Fixture> {
