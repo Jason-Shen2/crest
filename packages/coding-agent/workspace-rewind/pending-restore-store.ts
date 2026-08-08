@@ -67,6 +67,10 @@ export class PendingWorkspaceRestoreStore {
         return this.scanActive(false);
     }
 
+    inspectLocked(): Promise<ScannedPendingWorkspaceRestore> {
+        return this.scanActive(false);
+    }
+
     readLocked(): Promise<ScannedPendingWorkspaceRestore> {
         return this.scanActive(true);
     }

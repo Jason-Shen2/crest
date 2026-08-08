@@ -2,9 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import { expect, test, vi } from "vitest";
+import { link, lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test, vi } from "vitest";
 
-import type { PendingWorkspaceRestoreV2, ScannedPendingWorkspaceRestore } from "./pending-restore-store";
+import { encodeDurableJson } from "./durability";
+import {
+    PendingWorkspaceRestoreStore,
+    type PendingWorkspaceRestoreV2,
+    type ScannedPendingWorkspaceRestore,
+} from "./pending-restore-store";
 import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "./types";
 import { WorkspaceRecovery, classifyWorkspaceRecoveryPath } from "./workspace-recovery";
 import { deriveWorkspaceRestoreState } from "./workspace-restore-state";
@@ -16,6 +24,11 @@ const PlannedCommit = "4".repeat(40);
 const OtherCommit = "5".repeat(40);
 const Source = { state: "file", oid: "a".repeat(40), executable: false } as const;
 const Planned = { state: "file", oid: "b".repeat(40), executable: false } as const;
+const CleanupRoots: string[] = [];
+
+afterEach(async () => {
+    await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 test("source head rolls partial application back without locating the owning Session", async () => {
     const fixture = makeFixture({ head: SourceCommit, live: Planned, sessionMissing: true });
@@ -48,6 +61,78 @@ test("inspectPending and an unknown head perform no restore writes", async () =>
     expect(fixture.applyPath).not.toHaveBeenCalled();
     expect(fixture.removeLocked).not.toHaveBeenCalled();
     expect(fixture.locateSession).not.toHaveBeenCalled();
+    expect(fixture.inspectLocked).toHaveBeenCalledOnce();
+    expect(fixture.readLocked).not.toHaveBeenCalled();
+});
+
+test("inspectPending leaves an interrupted linked publication untouched", async () => {
+    const root = await mkdtemp(join(tmpdir(), "crest-recovery-pure-inspect-"));
+    CleanupRoots.push(root);
+    const workspace = join(root, "workspace");
+    const storeRoot = join(root, "store");
+    const journalRoot = join(storeRoot, "journal", "restore");
+    await Promise.all([mkdir(workspace), mkdir(journalRoot, { recursive: true, mode: 0o700 })]);
+    const record = { ...pendingRecord(), sessionPath: join(root, "session.db") };
+    const source = snapshot(SourceCommit, "6".repeat(40));
+    const planned = snapshot(PlannedCommit, "7".repeat(40));
+    const store = {
+        storeRoot,
+        identity: {
+            canonicalRoot: workspace,
+            workspaceIdentity: Identity,
+            workspaceIncarnation: Incarnation,
+            storeKey: "store",
+            ancestorIdentityChain: [],
+        },
+        mutationLog: {
+            readHead: vi.fn(async () => OtherCommit),
+            changedPaths: vi.fn(async () => ["file.txt"]),
+            read: vi.fn(async (commit: string) => {
+                if (commit !== PlannedCommit) throw new Error("unexpected mutation commit");
+                return {
+                    parent: SourceCommit,
+                    tree: planned.tree,
+                    metadata: {
+                        schemaversion: 1 as const,
+                        workspaceidentity: Identity,
+                        workspaceincarnation: Incarnation,
+                        kind: "rewind" as const,
+                        sessionid: record.sessionId,
+                        operationid: record.operationId,
+                        turnid: "turn-1",
+                    },
+                };
+            }),
+        },
+        readCommitSnapshot: vi.fn(async (commit: string) => {
+            if (commit === SourceCommit) return source;
+            if (commit === PlannedCommit) return planned;
+            throw new Error("unexpected snapshot commit");
+        }),
+        readPathState: vi.fn(async (ref: WorkspaceSnapshotRefV1) =>
+            structuredClone(ref.id === SourceCommit ? Source : Planned)
+        ),
+        readBlob: vi.fn(),
+        withWorkspaceLock: async (operation: () => Promise<unknown>) => operation(),
+    };
+    const pending = new PendingWorkspaceRestoreStore(store as never);
+    const destination = join(journalRoot, "pending.json");
+    const temporary = join(journalRoot, ".pending.json.publish.tmp");
+    await writeFile(destination, encodeDurableJson(record), { mode: 0o600 });
+    await link(destination, temporary);
+    const recovery = new WorkspaceRecovery({
+        workspace: store.identity,
+        store: store as never,
+        pending,
+        locateSession: async () => undefined,
+        inspectPath: async () => structuredClone(Planned),
+        verifyWorkspace: async () => {},
+    });
+
+    await expect(recovery.inspectPending()).resolves.toMatchObject({ state: "needs-user" });
+
+    await expect(lstat(temporary)).resolves.toMatchObject({ nlink: 2 });
+    await expect(lstat(destination)).resolves.toMatchObject({ nlink: 2 });
 });
 
 test("resolvePending leaves unknown head and path facts untouched", async () => {
@@ -153,6 +238,8 @@ interface Fixture {
     applyPath: ReturnType<typeof vi.fn>;
     appendEntries: ReturnType<typeof vi.fn>;
     removeLocked: ReturnType<typeof vi.fn>;
+    inspectLocked: ReturnType<typeof vi.fn>;
+    readLocked: ReturnType<typeof vi.fn>;
     validateCommitFacts: ReturnType<typeof vi.fn>;
     entry?: SessionTreeEntry;
 }
@@ -187,9 +274,12 @@ function makeFixture(input: {
         order.push("remove");
         active = false;
     });
+    const inspectLocked = vi.fn(async () => candidate());
+    const readLocked = vi.fn(async () => candidate());
     const pending = {
         readCandidate: vi.fn(async () => candidate()),
-        readLocked: vi.fn(async () => candidate()),
+        inspectLocked,
+        readLocked,
         validateCommitFacts: vi.fn(async () => {
             if (input.invalidCommitFacts) throw new Error("invalid durable commit facts");
         }),
@@ -241,6 +331,8 @@ function makeFixture(input: {
         applyPath,
         appendEntries,
         removeLocked,
+        inspectLocked,
+        readLocked,
         validateCommitFacts: pending.validateCommitFacts,
     });
     return fixture;

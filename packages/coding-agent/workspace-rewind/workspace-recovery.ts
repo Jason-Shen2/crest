@@ -165,7 +165,7 @@ export class WorkspaceRecovery {
         if (!resolve) return this.resolveRecord(candidate.record, false, expectedOperationId);
 
         const discovery = await this.withWriterLease(candidate.record, async () => {
-            const facts = await this.readFacts(candidate.record, expectedOperationId);
+            const facts = await this.readFacts(candidate.record, expectedOperationId, true);
             if (!facts) return { kind: "decision" as const, decision: { state: "none" as const } };
             if (facts.head === facts.record.plannedCommit) return { kind: "planned" as const };
             return {
@@ -177,7 +177,7 @@ export class WorkspaceRecovery {
 
         return this.withSessionMutation(candidate.record.sessionPath, () =>
             this.withWriterLease(candidate.record, async () => {
-                const facts = await this.readFacts(candidate.record, expectedOperationId);
+                const facts = await this.readFacts(candidate.record, expectedOperationId, true);
                 if (!facts) return { state: "none" };
                 return this.resolveFacts(facts, true, true);
             })
@@ -190,7 +190,7 @@ export class WorkspaceRecovery {
         expectedOperationId?: string,
         sessionMutationHeld = false
     ): Promise<WorkspaceRecoveryDecision> {
-        const facts = await this.readFacts(candidate, expectedOperationId);
+        const facts = await this.readFacts(candidate, expectedOperationId, resolve);
         if (!facts) return { state: "none" };
         return this.resolveFacts(facts, resolve, sessionMutationHeld);
     }
@@ -244,12 +244,13 @@ export class WorkspaceRecovery {
 
     async readFacts(
         candidate: PendingWorkspaceRestoreV2,
-        expectedOperationId?: string
+        expectedOperationId: string | undefined,
+        recoverPublication: boolean
     ): Promise<RecoveryFacts | undefined> {
         await this.assertCurrent();
         await this.verifyWorkspace(this.workspace);
         const captured = await this.withWorkspaceLock(async () => {
-            const current = await this.pending.readLocked();
+            const current = await (recoverPublication ? this.pending.readLocked() : this.pending.inspectLocked());
             if (current.kind === "none" && expectedOperationId == null) return undefined;
             if (current.kind !== "valid" || current.record.operationId !== candidate.operationId) {
                 throw new Error("Pending restore operation changed before authoritative reread");
