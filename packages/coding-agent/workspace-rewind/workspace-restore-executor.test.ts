@@ -21,6 +21,17 @@ import { WorkspaceRestoreExecutor, type WorkspaceRestoreCommitStrategy } from ".
 
 const CleanupRoots: string[] = [];
 
+function linkedOperation(operationId: string) {
+    const snapshot = (id: string): WorkspaceSnapshotRefV1 => ({
+        id,
+        workspaceIdentity: "1".repeat(64),
+        workspaceIncarnation: "2".repeat(64),
+        tree: "3".repeat(40),
+        scopeManifest: "4".repeat(40),
+    });
+    return { operationId, sourceSnapshot: snapshot("5".repeat(40)), currentSnapshot: snapshot("6".repeat(40)) };
+}
+
 afterEach(async () => {
     vi.restoreAllMocks();
     await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -61,10 +72,22 @@ test("executes a result-commit restore without any restore-time workspace captur
 
 test.each([
     { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
-    { target: { kind: "redo", sourceRewindOperationId: "rewind-1" }, expectedTurn: undefined },
+    {
+        target: {
+            kind: "redo",
+            sourceRewindOperationId: "rewind-1",
+            linkedOperation: linkedOperation("rewind-1"),
+        },
+        expectedTurn: undefined,
+    },
     { target: { kind: "turn-undo", sourceTurnId: "turn-1" }, expectedTurn: "turn-1" },
     {
-        target: { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+        target: {
+            kind: "turn-redo",
+            sourceTurnId: "turn-1",
+            undoOperationId: "undo-1",
+            linkedOperation: linkedOperation("undo-1"),
+        },
         expectedTurn: "turn-1",
     },
 ] satisfies Array<{ target: RestoreTargetV1; expectedTurn: string | undefined }>)(
@@ -95,6 +118,11 @@ test.each([
                 : target.kind === "turn-redo"
                   ? target.undoOperationId
                   : undefined
+        );
+        expect(mutation.metadata.linkedresultcommitid).toBe(
+            target.kind === "redo" || target.kind === "turn-redo"
+                ? target.linkedOperation.currentSnapshot.id
+                : undefined
         );
         await expect(fixture.store.mutationLog.changedPaths(result.prepared.commit)).resolves.toEqual(["file.txt"]);
     }

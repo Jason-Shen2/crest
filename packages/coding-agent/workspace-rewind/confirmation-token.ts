@@ -5,6 +5,8 @@ import { randomBytes } from "node:crypto";
 
 import type { RewindConflictClass } from "./live-path-state";
 import type { RestorePlanV1, RestoreTargetV1 } from "./restore-plan";
+import type { WorkspaceLinkedOperationV1 } from "./types";
+import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 
 const ConfirmationTtlMs = 5 * 60 * 1_000;
 const ConfirmationRegistryCapacity = 1_024;
@@ -19,8 +21,14 @@ export interface ConfirmedRestorePlanV1 {
         workspaceIncarnation: string;
         sessionId: string;
         semanticLeafId: string | null;
+        commitParentId: string | null;
         target: RestoreTargetV1;
         effectivePaths: string[];
+        pathStates: Array<{
+            path: string;
+            target: RestorePlanV1["paths"][number]["target"];
+            expectedCurrent: RestorePlanV1["paths"][number]["expectedCurrent"];
+        }>;
         liveFingerprints: Array<{ path: string; fingerprint: string; conflict: RewindConflictClass }>;
     };
 }
@@ -40,7 +48,7 @@ function clonePlan(plan: RestorePlanV1): RestorePlanV1 {
     return structuredClone(plan);
 }
 
-function targetKeysAre(target: RestoreTargetV1, expected: string[]): boolean {
+function targetKeysAre(target: object, expected: string[]): boolean {
     return Object.keys(target).sort().join("\0") === [...expected].sort().join("\0");
 }
 
@@ -50,27 +58,56 @@ function canonicalTarget(target: RestoreTargetV1): RestoreTargetV1 {
     }
     if (
         target.kind === "redo" &&
-        targetKeysAre(target, ["kind", "sourceRewindOperationId"]) &&
+        targetKeysAre(target, ["kind", "sourceRewindOperationId", "linkedOperation"]) &&
         target.sourceRewindOperationId
     ) {
-        return { kind: "redo", sourceRewindOperationId: target.sourceRewindOperationId };
+        const linkedOperation = canonicalLinkedOperation(target.linkedOperation);
+        if (linkedOperation.operationId !== target.sourceRewindOperationId) {
+            throw new Error("Cannot issue a confirmation token with an invalid restore target");
+        }
+        return { kind: "redo", sourceRewindOperationId: target.sourceRewindOperationId, linkedOperation };
     }
     if (target.kind === "turn-undo" && targetKeysAre(target, ["kind", "sourceTurnId"]) && target.sourceTurnId) {
         return { kind: "turn-undo", sourceTurnId: target.sourceTurnId };
     }
     if (
         target.kind === "turn-redo" &&
-        targetKeysAre(target, ["kind", "sourceTurnId", "undoOperationId"]) &&
+        targetKeysAre(target, ["kind", "sourceTurnId", "undoOperationId", "linkedOperation"]) &&
         target.sourceTurnId &&
         target.undoOperationId
     ) {
+        const linkedOperation = canonicalLinkedOperation(target.linkedOperation);
+        if (linkedOperation.operationId !== target.undoOperationId) {
+            throw new Error("Cannot issue a confirmation token with an invalid restore target");
+        }
         return {
             kind: "turn-redo",
             sourceTurnId: target.sourceTurnId,
             undoOperationId: target.undoOperationId,
+            linkedOperation,
         };
     }
     throw new Error("Cannot issue a confirmation token with an invalid restore target");
+}
+
+function canonicalLinkedOperation(value: WorkspaceLinkedOperationV1): WorkspaceLinkedOperationV1 {
+    if (!value || !targetKeysAre(value, ["operationId", "sourceSnapshot", "currentSnapshot"])) {
+        throw new Error("Cannot issue a confirmation token with an invalid restore target");
+    }
+    const sourceSnapshot = decodeWorkspaceSnapshotRefV1(value.sourceSnapshot);
+    const currentSnapshot = decodeWorkspaceSnapshotRefV1(value.currentSnapshot);
+    if (
+        typeof value.operationId !== "string" ||
+        value.operationId.length === 0 ||
+        !sourceSnapshot ||
+        !currentSnapshot ||
+        sourceSnapshot.id === currentSnapshot.id ||
+        sourceSnapshot.workspaceIdentity !== currentSnapshot.workspaceIdentity ||
+        sourceSnapshot.workspaceIncarnation !== currentSnapshot.workspaceIncarnation
+    ) {
+        throw new Error("Cannot issue a confirmation token with an invalid restore target");
+    }
+    return { operationId: value.operationId, sourceSnapshot, currentSnapshot };
 }
 
 function confirmationBinding(plan: RestorePlanV1): ConfirmedRestorePlanV1["binding"] {
@@ -80,8 +117,14 @@ function confirmationBinding(plan: RestorePlanV1): ConfirmedRestorePlanV1["bindi
         workspaceIncarnation: plan.workspaceIncarnation,
         sessionId: plan.sessionId,
         semanticLeafId: plan.semanticLeafId,
+        commitParentId: plan.commitParentId,
         target: canonicalTarget(plan.target),
         effectivePaths: orderedPaths.map((item) => item.path),
+        pathStates: orderedPaths.map((item) => ({
+            path: item.path,
+            target: structuredClone(item.target),
+            expectedCurrent: structuredClone(item.expectedCurrent),
+        })),
         liveFingerprints: orderedPaths.map((item) => ({
             path: item.path,
             fingerprint: item.liveFingerprint,

@@ -31,6 +31,16 @@ const Snapshot = {
     workspaceIdentity: Identity,
     workspaceIncarnation: Incarnation,
 };
+const LinkedSourceSnapshot = { ...Snapshot, id: "d".repeat(40) };
+const LinkedResultSnapshot = { ...Snapshot, id: "e".repeat(40) };
+
+function linkedOperation(operationId: string) {
+    return {
+        operationId,
+        sourceSnapshot: LinkedSourceSnapshot,
+        currentSnapshot: LinkedResultSnapshot,
+    };
+}
 
 function plan(): RestorePlanV1 {
     return {
@@ -186,6 +196,7 @@ function harness() {
                 kind: "turn-redo" as const,
                 sourceTurnId: "turn-1",
                 undoOperationId: "undo-1",
+                linkedOperation: linkedOperation("undo-1"),
             };
             return {
                 ...previewResult,
@@ -278,12 +289,7 @@ describe("AgentRewindService", () => {
             displayLeafId: "turn-1",
         });
         expect(value.getPublishState()).toHaveLength(0);
-        expect(value.order).toEqual([
-            "session-lease",
-            "workspace-lock",
-            "release-workspace-lock",
-            "release-session-lease",
-        ]);
+        expect(value.order).toEqual(["session-lease", "release-session-lease"]);
     });
 
     it.each(["rewind", "redo"] as const)("previews %s without safety, journal, or mutation writes", async (kind) => {
@@ -298,15 +304,10 @@ describe("AgentRewindService", () => {
         expect(kind === "rewind" ? value.engine.previewRewind : value.engine.previewRedo).toHaveBeenCalledOnce();
         expect(value.engine.applyRewind).not.toHaveBeenCalled();
         expect(value.engine.applyRedo).not.toHaveBeenCalled();
-        expect(value.order).toEqual([
-            "session-lease",
-            "workspace-lock",
-            "release-workspace-lock",
-            "release-session-lease",
-        ]);
+        expect(value.order).toEqual(["session-lease", "release-session-lease"]);
     });
 
-    it("consumes the confirmation inside both locks and broadcasts before releasing either lock", async () => {
+    it("consumes the confirmation and broadcasts inside the retained session mutation", async () => {
         const value = harness();
         const token = value.confirmations.issue(plan());
         const originalTake = value.confirmations.take.bind(value.confirmations);
@@ -326,11 +327,9 @@ describe("AgentRewindService", () => {
         expect(result.editorText).toBe("original prompt");
         expect(value.order).toEqual([
             "session-lease",
-            "workspace-lock",
             "consume-token",
             "engine-apply",
             "broadcast",
-            "release-workspace-lock",
             "release-session-lease",
         ]);
         expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
@@ -340,7 +339,14 @@ describe("AgentRewindService", () => {
 
     it("offers redo only in normal mode and uses the same retained publication path", async () => {
         const value = harness();
-        const redoPlan = { ...plan(), target: { kind: "redo" as const } };
+        const redoPlan = {
+            ...plan(),
+            target: {
+                kind: "redo" as const,
+                sourceRewindOperationId: "rewind-1",
+                linkedOperation: linkedOperation("rewind-1"),
+            },
+        };
         const token = value.confirmations.issue(redoPlan);
 
         const result = await value.service.redo({
@@ -354,21 +360,14 @@ describe("AgentRewindService", () => {
             expect.objectContaining({
                 semanticLeafId: "checkpoint-1",
                 confirmation: expect.objectContaining({
-                    plan: expect.objectContaining({ target: { kind: "redo" } }),
+                    plan: expect.objectContaining({ target: expect.objectContaining({ kind: "redo" }) }),
                 }),
             })
         );
-        expect(value.order).toEqual([
-            "session-lease",
-            "workspace-lock",
-            "engine-redo",
-            "broadcast",
-            "release-workspace-lock",
-            "release-session-lease",
-        ]);
+        expect(value.order).toEqual(["session-lease", "engine-redo", "broadcast", "release-session-lease"]);
     });
 
-    it("revalidates current authorization inside both locks before consuming or mutating", async () => {
+    it("revalidates current authorization inside the retained session mutation before consuming", async () => {
         const value = harness();
         const token = value.confirmations.issue(plan());
         const assertCurrent = vi.fn(async () => {
@@ -390,12 +389,7 @@ describe("AgentRewindService", () => {
 
         expect(value.engine.applyRewind).not.toHaveBeenCalled();
         expect(value.confirmations.take(token)).toBeDefined();
-        expect(value.order).toEqual([
-            "session-lease",
-            "workspace-lock",
-            "release-workspace-lock",
-            "release-session-lease",
-        ]);
+        expect(value.order).toEqual(["session-lease", "release-session-lease"]);
     });
 
     it.each(["summary", "diff", "review"] as const)(
@@ -425,7 +419,7 @@ describe("AgentRewindService", () => {
     );
 
     it.each(["undo", "redo"] as const)(
-        "previews and applies turn %s under both locks with one-shot confirmation and publication",
+        "previews and applies turn %s under retained session mutation with one-shot confirmation and publication",
         async (kind) => {
             const value = harness();
             const previewInput = {
@@ -466,14 +460,10 @@ describe("AgentRewindService", () => {
             expect(() => value.confirmations.take(token)).toThrow(/already consumed/i);
             expect(value.order).toEqual([
                 "session-lease",
-                "workspace-lock",
-                "release-workspace-lock",
                 "release-session-lease",
                 "session-lease",
-                "workspace-lock",
                 `engine-turn-${kind}`,
                 "broadcast",
-                "release-workspace-lock",
                 "release-session-lease",
             ]);
         }
@@ -491,7 +481,12 @@ describe("AgentRewindService", () => {
 
         const token = value.confirmations.issue({
             ...plan(),
-            target: { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" },
+            target: {
+                kind: "turn-redo",
+                sourceTurnId: "turn-1",
+                undoOperationId: "undo-1",
+                linkedOperation: linkedOperation("undo-1"),
+            },
         });
         await expect(
             value.service.applyTurnRedo({

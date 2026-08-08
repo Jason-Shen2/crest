@@ -108,7 +108,14 @@ function workspaceState(sessionId = "session-1", kind: "rewind" | "redo" = "rewi
                       redoStates: [],
                   },
               }
-            : { sourceRewindOperationId: "rewind-operation" }),
+            : {
+                  sourceRewindOperationId: "rewind-operation",
+                  linkedOperation: {
+                      operationId: "rewind-operation",
+                      sourceSnapshot: snapshot(OidA),
+                      currentSnapshot: snapshot(OidB),
+                  },
+              }),
     } as WorkspaceStateV1;
 }
 
@@ -119,13 +126,26 @@ function turnState(
     sessionId = "session-1",
     undoOperationId?: string
 ) {
-    const { sourceRewindOperationId: _sourceRewindOperationId, ...base } = workspaceState(sessionId, "redo");
+    const {
+        sourceRewindOperationId: _sourceRewindOperationId,
+        linkedOperation: _linkedOperation,
+        ...base
+    } = workspaceState(sessionId, "redo");
     return {
         ...base,
         operationId,
         kind,
         sourceTurnId,
-        ...(undoOperationId == null ? {} : { undoOperationId }),
+        ...(undoOperationId == null
+            ? {}
+            : {
+                  undoOperationId,
+                  linkedOperation: {
+                      operationId: undoOperationId,
+                      sourceSnapshot: snapshot(OidA),
+                      currentSnapshot: snapshot(OidB),
+                  },
+              }),
     };
 }
 

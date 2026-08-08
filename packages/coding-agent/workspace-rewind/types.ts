@@ -106,6 +106,12 @@ export interface WorkspaceRewindStateV1 {
     redoStates: Array<{ path: string; state: CapturedPathStateV1 }>;
 }
 
+export interface WorkspaceLinkedOperationV1 {
+    operationId: string;
+    sourceSnapshot: WorkspaceSnapshotRefV1;
+    currentSnapshot: WorkspaceSnapshotRefV1;
+}
+
 export interface WorkspaceStateBaseV1 {
     schemaVersion: 1;
     sessionId: string;
@@ -124,6 +130,7 @@ export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
         | {
               kind: "rewind";
               rewind: WorkspaceRewindStateV1;
+              linkedOperation?: never;
               sourceTurnId?: never;
               undoOperationId?: never;
           }
@@ -133,9 +140,22 @@ export type WorkspaceStateV1 = WorkspaceStateBaseV1 &
               sourceTurnId?: never;
               undoOperationId?: never;
               sourceRewindOperationId: string;
+              linkedOperation: WorkspaceLinkedOperationV1;
           }
-        | { kind: "turn-undo"; rewind?: never; sourceTurnId: string; undoOperationId?: never }
-        | { kind: "turn-redo"; rewind?: never; sourceTurnId: string; undoOperationId: string }
+        | {
+              kind: "turn-undo";
+              rewind?: never;
+              linkedOperation?: never;
+              sourceTurnId: string;
+              undoOperationId?: never;
+          }
+        | {
+              kind: "turn-redo";
+              rewind?: never;
+              sourceTurnId: string;
+              undoOperationId: string;
+              linkedOperation: WorkspaceLinkedOperationV1;
+          }
     );
 
 export interface FoldedWorkspaceSessionState {

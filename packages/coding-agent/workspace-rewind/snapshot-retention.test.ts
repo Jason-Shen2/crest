@@ -275,6 +275,23 @@ test("retains result source and current snapshots after pending cleanup and aggr
     await Promise.all([store.verify(sourceSnapshot), store.verify(plannedSnapshot)]);
 }, 15_000);
 
+test("retains linked operation endpoints while a Redo result is pending before its marker exists", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const pending = new PendingWorkspaceRestoreStore(store);
+    const { record, linkedSource, linkedResult } = await makePendingRedoRestore(store, sessionsRoot, snapshot);
+    await store.withWorkspaceLock(() => pending.publishLocked(record));
+    await store.deleteCrestRef(store.ownerRefName(linkedSource.id));
+    await store.deleteCrestRef(store.ownerRefName(linkedResult.id));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-20T00:00:00Z"));
+
+    expect((await reconcileSnapshotRefs({ store, sessionsRoot })).failClosedReason).toBeUndefined();
+    const refs = new Set((await store.listCrestRefs()).map((ref) => ref.name));
+    expect(refs.has(store.ownerRefName(linkedSource.id))).toBe(true);
+    expect(refs.has(store.ownerRefName(linkedResult.id))).toBe(true);
+    await Promise.all([store.verify(linkedSource), store.verify(linkedResult)]);
+}, 15_000);
+
 test("fails closed before deletion or GC when the active restore pending is corrupt", async () => {
     const { store, sessionsRoot, snapshot } = await makeStore();
     const root = join(store.storeRoot, "journal", "restore");
@@ -549,8 +566,8 @@ async function addStateOwner(
         operationId: `${sessionId}-operation`,
         workspaceIdentity: store.identity.workspaceIdentity,
         workspaceIncarnation: store.identity.workspaceIncarnation,
-        kind: "redo",
-        sourceRewindOperationId: `${sessionId}-rewind-operation`,
+        kind: "turn-undo",
+        sourceTurnId: `${sessionId}-turn`,
         applyMode: "normal",
         forcedPaths: [],
         sourceSnapshot: snapshot,
@@ -646,6 +663,82 @@ async function makePendingRestore(
             workspaceStateTimestamp: "2026-03-15T00:00:00.000Z",
             sourceCommit,
             plannedCommit,
+            affectedPaths: [],
+        },
+    };
+}
+
+async function makePendingRedoRestore(
+    store: WorkspaceSnapshotStore,
+    sessionsRoot: string,
+    snapshot: WorkspaceStateV1["sourceSnapshot"]
+): Promise<{
+    record: PendingWorkspaceRestoreV2;
+    linkedSource: WorkspaceStateV1["sourceSnapshot"];
+    linkedResult: WorkspaceStateV1["currentSnapshot"];
+}> {
+    const metadata = await store.readSnapshotMetadata(snapshot);
+    const append = async (
+        kind: "external" | "rewind" | "redo",
+        expectedHead: string | undefined,
+        operationId?: string,
+        linkedResultCommit?: string
+    ) => {
+        const commit = await store.mutationLog.append({
+            ...(expectedHead ? { expectedHead } : {}),
+            tree: snapshot.tree,
+            metadata: {
+                schemaversion: 1,
+                workspaceidentity: store.identity.workspaceIdentity,
+                workspaceincarnation: store.identity.workspaceIncarnation,
+                kind,
+                ...(kind === "external"
+                    ? {}
+                    : {
+                          sessionid: "restore-session",
+                          operationid: operationId!,
+                          ...(kind === "rewind"
+                              ? { turnid: "turn-a" }
+                              : {
+                                    sourceoperationid: "linked-rewind",
+                                    linkedresultcommitid: linkedResultCommit!,
+                                }),
+                      }),
+            },
+        });
+        return await store.publishCommitSnapshot({ commit, ...metadata });
+    };
+    const linkedSource = await append("external", undefined);
+    const linkedResult = await append("rewind", linkedSource.id, "linked-rewind");
+    const actualSource = await append("external", linkedResult.id);
+    const planned = await append("redo", actualSource.id, "active-redo", linkedResult.id);
+    return {
+        linkedSource,
+        linkedResult,
+        record: {
+            schemaVersion: 2,
+            operationId: "active-redo",
+            workspaceIdentity: store.identity.workspaceIdentity,
+            workspaceIncarnation: store.identity.workspaceIncarnation,
+            sessionId: "restore-session",
+            sessionPath: join(sessionsRoot, "restore-session.db"),
+            target: {
+                kind: "redo",
+                sourceRewindOperationId: "linked-rewind",
+                linkedOperation: {
+                    operationId: "linked-rewind",
+                    sourceSnapshot: linkedSource,
+                    currentSnapshot: linkedResult,
+                },
+            },
+            applyMode: "normal",
+            forcedPaths: [],
+            expectedSemanticLeafId: null,
+            commitParentId: null,
+            workspaceStateEntryId: "workspace-state-redo",
+            workspaceStateTimestamp: "2026-03-20T00:00:00.000Z",
+            sourceCommit: actualSource.id,
+            plannedCommit: planned.id,
             affectedPaths: [],
         },
     };

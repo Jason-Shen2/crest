@@ -10,6 +10,7 @@ import type { SessionTreeEntry } from "@crest/agent/harness/types";
 import { writeDurableJson } from "./durability";
 import { scanPendingBoundaryRecords, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { PendingWorkspaceRestoreStore } from "./pending-restore-store";
+import type { RestoreTargetV1 } from "./restore-plan";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceSnapshotRefV1 } from "./types";
 import { decodeWorkspaceCheckpointV1, decodeWorkspaceStateV1 } from "./validation";
@@ -155,6 +156,11 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
         );
         addOwned(await input.store.readCommitSnapshot(activeRestore.record.sourceCommit), input.store, snapshots);
         addOwned(await input.store.readCommitSnapshot(activeRestore.record.plannedCommit), input.store, snapshots);
+        const linked = linkedOperation(activeRestore.record.target);
+        if (linked) {
+            addOwned(linked.sourceSnapshot, input.store, snapshots);
+            addOwned(linked.currentSnapshot, input.store, snapshots);
+        }
     }
     const workspaceHead = await input.store.mutationLog.readHead();
     if (workspaceHead) {
@@ -191,8 +197,16 @@ function collectSessionOwners(
             }
             addOwned(state.sourceSnapshot, store, owned);
             addOwned(state.currentSnapshot, store, owned);
+            if (state.kind === "redo" || state.kind === "turn-redo") {
+                addOwned(state.linkedOperation.sourceSnapshot, store, owned);
+                addOwned(state.linkedOperation.currentSnapshot, store, owned);
+            }
         }
     }
+}
+
+function linkedOperation(target: RestoreTargetV1) {
+    return target.kind === "redo" || target.kind === "turn-redo" ? target.linkedOperation : undefined;
 }
 
 export function collectSessionSnapshotOwners(

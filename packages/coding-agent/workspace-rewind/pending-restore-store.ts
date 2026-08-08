@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir } from "node:fs/promises";
 import { isAbsolute, join, normalize } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { encodeDurableJson } from "./durability";
 import {
@@ -16,6 +17,8 @@ import {
 } from "./journal-directory";
 import type { RestoreTargetV1 } from "./restore-plan";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
+import type { WorkspaceLinkedOperationV1 } from "./types";
+import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 
 export interface PendingWorkspaceRestoreV2 {
     schemaVersion: 2;
@@ -164,18 +167,41 @@ export class PendingWorkspaceRestoreStore {
         const planned = await this.store.mutationLog.read(record.plannedCommit);
         const expectedTurnId = turnIdFor(record.target);
         const expectedSourceOperationId = sourceOperationIdFor(record.target);
+        const linkedOperation = linkedOperationFor(record.target);
         if (
             planned.parent !== record.sourceCommit ||
             planned.metadata.kind !== record.target.kind ||
             planned.metadata.sessionid !== record.sessionId ||
             planned.metadata.operationid !== record.operationId ||
             planned.metadata.turnid !== expectedTurnId ||
-            planned.metadata.sourceoperationid !== expectedSourceOperationId
+            planned.metadata.sourceoperationid !== expectedSourceOperationId ||
+            planned.metadata.linkedresultcommitid !== linkedOperation?.currentSnapshot.id
         ) {
             throw new Error("Pending restore result commit does not match its operation");
         }
         if (!samePaths(changedPaths, record.affectedPaths)) {
             throw new Error("Pending restore paths do not match the result commit");
+        }
+        if (linkedOperation) {
+            const [sourceSnapshot, currentSnapshot, sourceResult] = await Promise.all([
+                this.store.readCommitSnapshot(linkedOperation.sourceSnapshot.id),
+                this.store.readCommitSnapshot(linkedOperation.currentSnapshot.id),
+                this.store.mutationLog.read(linkedOperation.currentSnapshot.id),
+            ]);
+            const expectedKind = record.target.kind === "redo" ? "rewind" : "turn-undo";
+            if (
+                linkedOperation.operationId !== expectedSourceOperationId ||
+                !isDeepStrictEqual(sourceSnapshot, linkedOperation.sourceSnapshot) ||
+                !isDeepStrictEqual(currentSnapshot, linkedOperation.currentSnapshot) ||
+                sourceResult.parent !== linkedOperation.sourceSnapshot.id ||
+                sourceResult.tree !== linkedOperation.currentSnapshot.tree ||
+                sourceResult.metadata.kind !== expectedKind ||
+                sourceResult.metadata.sessionid !== record.sessionId ||
+                sourceResult.metadata.operationid !== linkedOperation.operationId ||
+                (record.target.kind === "turn-redo" && sourceResult.metadata.turnid !== record.target.sourceTurnId)
+            ) {
+                throw new Error("Pending restore linked result does not match its source operation");
+            }
         }
     }
 }
@@ -269,10 +295,13 @@ function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
     }
     if (
         value.kind === "redo" &&
-        hasExactKeys(value, ["kind", "sourceRewindOperationId"]) &&
+        hasExactKeys(value, ["kind", "sourceRewindOperationId", "linkedOperation"]) &&
         isSafeString(value.sourceRewindOperationId)
     ) {
-        return { kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId };
+        const linkedOperation = decodeLinkedOperation(value.linkedOperation);
+        return linkedOperation?.operationId === value.sourceRewindOperationId
+            ? { kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId, linkedOperation }
+            : undefined;
     }
     if (
         value.kind === "turn-undo" &&
@@ -283,11 +312,19 @@ function decodeRestoreTargetV1(value: unknown): RestoreTargetV1 | undefined {
     }
     if (
         value.kind === "turn-redo" &&
-        hasExactKeys(value, ["kind", "sourceTurnId", "undoOperationId"]) &&
+        hasExactKeys(value, ["kind", "sourceTurnId", "undoOperationId", "linkedOperation"]) &&
         isSafeString(value.sourceTurnId) &&
         isSafeString(value.undoOperationId)
     ) {
-        return { kind: "turn-redo", sourceTurnId: value.sourceTurnId, undoOperationId: value.undoOperationId };
+        const linkedOperation = decodeLinkedOperation(value.linkedOperation);
+        return linkedOperation?.operationId === value.undoOperationId
+            ? {
+                  kind: "turn-redo",
+                  sourceTurnId: value.sourceTurnId,
+                  undoOperationId: value.undoOperationId,
+                  linkedOperation,
+              }
+            : undefined;
     }
     return undefined;
 }
@@ -340,6 +377,29 @@ function sourceOperationIdFor(target: RestoreTargetV1): string | undefined {
     if (target.kind === "redo") return target.sourceRewindOperationId;
     if (target.kind === "turn-redo") return target.undoOperationId;
     return undefined;
+}
+
+function linkedOperationFor(target: RestoreTargetV1): WorkspaceLinkedOperationV1 | undefined {
+    return target.kind === "redo" || target.kind === "turn-redo" ? target.linkedOperation : undefined;
+}
+
+function decodeLinkedOperation(value: unknown): WorkspaceLinkedOperationV1 | undefined {
+    if (!isRecord(value) || !hasExactKeys(value, ["operationId", "sourceSnapshot", "currentSnapshot"])) {
+        return undefined;
+    }
+    const sourceSnapshot = decodeWorkspaceSnapshotRefV1(value.sourceSnapshot);
+    const currentSnapshot = decodeWorkspaceSnapshotRefV1(value.currentSnapshot);
+    if (
+        !isSafeString(value.operationId) ||
+        !sourceSnapshot ||
+        !currentSnapshot ||
+        sourceSnapshot.id === currentSnapshot.id ||
+        sourceSnapshot.workspaceIdentity !== currentSnapshot.workspaceIdentity ||
+        sourceSnapshot.workspaceIncarnation !== currentSnapshot.workspaceIncarnation
+    ) {
+        return undefined;
+    }
+    return { operationId: value.operationId, sourceSnapshot, currentSnapshot };
 }
 
 function isCanonicalRelativePath(path: unknown): path is string {

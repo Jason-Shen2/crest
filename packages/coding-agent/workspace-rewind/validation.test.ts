@@ -102,6 +102,14 @@ function workspaceStateBase() {
     };
 }
 
+function linkedOperation(operationId: string) {
+    return {
+        operationId,
+        sourceSnapshot: snapshot(OidA),
+        currentSnapshot: snapshot(OidB),
+    };
+}
+
 function workspaceState(): Extract<WorkspaceStateV1, { kind: "rewind" }>;
 function workspaceState(kind: "rewind"): Extract<WorkspaceStateV1, { kind: "rewind" }>;
 function workspaceState(kind: "redo"): Extract<WorkspaceStateV1, { kind: "redo" }>;
@@ -118,7 +126,10 @@ function workspaceState(kind: "rewind" | "redo" = "rewind"): WorkspaceStateV1 {
                       redoStates: [{ path: "src/index.ts", state: { state: "symlink", oid: OidB } }],
                   },
               }
-            : { sourceRewindOperationId: "rewind-operation-1" }),
+            : {
+                  sourceRewindOperationId: "rewind-operation-1",
+                  linkedOperation: linkedOperation("rewind-operation-1"),
+              }),
     } as WorkspaceStateV1;
 }
 
@@ -127,7 +138,12 @@ function turnState(kind: "turn-undo" | "turn-redo") {
         ...workspaceStateBase(),
         kind,
         sourceTurnId: "turn-1",
-        ...(kind === "turn-redo" ? { undoOperationId: "undo-operation-1" } : {}),
+        ...(kind === "turn-redo"
+            ? {
+                  undoOperationId: "undo-operation-1",
+                  linkedOperation: linkedOperation("undo-operation-1"),
+              }
+            : {}),
     };
 }
 

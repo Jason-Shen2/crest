@@ -6,6 +6,7 @@ import type {
     WorkspaceCheckpointFailureCode,
     WorkspaceCheckpointV1,
     WorkspaceCoverageReason,
+    WorkspaceLinkedOperationV1,
     WorkspacePathChangeV1,
     WorkspaceSnapshotCoverage,
     WorkspaceSnapshotRefV1,
@@ -200,6 +201,26 @@ export function decodeWorkspaceSnapshotRefV1(value: unknown): WorkspaceSnapshotR
         tree: value.tree,
         scopeManifest: value.scopeManifest,
     };
+}
+
+function decodeWorkspaceLinkedOperationV1(value: unknown): WorkspaceLinkedOperationV1 | undefined {
+    if (!isRecord(value) || !hasExactKeys(value, ["operationId", "sourceSnapshot", "currentSnapshot"])) {
+        return undefined;
+    }
+    const sourceSnapshot = decodeWorkspaceSnapshotRefV1(value.sourceSnapshot);
+    const currentSnapshot = decodeWorkspaceSnapshotRefV1(value.currentSnapshot);
+    if (
+        typeof value.operationId !== "string" ||
+        value.operationId.length === 0 ||
+        !sourceSnapshot ||
+        !currentSnapshot ||
+        sourceSnapshot.id === currentSnapshot.id ||
+        sourceSnapshot.workspaceIdentity !== currentSnapshot.workspaceIdentity ||
+        sourceSnapshot.workspaceIncarnation !== currentSnapshot.workspaceIncarnation
+    ) {
+        return undefined;
+    }
+    return { operationId: value.operationId, sourceSnapshot, currentSnapshot };
 }
 
 function decodeWorkspacePathChangeV1(value: unknown): WorkspacePathChangeV1 | undefined {
@@ -495,10 +516,16 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
         };
     }
     if (value.kind === "redo") {
-        return hasExactKeys(value, [...baseKeys, "sourceRewindOperationId"]) &&
-            typeof value.sourceRewindOperationId === "string" &&
-            value.sourceRewindOperationId.length > 0
-            ? { ...base, kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId }
+        if (
+            !hasExactKeys(value, [...baseKeys, "sourceRewindOperationId", "linkedOperation"]) ||
+            typeof value.sourceRewindOperationId !== "string" ||
+            value.sourceRewindOperationId.length === 0
+        ) {
+            return undefined;
+        }
+        const linkedOperation = decodeWorkspaceLinkedOperationV1(value.linkedOperation);
+        return linkedOperation?.operationId === value.sourceRewindOperationId
+            ? { ...base, kind: "redo", sourceRewindOperationId: value.sourceRewindOperationId, linkedOperation }
             : undefined;
     }
     if (value.kind === "turn-undo") {
@@ -509,17 +536,20 @@ export function decodeWorkspaceStateV1(value: unknown): WorkspaceStateV1 | undef
     }
     if (value.kind === "turn-redo") {
         if (
-            !hasExactKeys(value, [...baseKeys, "sourceTurnId", "undoOperationId"]) ||
+            !hasExactKeys(value, [...baseKeys, "sourceTurnId", "undoOperationId", "linkedOperation"]) ||
             typeof value.sourceTurnId !== "string" ||
             typeof value.undoOperationId !== "string"
         ) {
             return undefined;
         }
+        const linkedOperation = decodeWorkspaceLinkedOperationV1(value.linkedOperation);
+        if (linkedOperation?.operationId !== value.undoOperationId) return undefined;
         return {
             ...base,
             kind: "turn-redo",
             sourceTurnId: value.sourceTurnId,
             undoOperationId: value.undoOperationId,
+            linkedOperation,
         };
     }
     return undefined;

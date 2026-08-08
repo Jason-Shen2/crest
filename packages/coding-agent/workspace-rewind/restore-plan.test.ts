@@ -5,7 +5,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";
 import type { SessionTreeEntry } from "@crest/agent/harness/types";
-import { planRedo, planRewind as planRewindImpl, type PlanRewindInput } from "./restore-plan";
+import {
+    planRedo,
+    planRewind as planRewindImpl,
+    type PlanRewindInput,
+    type RestorePlanV1,
+    validateResultMutationAuthority,
+} from "./restore-plan";
 import type { CapturedPathStateV1, WorkspaceCheckpointV1, WorkspaceStateBaseV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
@@ -179,6 +185,10 @@ function planRewind(input: TestPlanRewindInput) {
         });
         refs.set(value.sourceSnapshot.id, value.sourceSnapshot);
         refs.set(value.currentSnapshot.id, value.currentSnapshot);
+        if ((value.kind === "redo" || value.kind === "turn-redo") && value.linkedOperation) {
+            refs.set(value.linkedOperation.sourceSnapshot.id, value.linkedOperation.sourceSnapshot);
+            refs.set(value.linkedOperation.currentSnapshot.id, value.linkedOperation.currentSnapshot);
+        }
         resultChanges.set(`${value.sourceSnapshot.id}:${value.currentSnapshot.id}`, changes);
         statesByCurrentCommit.set(value.currentSnapshot.id, value);
         authoritySnapshot = value.currentSnapshot;
@@ -227,6 +237,9 @@ function planRewind(input: TestPlanRewindInput) {
                     operationid: state.operationId,
                     ...(turnId ? { turnid: turnId } : {}),
                     ...(sourceOperationId ? { sourceoperationid: sourceOperationId } : {}),
+                    ...((state.kind === "redo" || state.kind === "turn-redo") && state.linkedOperation
+                        ? { linkedresultcommitid: state.linkedOperation.currentSnapshot.id }
+                        : {}),
                 },
             };
         });
@@ -254,6 +267,374 @@ function planRewind(input: TestPlanRewindInput) {
 }
 
 describe("restore planning", () => {
+    it("validates a Redo result against its linked rewind endpoints when another commit became its parent", async () => {
+        const linkedSource = snapshot(OidA);
+        const linkedResult = snapshot(OidB);
+        const actualSource = snapshot(OidC);
+        const actualResult = snapshot(OidD);
+        const state = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "redo-op",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            kind: "redo",
+            applyMode: "normal",
+            forcedPaths: [],
+            sourceSnapshot: actualSource,
+            currentSnapshot: actualResult,
+            currentStates: [],
+            sourceRewindOperationId: "rewind-op",
+            linkedOperation: {
+                operationId: "rewind-op",
+                sourceSnapshot: linkedSource,
+                currentSnapshot: linkedResult,
+            },
+        } as unknown as WorkspaceStateV1;
+        const plan: RestorePlanV1 = {
+            target: {
+                kind: "redo",
+                sourceRewindOperationId: "rewind-op",
+                linkedOperation: state.linkedOperation,
+            },
+            sessionId: "session-1",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            semanticLeafId: "leaf",
+            commitParentId: "leaf",
+            paths: [],
+            coverageWarnings: [],
+            forceRequired: false,
+            hardBlocked: false,
+        };
+        const changes = [
+            {
+                path: "a.ts",
+                before: { state: "absent" as const },
+                after: { state: "file" as const, oid: OidA, executable: false },
+            },
+        ];
+        const read = vi.fn(async (commit: string) => {
+            if (commit === actualResult.id) {
+                return {
+                    parent: actualSource.id,
+                    tree: actualResult.tree,
+                    metadata: {
+                        schemaversion: 1 as const,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "redo" as const,
+                        sessionid: "session-1",
+                        operationid: "redo-op",
+                        sourceoperationid: "rewind-op",
+                        linkedresultcommitid: linkedResult.id,
+                    },
+                };
+            }
+            if (commit === linkedResult.id) {
+                return {
+                    parent: linkedSource.id,
+                    tree: linkedResult.tree,
+                    metadata: {
+                        schemaversion: 1 as const,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "rewind" as const,
+                        sessionid: "session-1",
+                        operationid: "rewind-op",
+                        turnid: "u1",
+                    },
+                };
+            }
+            throw new Error(`unexpected commit ${commit}`);
+        });
+
+        await expect(
+            validateResultMutationAuthority(
+                plan,
+                state,
+                { read, findForeignOverlap: vi.fn() } as never,
+                vi.fn(async (before, after) => {
+                    expect([before, after]).toEqual([actualSource, actualResult]);
+                    return changes;
+                }),
+                vi.fn(
+                    async (commit) =>
+                        new Map([
+                            [linkedSource.id, linkedSource],
+                            [linkedResult.id, linkedResult],
+                            [actualSource.id, actualSource],
+                            [actualResult.id, actualResult],
+                        ]).get(commit)!
+                )
+            )
+        ).resolves.toEqual(changes);
+        expect(plan.hardBlocked).toBe(false);
+    });
+
+    it("folds the linked off-branch rewind as a bridge before a Redo result", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "absent" as const },
+            after: { state: "file" as const, oid: OidA, executable: false },
+        };
+        const cp = checkpoint("u1", [change]);
+        const linkedResult = snapshot(OidC);
+        const actualSource = snapshot(OidD);
+        const actualResult = snapshot(OidE);
+        const redoState = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "redo-op",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            kind: "redo",
+            applyMode: "normal",
+            forcedPaths: [],
+            sourceSnapshot: actualSource,
+            currentSnapshot: actualResult,
+            currentStates: [{ path: "a.ts", state: change.after }],
+            sourceRewindOperationId: "rewind-op",
+            linkedOperation: {
+                operationId: "rewind-op",
+                sourceSnapshot: cp.after,
+                currentSnapshot: linkedResult,
+            },
+        } as unknown as WorkspaceStateV1;
+        const u1 = message("u1", null, "user");
+        const c1 = custom("c1", "u1", WorkspaceControlCustomTypes.checkpoint, cp);
+        const redo = custom("redo", "c1", WorkspaceControlCustomTypes.state, redoState);
+        const mutations = new Map<string, Awaited<ReturnType<WorkspaceMutationLog["read"]>>>([
+            [
+                cp.after.id,
+                {
+                    parent: cp.before.id,
+                    tree: cp.after.tree,
+                    metadata: {
+                        schemaversion: 1,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "agent-turn",
+                        sessionid: "session-1",
+                        turnid: "u1",
+                    },
+                },
+            ],
+            [
+                linkedResult.id,
+                {
+                    parent: cp.after.id,
+                    tree: linkedResult.tree,
+                    metadata: {
+                        schemaversion: 1,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "rewind",
+                        sessionid: "session-1",
+                        operationid: "rewind-op",
+                        turnid: "u1",
+                    },
+                },
+            ],
+            [
+                actualSource.id,
+                {
+                    parent: linkedResult.id,
+                    tree: actualSource.tree,
+                    metadata: {
+                        schemaversion: 1,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "external",
+                    },
+                },
+            ],
+            [
+                actualResult.id,
+                {
+                    parent: actualSource.id,
+                    tree: actualResult.tree,
+                    metadata: {
+                        schemaversion: 1,
+                        workspaceidentity: Workspace.workspaceIdentity,
+                        workspaceincarnation: Workspace.workspaceIncarnation,
+                        kind: "redo",
+                        sessionid: "session-1",
+                        operationid: "redo-op",
+                        sourceoperationid: "rewind-op",
+                        linkedresultcommitid: linkedResult.id,
+                    } as never,
+                },
+            ],
+        ]);
+        const refs = new Map(
+            [cp.before, cp.after, linkedResult, actualSource, actualResult].map((candidate) => [
+                candidate.id,
+                candidate,
+            ])
+        );
+
+        const plan = await planRewindImpl({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [u1, c1, redo],
+            semanticLeafId: "redo",
+            targetTurnId: "u1",
+            currentWorkspaceState: redoState,
+            inspectLivePath: async () => live(change.after),
+            verifySnapshot: async () => {},
+            mutationLog: {
+                read: vi.fn(async (commit) => mutations.get(commit)!),
+                findForeignOverlap: vi.fn(async () => []),
+            },
+            diffSnapshots: vi.fn(async (before, after) => {
+                if (before.id === cp.before.id && after.id === cp.after.id) return [change];
+                if (before.id === cp.after.id && after.id === linkedResult.id) {
+                    return [{ ...change, before: change.after, after: change.before }];
+                }
+                if (before.id === actualSource.id && after.id === actualResult.id) return [change];
+                throw new Error(`unexpected diff ${before.id}:${after.id}`);
+            }),
+            readCommitSnapshot: vi.fn(async (commit) => refs.get(commit)!),
+        });
+
+        expect(plan).toMatchObject({
+            hardBlocked: false,
+            paths: [{ path: "a.ts", target: change.before, expectedCurrent: change.after }],
+        });
+    });
+
+    it("does not fold a linked Undo bridge that already belongs to the active pre-target baseline", async () => {
+        const sourceChange = {
+            path: "source.ts",
+            before: { state: "absent" as const },
+            after: { state: "file" as const, oid: OidA, executable: false },
+        };
+        const targetChange = {
+            path: "target.ts",
+            before: { state: "absent" as const },
+            after: { state: "file" as const, oid: OidB, executable: false },
+        };
+        const sourceCheckpoint = checkpoint("u2", [sourceChange]);
+        const targetCheckpoint = checkpoint("u1", [targetChange]);
+        const undoState = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "undo-op",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            kind: "turn-undo",
+            sourceTurnId: "u2",
+            applyMode: "normal",
+            forcedPaths: [],
+            sourceSnapshot: sourceCheckpoint.after,
+            currentSnapshot: snapshot(OidC),
+            currentStates: [{ path: sourceChange.path, state: sourceChange.before }],
+        } satisfies WorkspaceStateV1;
+        const redoState = {
+            schemaVersion: 1,
+            sessionId: "session-1",
+            operationId: "redo-op",
+            workspaceIdentity: Workspace.workspaceIdentity,
+            workspaceIncarnation: Workspace.workspaceIncarnation,
+            kind: "turn-redo",
+            sourceTurnId: "u2",
+            undoOperationId: undoState.operationId,
+            applyMode: "normal",
+            forcedPaths: [],
+            sourceSnapshot: snapshot(OidD),
+            currentSnapshot: snapshot(OidE),
+            currentStates: [{ path: sourceChange.path, state: sourceChange.after }],
+            linkedOperation: {
+                operationId: undoState.operationId,
+                sourceSnapshot: undoState.sourceSnapshot,
+                currentSnapshot: undoState.currentSnapshot,
+            },
+        } satisfies WorkspaceStateV1;
+        const sourceTurn = message("u2", null, "user");
+        const sourceCheckpointEntry = custom(
+            "c2",
+            sourceTurn.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            sourceCheckpoint
+        );
+        const undo = custom("undo", sourceCheckpointEntry.id, WorkspaceControlCustomTypes.state, undoState);
+        const targetTurn = message("u1", undo.id, "user");
+        const targetCheckpointEntry = custom(
+            "c1",
+            targetTurn.id,
+            WorkspaceControlCustomTypes.checkpoint,
+            targetCheckpoint
+        );
+        const redo = custom("redo", targetCheckpointEntry.id, WorkspaceControlCustomTypes.state, redoState);
+        const history = mutationLog({
+            read: vi.fn(async (commit) => {
+                if (commit === targetCheckpoint.after.id) {
+                    return {
+                        parent: targetCheckpoint.before.id,
+                        tree: targetCheckpoint.after.tree,
+                        metadata: {
+                            schemaversion: 1 as const,
+                            workspaceidentity: Workspace.workspaceIdentity,
+                            workspaceincarnation: Workspace.workspaceIncarnation,
+                            kind: "agent-turn" as const,
+                            sessionid: "session-1",
+                            turnid: targetTurn.id,
+                        },
+                    };
+                }
+                if (commit === redoState.sourceSnapshot.id) {
+                    return {
+                        parent: targetCheckpoint.after.id,
+                        tree: redoState.sourceSnapshot.tree,
+                        metadata: {
+                            schemaversion: 1 as const,
+                            workspaceidentity: Workspace.workspaceIdentity,
+                            workspaceincarnation: Workspace.workspaceIncarnation,
+                            kind: "external" as const,
+                        },
+                    };
+                }
+                throw new Error(`unexpected mutation ${commit}`);
+            }),
+        });
+        const diffSnapshots = vi.fn(async (before: ReturnType<typeof snapshot>, after: ReturnType<typeof snapshot>) => {
+            if (before.id === undoState.sourceSnapshot.id && after.id === undoState.currentSnapshot.id) {
+                throw new Error("the active pre-target Undo must not be folded as a bridge");
+            }
+            if (before.id === targetCheckpoint.before.id && after.id === targetCheckpoint.after.id) {
+                return targetCheckpoint.changes;
+            }
+            if (before.id === redoState.sourceSnapshot.id && after.id === redoState.currentSnapshot.id) {
+                return [sourceChange];
+            }
+            throw new Error(`unexpected diff ${before.id}:${after.id}`);
+        });
+
+        const plan = await planRewind({
+            sessionId: "session-1",
+            workspace: Workspace,
+            rawEntries: [sourceTurn, sourceCheckpointEntry, undo, targetTurn, targetCheckpointEntry, redo],
+            semanticLeafId: redo.id,
+            targetTurnId: targetTurn.id,
+            currentWorkspaceState: redoState,
+            inspectLivePath: async (path) => live(path === sourceChange.path ? sourceChange.after : targetChange.after),
+            verifySnapshot: async () => {},
+            mutationLog: history,
+            diffSnapshots,
+        });
+
+        expect(plan.coverageWarnings).toEqual([]);
+        expect(plan).toMatchObject({
+            hardBlocked: false,
+            paths: [
+                { path: sourceChange.path, target: sourceChange.before, expectedCurrent: sourceChange.after },
+                { path: targetChange.path, target: targetChange.before, expectedCurrent: targetChange.after },
+            ],
+        });
+        expect(diffSnapshots).not.toHaveBeenCalledWith(undoState.sourceSnapshot, undoState.currentSnapshot);
+    });
+
     it("hard-blocks full rewind when checkpoint changes omit an authoritative path", async () => {
         const stored = checkpoint("u1", [
             { path: "a.ts", before: { state: "absent" }, after: { state: "file", oid: OidA, executable: false } },

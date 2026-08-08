@@ -420,7 +420,7 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
         kind: "turn-redo",
         sourceTurnId: input.sourceTurnId,
         undoOperationId: input.undoOperationId,
-    });
+    } as RestoreTargetV1);
     if (!prepared.checkpoint) return prepared.plan;
     const resolved = sourceMutationAuthority(
         prepared.branch!,
@@ -440,6 +440,16 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
         );
     }
     const undoState = resolved.latestState;
+    prepared.plan.target = {
+        kind: "turn-redo",
+        sourceTurnId: input.sourceTurnId,
+        undoOperationId: input.undoOperationId,
+        linkedOperation: {
+            operationId: undoState.operationId,
+            sourceSnapshot: undoState.sourceSnapshot,
+            currentSnapshot: undoState.currentSnapshot,
+        },
+    };
     if (!(await verifyResultSnapshots(prepared.plan, undoState, input))) return prepared.plan;
     const exact = await validateResultMutationAuthority(
         prepared.plan,

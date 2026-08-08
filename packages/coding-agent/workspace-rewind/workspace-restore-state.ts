@@ -65,6 +65,7 @@ export async function deriveWorkspaceRestoreState(
             ...base,
             kind: "redo",
             sourceRewindOperationId: pending.target.sourceRewindOperationId,
+            linkedOperation: structuredClone(pending.target.linkedOperation),
         };
     } else if (pending.target.kind === "turn-undo") {
         markerState = { ...base, kind: "turn-undo", sourceTurnId: pending.target.sourceTurnId };
@@ -74,6 +75,7 @@ export async function deriveWorkspaceRestoreState(
             kind: "turn-redo",
             sourceTurnId: pending.target.sourceTurnId,
             undoOperationId: pending.target.undoOperationId,
+            linkedOperation: structuredClone(pending.target.linkedOperation),
         };
     }
     return { sourceSnapshot, plannedSnapshot, sourceStates, plannedStates, markerState };

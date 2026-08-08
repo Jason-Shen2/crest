@@ -17,6 +17,7 @@ import { decodeWorkspaceCheckpointEntry, decodeWorkspaceStateEntry, isWorkspaceC
 import type {
     CapturedPathStateV1,
     WorkspaceCheckpointV1,
+    WorkspaceLinkedOperationV1,
     WorkspacePathChangeV1,
     WorkspaceSnapshotRefV1,
     WorkspaceStateV1,
@@ -41,9 +42,14 @@ export interface RestorePathPlanV1 {
 
 export type RestoreTargetV1 =
     | { kind: "rewind"; targetTurnId: string }
-    | { kind: "redo"; sourceRewindOperationId: string }
+    | { kind: "redo"; sourceRewindOperationId: string; linkedOperation: WorkspaceLinkedOperationV1 }
     | { kind: "turn-undo"; sourceTurnId: string }
-    | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
+    | {
+          kind: "turn-redo";
+          sourceTurnId: string;
+          undoOperationId: string;
+          linkedOperation: WorkspaceLinkedOperationV1;
+      };
 
 export interface RestorePlanV1 {
     target: RestoreTargetV1;
@@ -151,6 +157,7 @@ export async function validateResultMutationAuthority(
     diffSnapshots: RestoreSnapshotDiff,
     readCommitSnapshot: RestoreCommitSnapshotReader
 ): Promise<WorkspacePathChangeV1[] | undefined> {
+    const linkedOperation = state.kind === "redo" || state.kind === "turn-redo" ? state.linkedOperation : undefined;
     const expectedTurnId =
         state.kind === "rewind"
             ? state.rewind.targetTurnId
@@ -164,13 +171,19 @@ export async function validateResultMutationAuthority(
               ? state.undoOperationId
               : undefined;
     try {
-        const [sourceRef, currentRef] = await Promise.all([
-            readCommitSnapshot(state.sourceSnapshot.id),
-            readCommitSnapshot(state.currentSnapshot.id),
-        ]);
+        const refs = [
+            state.sourceSnapshot,
+            state.currentSnapshot,
+            ...(linkedOperation ? [linkedOperation.sourceSnapshot, linkedOperation.currentSnapshot] : []),
+        ];
+        const associated = await Promise.all(refs.map((snapshot) => readCommitSnapshot(snapshot.id)));
         if (
-            !isDeepStrictEqual(sourceRef, state.sourceSnapshot) ||
-            !isDeepStrictEqual(currentRef, state.currentSnapshot)
+            associated.some((snapshot, index) => !isDeepStrictEqual(snapshot, refs[index])) ||
+            refs.some(
+                (snapshot) =>
+                    snapshot.workspaceIdentity !== state.workspaceIdentity ||
+                    snapshot.workspaceIncarnation !== state.workspaceIncarnation
+            )
         ) {
             hardBlock(plan, "workspace result snapshot association is invalid");
             return undefined;
@@ -183,16 +196,22 @@ export async function validateResultMutationAuthority(
             result.metadata.sessionid !== state.sessionId ||
             result.metadata.operationid !== state.operationId ||
             result.metadata.turnid !== expectedTurnId ||
-            result.metadata.sourceoperationid !== expectedSourceOperationId
+            result.metadata.sourceoperationid !== expectedSourceOperationId ||
+            result.metadata.linkedresultcommitid !== linkedOperation?.currentSnapshot.id
         ) {
             hardBlock(plan, "workspace result mutation authority is invalid");
             return undefined;
         }
-        if (state.kind === "redo" || state.kind === "turn-redo") {
-            const source = await mutationLog.read(state.sourceSnapshot.id);
+        if (linkedOperation) {
+            if (linkedOperation.operationId !== expectedSourceOperationId) {
+                hardBlock(plan, "workspace result source operation link is invalid");
+                return undefined;
+            }
+            const source = await mutationLog.read(linkedOperation.currentSnapshot.id);
             const expectedSourceKind = state.kind === "redo" ? "rewind" : "turn-undo";
             if (
-                source.tree !== state.sourceSnapshot.tree ||
+                source.parent !== linkedOperation.sourceSnapshot.id ||
+                source.tree !== linkedOperation.currentSnapshot.tree ||
                 source.metadata.kind !== expectedSourceKind ||
                 source.metadata.sessionid !== state.sessionId ||
                 source.metadata.operationid !== expectedSourceOperationId ||
@@ -691,6 +710,9 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     );
     for (const item of workspaceStates) {
         snapshots.push(item.state.sourceSnapshot, item.state.currentSnapshot);
+        if (item.state.kind === "redo" || item.state.kind === "turn-redo") {
+            snapshots.push(item.state.linkedOperation.sourceSnapshot, item.state.linkedOperation.currentSnapshot);
+        }
     }
     const snapshotFailure = await snapshotsAreReadable(snapshots, input.workspace, input.verifySnapshot);
     if (snapshotFailure) {
@@ -706,6 +728,8 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     }
 
     const resultChangesByEntryId = new Map<string, WorkspacePathChangeV1[]>();
+    const bridgeChangesByEntryId = new Map<string, WorkspacePathChangeV1[]>();
+    const activeResultCommits = new Set(fullBranchWorkspaceStates.map((item) => item.state.currentSnapshot.id));
     for (const item of workspaceStates) {
         const exact = await validateResultMutationAuthority(
             plan,
@@ -716,6 +740,22 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
         );
         if (!exact) return plan;
         resultChangesByEntryId.set(item.entryId, exact);
+        if (
+            (item.state.kind === "redo" || item.state.kind === "turn-redo") &&
+            !activeResultCommits.has(item.state.linkedOperation.currentSnapshot.id)
+        ) {
+            try {
+                bridgeChangesByEntryId.set(
+                    item.entryId,
+                    await input.diffSnapshots(
+                        item.state.linkedOperation.sourceSnapshot,
+                        item.state.linkedOperation.currentSnapshot
+                    )
+                );
+            } catch (error) {
+                return hardBlock(plan, `workspace linked result diff is unavailable: ${(error as Error).message}`);
+            }
+        }
     }
 
     const workspaceStatesByEntryId = new Map(workspaceStates.map((item) => [item.entryId, item.state]));
@@ -746,22 +786,25 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
             }
         }
         const workspaceState = workspaceStatesByEntryId.get(entry.id);
-        const resultChanges = resultChangesByEntryId.get(entry.id);
-        if (workspaceState && resultChanges) {
-            for (const change of resultChanges) {
-                const existing = transitions.get(change.path);
-                if (existing && !capturedEqual(existing.expectedCurrent, change.before)) {
-                    return hardBlock(plan, "workspace history is not continuous for this path", change.path);
+        const resultChangeSets = [bridgeChangesByEntryId.get(entry.id), resultChangesByEntryId.get(entry.id)];
+        if (workspaceState) {
+            for (const resultChanges of resultChangeSets) {
+                if (!resultChanges) continue;
+                for (const change of resultChanges) {
+                    const existing = transitions.get(change.path);
+                    if (existing && !capturedEqual(existing.expectedCurrent, change.before)) {
+                        return hardBlock(plan, "workspace history is not continuous for this path", change.path);
+                    }
+                    const excluded =
+                        change.before.state === "excluded" || change.after.state === "excluded"
+                            ? "path was excluded from snapshot coverage"
+                            : existing?.excludedReason;
+                    transitions.set(change.path, {
+                        target: existing?.target ?? change.before,
+                        expectedCurrent: change.after,
+                        ...(excluded == null ? {} : { excludedReason: excluded }),
+                    });
                 }
-                const excluded =
-                    change.before.state === "excluded" || change.after.state === "excluded"
-                        ? "path was excluded from snapshot coverage"
-                        : existing?.excludedReason;
-                transitions.set(change.path, {
-                    target: existing?.target ?? change.before,
-                    expectedCurrent: change.after,
-                    ...(excluded == null ? {} : { excludedReason: excluded }),
-                });
             }
         }
     }
@@ -771,6 +814,8 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
         const checkpoint = checkpointsByEntryId.get(entry.id);
         if (checkpoint && checkpoint.before.id !== checkpoint.after.id) authorityCommits.push(checkpoint.after.id);
         const state = workspaceStatesByEntryId.get(entry.id);
+        const bridge = bridgeChangesByEntryId.get(entry.id);
+        if (state && bridge && state.linkedOperation) authorityCommits.push(state.linkedOperation.currentSnapshot.id);
         if (state && state.sourceSnapshot.id !== state.currentSnapshot.id)
             authorityCommits.push(state.currentSnapshot.id);
     }
@@ -801,7 +846,15 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
 export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
     const plan = emptyPlan(
         input,
-        { kind: "redo", sourceRewindOperationId: input.rewindState.operationId },
+        {
+            kind: "redo",
+            sourceRewindOperationId: input.rewindState.operationId,
+            linkedOperation: {
+                operationId: input.rewindState.operationId,
+                sourceSnapshot: input.rewindState.sourceSnapshot,
+                currentSnapshot: input.rewindState.currentSnapshot,
+            },
+        },
         input.rewindState.rewind.fromLeafId
     );
     const active = activeBranch(input.rawEntries, input.semanticLeafId);

@@ -25,6 +25,11 @@ const CleanupRoots: string[] = [];
 const SourceBytes = { "a.txt": "source-a\n", "b.txt": "source-b\n" } as const;
 const PlannedBytes = { "a.txt": "planned-a\n", "b.txt": "planned-b\n" } as const;
 
+type CrashTargetSeed =
+    | Extract<RestoreTargetV1, { kind: "rewind" | "turn-undo" }>
+    | { kind: "redo"; sourceRewindOperationId: string }
+    | { kind: "turn-redo"; sourceTurnId: string; undoOperationId: string };
+
 afterEach(async () => {
     await Promise.all(CleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -61,7 +66,7 @@ test.each([
         expectedDecision: "not-committed",
     },
 ] satisfies Array<{
-    target: RestoreTargetV1;
+    target: CrashTargetSeed;
     applyPaths: string[];
     publishHead: boolean;
     appendMarker: boolean;
@@ -158,7 +163,7 @@ interface Fixture {
     record: PendingWorkspaceRestoreV2;
 }
 
-async function makeFixture(target: RestoreTargetV1): Promise<Fixture> {
+async function makeFixture(targetSeed: CrashTargetSeed): Promise<Fixture> {
     const root = await realpath(await mkdtemp(join(tmpdir(), "crest-real-restore-crash-")));
     CleanupRoots.push(root);
     const workspaceRoot = join(root, "workspace");
@@ -179,7 +184,21 @@ async function makeFixture(target: RestoreTargetV1): Promise<Fixture> {
         git: new WorkspaceGitRunner(),
         processOwner: { pid: process.pid, processStartToken: "parent", nonce: "a".repeat(64) },
     });
-    const source = await appendExternal(store, (await store.capture({ profile: "terminal" })).ref);
+    const capturedSource = (await store.capture({ profile: "terminal" })).ref;
+    let source = await appendExternal(store, capturedSource);
+    let target: RestoreTargetV1;
+    if (targetSeed.kind === "redo" || targetSeed.kind === "turn-redo") {
+        const linkedResult = await appendLinkedResult(store, source, targetSeed);
+        source = await appendExternal(store, capturedSource, linkedResult.snapshot.id);
+        const linkedOperation = {
+            operationId: targetSeed.kind === "redo" ? targetSeed.sourceRewindOperationId : targetSeed.undoOperationId,
+            sourceSnapshot: linkedResult.source,
+            currentSnapshot: linkedResult.snapshot,
+        };
+        target = { ...targetSeed, linkedOperation };
+    } else {
+        target = targetSeed;
+    }
     await writeWorkspaceFiles(workspaceRoot, PlannedBytes);
     const targetCapture = (await store.capture({ profile: "terminal" })).ref;
     const planned = await prepareResultCommit(store, source, targetCapture, target, "operation-1");
@@ -247,6 +266,9 @@ async function prepareResultCommit(
                 operationid: operationId,
                 ...(turnIdFor(target) ? { turnid: turnIdFor(target) } : {}),
                 ...(sourceOperationIdFor(target) ? { sourceoperationid: sourceOperationIdFor(target) } : {}),
+                ...(target.kind === "redo" || target.kind === "turn-redo"
+                    ? { linkedresultcommitid: target.linkedOperation.currentSnapshot.id }
+                    : {}),
             },
         });
         const metadata = await store.readSnapshotMetadata(source);
@@ -258,9 +280,11 @@ async function prepareResultCommit(
 
 async function appendExternal(
     store: WorkspaceSnapshotStore,
-    captured: WorkspaceSnapshotRefV1
+    captured: WorkspaceSnapshotRefV1,
+    expectedHead?: string
 ): Promise<WorkspaceSnapshotRefV1> {
     const prepared = await store.mutationLog.prepare({
+        ...(expectedHead ? { expectedHead } : {}),
         tree: captured.tree,
         metadata: {
             schemaversion: 1,
@@ -273,6 +297,29 @@ async function appendExternal(
     const source = await store.publishCommitSnapshot({ commit: prepared.commit, ...metadata });
     await store.mutationLog.publishPrepared(prepared);
     return source;
+}
+
+async function appendLinkedResult(
+    store: WorkspaceSnapshotStore,
+    source: WorkspaceSnapshotRefV1,
+    target: Extract<CrashTargetSeed, { kind: "redo" | "turn-redo" }>
+): Promise<{ source: WorkspaceSnapshotRefV1; snapshot: WorkspaceSnapshotRefV1 }> {
+    const operationId = target.kind === "redo" ? target.sourceRewindOperationId : target.undoOperationId;
+    const commit = await store.mutationLog.append({
+        expectedHead: source.id,
+        tree: source.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: target.kind === "redo" ? "rewind" : "turn-undo",
+            sessionid: "session-1",
+            operationid: operationId,
+            turnid: target.kind === "redo" ? "turn-1" : target.sourceTurnId,
+        },
+    });
+    const metadata = await store.readSnapshotMetadata(source);
+    return { source, snapshot: await store.publishCommitSnapshot({ commit, ...metadata }) };
 }
 
 async function crashChild(configuration: CrashConfiguration): Promise<void> {

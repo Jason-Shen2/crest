@@ -43,6 +43,42 @@ test("accepts only the exact minimal commit-backed pending restore schema", () =
     expect(decodePendingWorkspaceRestoreV2({ ...record, plannedCommit: record.sourceCommit })).toBeUndefined();
 });
 
+test("requires canonical linked endpoints for every Redo-like pending target", () => {
+    const base = makeDecodedRecord();
+    const linkedOperation = {
+        operationId: "rewind-a",
+        sourceSnapshot: decodedSnapshot("5".repeat(40)),
+        currentSnapshot: decodedSnapshot("6".repeat(40)),
+    };
+    const record = {
+        ...base,
+        target: { kind: "redo", sourceRewindOperationId: "rewind-a", linkedOperation } as const,
+    };
+
+    expect(decodePendingWorkspaceRestoreV2(record)).toEqual(record);
+    expect(
+        decodePendingWorkspaceRestoreV2({
+            ...record,
+            target: { kind: "redo", sourceRewindOperationId: "rewind-a" },
+        })
+    ).toBeUndefined();
+    expect(
+        decodePendingWorkspaceRestoreV2({
+            ...record,
+            target: { ...record.target, linkedOperation: { ...linkedOperation, operationId: "other" } },
+        })
+    ).toBeUndefined();
+    expect(
+        decodePendingWorkspaceRestoreV2({
+            ...record,
+            target: {
+                ...record.target,
+                linkedOperation: { ...linkedOperation, currentSnapshot: linkedOperation.sourceSnapshot },
+            },
+        })
+    ).toBeUndefined();
+});
+
 test("publishes one record only after validating both commit associations and exact changed paths", async () => {
     const fixture = await makeFixture();
     const pending = new PendingWorkspaceRestoreStore(fixture.store);
@@ -78,6 +114,46 @@ test("rejects a result commit whose operation metadata differs from pending", as
             pending.publishLocked({ ...fixture.record, operationId: "operation-other" })
         )
     ).rejects.toThrow(/does not match its operation/i);
+});
+
+test("rejects tampered linked endpoint descriptors and linked-result metadata", async () => {
+    const fixture = await makeRedoFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const target = fixture.record.target;
+    if (target.kind !== "redo") throw new Error("Redo fixture target is invalid");
+
+    await expect(
+        fixture.store.withWorkspaceLock(() =>
+            pending.publishLocked({
+                ...fixture.record,
+                target: {
+                    ...target,
+                    linkedOperation: {
+                        ...target.linkedOperation,
+                        sourceSnapshot: {
+                            ...target.linkedOperation.sourceSnapshot,
+                            scopeManifest: "f".repeat(40),
+                        },
+                    },
+                },
+            })
+        )
+    ).rejects.toThrow(/linked result/i);
+    await expect(
+        fixture.store.withWorkspaceLock(() =>
+            pending.publishLocked({
+                ...fixture.record,
+                target: {
+                    ...target,
+                    linkedOperation: {
+                        ...target.linkedOperation,
+                        currentSnapshot: target.linkedOperation.sourceSnapshot,
+                    },
+                },
+            })
+        )
+    ).rejects.toThrow(/invalid pending|does not match/i);
+    await expect(pending.readCandidate()).resolves.toEqual({ kind: "none" });
 });
 
 test("returns corrupt bytes as a diagnostic without deleting them", async () => {
@@ -148,10 +224,85 @@ async function makeFixture(): Promise<Fixture> {
     };
 }
 
+async function makeRedoFixture(): Promise<Fixture> {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "crest-pending-redo-v2-")));
+    CleanupRoots.push(root);
+    const workspace = join(root, "workspace");
+    const sessionsRoot = join(root, "sessions");
+    await Promise.all([mkdir(workspace), mkdir(sessionsRoot)]);
+    await writeFile(join(workspace, "tracked.txt"), "source\n");
+    const identity: CanonicalWorkspaceIdentity = {
+        canonicalRoot: workspace,
+        workspaceIdentity: "3".repeat(64),
+        workspaceIncarnation: "4".repeat(64),
+        storeKey: "store-redo",
+        ancestorIdentityChain: await ancestorIdentityChain(workspace),
+    };
+    const store = await WorkspaceSnapshotStore.open({
+        dataRoot: join(root, "data"),
+        identity,
+        git: new WorkspaceGitRunner(),
+        processOwner: { pid: process.pid, processStartToken: "test-start", nonce: "b".repeat(64) },
+    });
+    const sourceCaptured = await store.capture({ profile: "terminal" });
+    const linkedSource = await appendSnapshot(store, sourceCaptured.ref, { kind: "external" });
+    const linkedResult = await appendSnapshot(store, sourceCaptured.ref, {
+        expectedHead: linkedSource.id,
+        kind: "rewind",
+        sessionId: "session-a",
+        turnId: "turn-a",
+        operationId: "rewind-a",
+    });
+    const actualSource = await appendSnapshot(store, sourceCaptured.ref, {
+        expectedHead: linkedResult.id,
+        kind: "external",
+    });
+    await writeFile(join(workspace, "tracked.txt"), "planned\n");
+    const plannedCaptured = await store.capture({ profile: "terminal" });
+    const planned = await prepareSnapshot(store, plannedCaptured.ref, {
+        expectedHead: actualSource.id,
+        kind: "redo",
+        sessionId: "session-a",
+        operationId: "operation-a",
+        sourceOperationId: "rewind-a",
+        linkedResultCommitId: linkedResult.id,
+    });
+    await writeFile(join(workspace, "tracked.txt"), "source\n");
+    return {
+        store,
+        record: {
+            ...makeDecodedRecord(),
+            workspaceIdentity: identity.workspaceIdentity,
+            workspaceIncarnation: identity.workspaceIncarnation,
+            sessionPath: join(sessionsRoot, "session-a.db"),
+            target: {
+                kind: "redo",
+                sourceRewindOperationId: "rewind-a",
+                linkedOperation: {
+                    operationId: "rewind-a",
+                    sourceSnapshot: linkedSource,
+                    currentSnapshot: linkedResult,
+                },
+            },
+            sourceCommit: actualSource.id,
+            plannedCommit: planned.id,
+            affectedPaths: ["tracked.txt"],
+        },
+    };
+}
+
 async function appendSnapshot(
     store: WorkspaceSnapshotStore,
     snapshot: WorkspaceSnapshotRefV1,
-    input: { kind: "external" }
+    input: {
+        expectedHead?: string;
+        kind: "external" | "rewind" | "redo";
+        sessionId?: string;
+        turnId?: string;
+        operationId?: string;
+        sourceOperationId?: string;
+        linkedResultCommitId?: string;
+    }
 ): Promise<WorkspaceSnapshotRefV1> {
     const prepared = await prepareSnapshot(store, snapshot, input);
     await store.mutationLog.publishPrepared(prepared.prepared);
@@ -163,12 +314,18 @@ async function prepareSnapshot(
     snapshot: WorkspaceSnapshotRefV1,
     input: {
         expectedHead?: string;
-        kind: "external" | "rewind";
+        kind: "external" | "rewind" | "redo";
         sessionId?: string;
         turnId?: string;
         operationId?: string;
+        sourceOperationId?: string;
+        linkedResultCommitId?: string;
     }
-): Promise<{ id: string; ref: WorkspaceSnapshotRefV1; prepared: Awaited<ReturnType<typeof store.mutationLog.prepare>> }> {
+): Promise<{
+    id: string;
+    ref: WorkspaceSnapshotRefV1;
+    prepared: Awaited<ReturnType<typeof store.mutationLog.prepare>>;
+}> {
     const prepared = await store.mutationLog.prepare({
         ...(input.expectedHead ? { expectedHead: input.expectedHead } : {}),
         tree: snapshot.tree,
@@ -180,6 +337,8 @@ async function prepareSnapshot(
             ...(input.sessionId ? { sessionid: input.sessionId } : {}),
             ...(input.turnId ? { turnid: input.turnId } : {}),
             ...(input.operationId ? { operationid: input.operationId } : {}),
+            ...(input.sourceOperationId ? { sourceoperationid: input.sourceOperationId } : {}),
+            ...(input.linkedResultCommitId ? { linkedresultcommitid: input.linkedResultCommitId } : {}),
         },
     });
     const metadata = await store.readSnapshotMetadata(snapshot);
@@ -189,6 +348,16 @@ async function prepareSnapshot(
         coverage: metadata.coverage,
     });
     return { id: prepared.commit, ref, prepared };
+}
+
+function decodedSnapshot(id: string): WorkspaceSnapshotRefV1 {
+    return {
+        id,
+        workspaceIdentity: "3".repeat(64),
+        workspaceIncarnation: "4".repeat(64),
+        tree: "7".repeat(40),
+        scopeManifest: "8".repeat(40),
+    };
 }
 
 function makeDecodedRecord(): PendingWorkspaceRestoreV2 {

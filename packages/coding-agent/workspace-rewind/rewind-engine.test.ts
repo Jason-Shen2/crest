@@ -352,7 +352,15 @@ describe("WorkspaceRewindEngine transaction", () => {
     it("projects rewind in reverse and redo forward from immutable restore-plan states", async () => {
         const rewindPlan = restorePlan();
         const redoPlan = restorePlan({
-            target: { kind: "redo" },
+            target: {
+                kind: "redo",
+                sourceRewindOperationId: "rewind-operation-1",
+                linkedOperation: {
+                    operationId: "rewind-operation-1",
+                    sourceSnapshot: SafetySnapshot,
+                    currentSnapshot: ResultSnapshot,
+                },
+            },
             semanticLeafId: "operation-leaf-1",
             paths: [
                 {
@@ -836,6 +844,7 @@ describe("WorkspaceRewindEngine transaction", () => {
             sourceTurnId: "turn-1",
             applyMode: "normal",
             forcedPaths: [],
+            sourceSnapshot: SafetySnapshot,
             currentSnapshot: ResultSnapshot,
             currentStates: [],
         } satisfies WorkspaceStateV1;
@@ -912,6 +921,11 @@ describe("WorkspaceRewindEngine transaction", () => {
                 kind: "turn-redo",
                 sourceTurnId: "turn-1",
                 undoOperationId: "operation-1",
+                linkedOperation: {
+                    operationId: "operation-1",
+                    sourceSnapshot: SafetySnapshot,
+                    currentSnapshot: ResultSnapshot,
+                },
             },
             semanticLeafId: "operation-leaf-1",
             commitParentId: "operation-leaf-1",

@@ -6,6 +6,17 @@ import { describe, expect, it, vi } from "vitest";
 import { assertRestorePlanMatchesConfirmation, RewindConfirmationRegistry } from "./confirmation-token";
 import type { RestorePlanV1 } from "./restore-plan";
 
+function linkedOperation(operationId: string) {
+    const snapshot = (id: string) => ({
+        id,
+        workspaceIdentity: "workspace-1",
+        workspaceIncarnation: "incarnation-1",
+        tree: "a".repeat(40),
+        scopeManifest: "b".repeat(40),
+    });
+    return { operationId, sourceSnapshot: snapshot("c".repeat(40)), currentSnapshot: snapshot("d".repeat(40)) };
+}
+
 function plan(overrides: Partial<RestorePlanV1> = {}): RestorePlanV1 {
     return {
         target: { kind: "rewind", targetTurnId: "turn-1" },
@@ -52,8 +63,21 @@ describe("rewind confirmation registry", () => {
             workspaceIncarnation: "incarnation-1",
             sessionId: "session-1",
             semanticLeafId: "leaf-1",
+            commitParentId: "boundary-1",
             target: { kind: "rewind", targetTurnId: "turn-1" },
             effectivePaths: ["a.ts", "b.ts"],
+            pathStates: [
+                {
+                    path: "a.ts",
+                    target: { state: "file", oid: "a".repeat(40), executable: false },
+                    expectedCurrent: { state: "file", oid: "c".repeat(40), executable: false },
+                },
+                {
+                    path: "b.ts",
+                    target: { state: "absent" },
+                    expectedCurrent: { state: "file", oid: "b".repeat(40), executable: false },
+                },
+            ],
             liveFingerprints: [
                 { path: "a.ts", fingerprint: "fingerprint-a", conflict: "none" },
                 { path: "b.ts", fingerprint: "fingerprint-b", conflict: "forceable-drift" },
@@ -76,7 +100,14 @@ describe("rewind confirmation registry", () => {
         expect(() => registry.issue(plan({ hardBlocked: true }), 0)).toThrow(/blocked/i);
         expect(() =>
             registry.issue(
-                plan({ target: { kind: "redo", sourceRewindOperationId: "rewind-1" }, forceRequired: true }),
+                plan({
+                    target: {
+                        kind: "redo",
+                        sourceRewindOperationId: "rewind-1",
+                        linkedOperation: linkedOperation("rewind-1"),
+                    },
+                    forceRequired: true,
+                }),
                 0
             )
         ).toThrow(/redo/i);
@@ -113,6 +144,7 @@ describe("rewind confirmation registry", () => {
         ["incarnation", { workspaceIncarnation: "incarnation-2" }],
         ["session", { sessionId: "session-2" }],
         ["leaf", { semanticLeafId: "leaf-2" }],
+        ["commit parent", { commitParentId: "boundary-2" }],
         ["target", { target: { kind: "rewind", targetTurnId: "turn-2" } }],
     ] as const)("rejects a recomputed plan with a changed %s binding", (_label, override) => {
         const registry = new RewindConfirmationRegistry();
@@ -125,6 +157,21 @@ describe("rewind confirmation registry", () => {
                 plan: plan(override),
                 mode: "force-drift",
             })
+        ).toThrow(/stale/i);
+    });
+
+    it.each(["target state", "expected state"] as const)("rejects changed %s after confirmation", (change) => {
+        const registry = new RewindConfirmationRegistry();
+        const confirmation = registry.take(registry.issue(plan(), 0), 1);
+        const recomputed = plan();
+        if (change === "target state") {
+            recomputed.paths[0]!.target = { state: "file", oid: "d".repeat(40), executable: false };
+        } else {
+            recomputed.paths[0]!.expectedCurrent = { state: "file", oid: "d".repeat(40), executable: false };
+        }
+
+        expect(() =>
+            assertRestorePlanMatchesConfirmation({ confirmation, plan: recomputed, mode: "force-drift" })
         ).toThrow(/stale/i);
     });
 
@@ -204,7 +251,12 @@ describe("rewind confirmation registry", () => {
         expect(undo.binding.target).toEqual({ kind: "turn-undo", sourceTurnId: "source-1" });
 
         const redoPlan = plan({
-            target: { kind: "turn-redo", sourceTurnId: "source-1", undoOperationId: "undo-1" },
+            target: {
+                kind: "turn-redo",
+                sourceTurnId: "source-1",
+                undoOperationId: "undo-1",
+                linkedOperation: linkedOperation("undo-1"),
+            },
             paths: plan().paths.map((path) => ({ ...path, conflict: "none" as const })),
             forceRequired: false,
         });
@@ -213,6 +265,7 @@ describe("rewind confirmation registry", () => {
             kind: "turn-redo",
             sourceTurnId: "source-1",
             undoOperationId: "undo-1",
+            linkedOperation: linkedOperation("undo-1"),
         });
         expect(() =>
             assertRestorePlanMatchesConfirmation({ confirmation: redo, plan: redoPlan, mode: "force-drift" })

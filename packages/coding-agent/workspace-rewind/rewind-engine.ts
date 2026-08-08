@@ -493,7 +493,7 @@ export class WorkspaceRewindEngine {
             return {
                 entries,
                 plan: {
-                    target: { kind: "redo", sourceRewindOperationId: "unavailable" },
+                    target: { kind: "redo", sourceRewindOperationId: "unavailable" } as RestoreTargetV1,
                     sessionId: input.sessionId,
                     workspaceIdentity: input.workspace.workspaceIdentity,
                     workspaceIncarnation: input.workspace.workspaceIncarnation,

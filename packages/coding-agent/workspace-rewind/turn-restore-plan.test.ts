@@ -16,6 +16,7 @@ const OidA = "a".repeat(40);
 const OidB = "b".repeat(40);
 const OidC = "c".repeat(40);
 const OidD = "d".repeat(40);
+const OidE = "e".repeat(40);
 
 const Workspace = {
     canonicalRoot: "/workspace",
@@ -88,7 +89,16 @@ function turnState(kind: "turn-undo" | "turn-redo", operationId: string, undoOpe
         workspaceIncarnation: Workspace.workspaceIncarnation,
         kind,
         sourceTurnId: "u1",
-        ...(kind === "turn-redo" ? { undoOperationId: undoOperationId! } : {}),
+        ...(kind === "turn-redo"
+            ? {
+                  undoOperationId: undoOperationId!,
+                  linkedOperation: {
+                      operationId: undoOperationId!,
+                      sourceSnapshot: snapshot(`${OidB.slice(0, -1)}1`, `${OidB.slice(0, -1)}1`),
+                      currentSnapshot: snapshot(resultOid(undoOperationId!), resultOid(undoOperationId!)),
+                  },
+              }
+            : {}),
         applyMode: "normal",
         forcedPaths: [],
         sourceSnapshot: snapshot(sourceId, sourceId),
@@ -191,6 +201,9 @@ function baseInput(
                     operationid: state.operationId,
                     turnid: state.sourceTurnId,
                     ...(state.kind === "turn-redo" ? { sourceoperationid: state.undoOperationId } : {}),
+                    ...(state.kind === "turn-redo"
+                        ? { linkedresultcommitid: state.linkedOperation.currentSnapshot.id }
+                        : {}),
                 },
             };
         }
@@ -210,6 +223,10 @@ function baseInput(
             const value = entry.data as WorkspaceStateV1;
             refs.set(value.sourceSnapshot.id, value.sourceSnapshot);
             refs.set(value.currentSnapshot.id, value.currentSnapshot);
+            if (value.kind === "turn-redo") {
+                refs.set(value.linkedOperation.sourceSnapshot.id, value.linkedOperation.sourceSnapshot);
+                refs.set(value.linkedOperation.currentSnapshot.id, value.linkedOperation.currentSnapshot);
+            }
         }
     }
     return {
@@ -519,7 +536,7 @@ describe("per-turn restore planning", () => {
         ]);
     });
 
-    it("uses the latest Redo result as the next Undo authority boundary", async () => {
+    it("uses the latest Redo result after a non-overlapping foreign commit as the next Undo authority boundary", async () => {
         const change = {
             path: "a.ts",
             before: { state: "file", oid: OidA, executable: false } as const,
@@ -531,7 +548,12 @@ describe("per-turn restore planning", () => {
         };
         const redoState = {
             ...turnState("turn-redo", "redo-operation-1", undoState.operationId),
-            sourceSnapshot: undoState.currentSnapshot,
+            sourceSnapshot: snapshot(OidE, OidE),
+            linkedOperation: {
+                operationId: undoState.operationId,
+                sourceSnapshot: undoState.sourceSnapshot,
+                currentSnapshot: undoState.currentSnapshot,
+            },
         };
         const entries = branch(checkpoint([change]), [
             custom("undo-marker", null, WorkspaceControlCustomTypes.state, undoState),

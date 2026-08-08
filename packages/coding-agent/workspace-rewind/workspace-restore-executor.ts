@@ -228,6 +228,9 @@ export class WorkspaceRestoreExecutor {
                     ...(sourceOperationIdFor(input.plan.target)
                         ? { sourceoperationid: sourceOperationIdFor(input.plan.target) }
                         : {}),
+                    ...(linkedResultCommitIdFor(input.plan.target)
+                        ? { linkedresultcommitid: linkedResultCommitIdFor(input.plan.target) }
+                        : {}),
                 },
             });
             const metadata = await this.store.readSnapshotMetadata(input.source);
@@ -311,6 +314,12 @@ function sourceOperationIdFor(target: RestorePlanV1["target"]): string | undefin
     if (target.kind === "redo") return target.sourceRewindOperationId;
     if (target.kind === "turn-redo") return target.undoOperationId;
     return undefined;
+}
+
+function linkedResultCommitIdFor(target: RestorePlanV1["target"]): string | undefined {
+    return target.kind === "redo" || target.kind === "turn-redo"
+        ? target.linkedOperation.currentSnapshot.id
+        : undefined;
 }
 
 function comparePathBytes(left: string, right: string): number {

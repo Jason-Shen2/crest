@@ -32,6 +32,7 @@ export interface WorkspaceMutationMetadataV1 {
     turnid?: string;
     operationid?: string;
     sourceoperationid?: string;
+    linkedresultcommitid?: string;
 }
 
 export interface PreparedWorkspaceMutation {
@@ -359,7 +360,7 @@ function validateMetadata(
 ): asserts value is WorkspaceMutationMetadataV1 {
     if (!isJsonRecord(value)) throw new Error("Invalid workspace mutation metadata");
     const required = ["schemaversion", "workspaceidentity", "workspaceincarnation", "kind"];
-    const optional = ["sessionid", "turnid", "operationid", "sourceoperationid"];
+    const optional = ["sessionid", "turnid", "operationid", "sourceoperationid", "linkedresultcommitid"];
     if (!hasExactKeys(value, required, optional)) {
         throw new Error("Invalid workspace mutation metadata keys");
     }
@@ -372,7 +373,8 @@ function validateMetadata(
         !hasOptionalNonemptyString(value, "sessionid") ||
         !hasOptionalNonemptyString(value, "turnid") ||
         !hasOptionalNonemptyString(value, "operationid") ||
-        !hasOptionalNonemptyString(value, "sourceoperationid")
+        !hasOptionalNonemptyString(value, "sourceoperationid") ||
+        !hasOptionalOid(value, "linkedresultcommitid")
     ) {
         throw new Error("Invalid workspace mutation metadata");
     }
@@ -382,6 +384,9 @@ function validateMetadata(
     const requiresSource = value.kind === "redo" || value.kind === "turn-redo";
     if (requiresSource !== Object.hasOwn(value, "sourceoperationid")) {
         throw new Error("Workspace mutation source operation metadata is invalid");
+    }
+    if (requiresSource !== Object.hasOwn(value, "linkedresultcommitid")) {
+        throw new Error("Workspace mutation linked result metadata is invalid");
     }
 }
 
@@ -409,4 +414,8 @@ function hasExactKeys(value: Record<string, unknown>, required: string[], option
 
 function hasOptionalNonemptyString(value: Record<string, unknown>, key: string): boolean {
     return !Object.hasOwn(value, key) || (typeof value[key] === "string" && value[key].length > 0);
+}
+
+function hasOptionalOid(value: Record<string, unknown>, key: string): boolean {
+    return !Object.hasOwn(value, key) || (typeof value[key] === "string" && /^[0-9a-f]{40}$/.test(value[key]));
 }
