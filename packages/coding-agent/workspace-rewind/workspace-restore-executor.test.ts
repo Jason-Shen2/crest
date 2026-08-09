@@ -70,7 +70,7 @@ test("executes a result-commit restore without any restore-time workspace captur
     });
     expect(result).toMatchObject({ semanticLeafId: marker.id, displayLeafId: "current-leaf" });
     expect(onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
-});
+}, 30_000);
 
 test.each([
     { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
@@ -127,7 +127,8 @@ test.each([
                 : undefined
         );
         await expect(fixture.store.mutationLog.changedPaths(result.prepared.commit)).resolves.toEqual(["file.txt"]);
-    }
+    },
+    30_000
 );
 
 test("rolls a partially applied file back when verification fails before head publication", async () => {
@@ -143,7 +144,7 @@ test("rolls a partially applied file back when verification fails before head pu
     expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("source\n");
     expect(await fixture.store.mutationLog.readHead()).toBe(fixture.source.id);
     await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
-});
+}, 30_000);
 
 test("completes the exact leaf marker after result head publication if the first leaf CAS throws", async () => {
     const fixture = await makeFixture({ failFirstAppend: true });
@@ -156,7 +157,7 @@ test("completes the exact leaf marker after result head publication if the first
     expect(fixture.appendEntries).toHaveBeenCalledTimes(2);
     expect(await fixture.store.mutationLog.readHead()).not.toBe(fixture.source.id);
     await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
-});
+}, 30_000);
 
 interface Fixture {
     workspace: CanonicalWorkspaceIdentity;

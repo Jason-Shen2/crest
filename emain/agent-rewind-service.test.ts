@@ -102,7 +102,7 @@ function branch(): SessionTreeEntry[] {
     ];
 }
 
-function harness() {
+function harness(options: { rejectOpenSessionWith?: Error; release?: () => Promise<void> } = {}) {
     const order: string[] = [];
     const confirmations = new RewindConfirmationRegistry();
     const sessionEntries = branch();
@@ -257,10 +257,18 @@ function harness() {
     const service = new AgentRewindService({
         registry: registry as never,
         confirmations,
-        openSession: vi.fn(async () => session as never),
+        openSession: vi.fn(async () => {
+            if (options.rejectOpenSessionWith) throw options.rejectOpenSessionWith;
+            return session as never;
+        }),
         resolveWorkspace: vi.fn(async (input) => {
             if ("publishState" in input) publishState = input.publishState;
-            return { workspace: Workspace, store: store as never, engine: engine as never };
+            return {
+                workspace: Workspace,
+                store: store as never,
+                engine: engine as never,
+                ...(options.release ? { release: options.release } : {}),
+            };
         }),
         broadcaster: broadcaster as never,
     });
@@ -278,6 +286,30 @@ function harness() {
 }
 
 describe("AgentRewindService", () => {
+    it("releases the resolved workspace when opening the session fails", async () => {
+        const openError = new Error("open failed");
+        const release = vi.fn(async () => {});
+        const value = harness({ rejectOpenSessionWith: openError, release });
+
+        await expect(value.service.listPoints({ sessionMetadata: Metadata })).rejects.toBe(openError);
+
+        expect(release).toHaveBeenCalledOnce();
+        expect(value.session.close).not.toHaveBeenCalled();
+    });
+
+    it("releases the resolved workspace when closing the session fails", async () => {
+        const closeError = new Error("close failed");
+        const release = vi.fn(async () => {});
+        const value = harness({ release });
+        value.session.close.mockImplementation(() => {
+            throw closeError;
+        });
+
+        await expect(value.service.listPoints({ sessionMetadata: Metadata })).rejects.toBe(closeError);
+
+        expect(release).toHaveBeenCalledOnce();
+    });
+
     it("lists transaction-safe points from the authoritative raw leaf under the short lock order", async () => {
         const value = harness();
 

@@ -372,16 +372,19 @@ export class AgentRewindService {
                     lease,
                     publishState,
                 });
-                const session = await this.openSession(sessionMetadata);
                 try {
-                    await assertCurrent();
-                    return await operation({
-                        session,
-                        workspace: resolved.workspace,
-                        engine: resolved.engine,
-                    });
+                    const session = await this.openSession(sessionMetadata);
+                    try {
+                        await assertCurrent();
+                        return await operation({
+                            session,
+                            workspace: resolved.workspace,
+                            engine: resolved.engine,
+                        });
+                    } finally {
+                        session.close();
+                    }
                 } finally {
-                    session.close();
                     await resolved.release?.();
                 }
             }
