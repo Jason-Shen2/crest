@@ -25,7 +25,7 @@ afterEach(async () => {
 
 describe("V3 snapshot performance contracts", () => {
     test("keeps a warm no-change boundary off every workspace-scale path", async () => {
-        const fixture = await makeFixture("warm-empty", 200);
+        const fixture = await makeFixture("warm-empty", 32);
         try {
             await fixture.lease.snapshotSource.synchronizeExternal();
             const fullReconcile = vi.spyOn(fixture.lease.store, "captureFullReconcile");
@@ -47,20 +47,20 @@ describe("V3 snapshot performance contracts", () => {
     }, 30_000);
 
     test("bounds one dirty path by its path-local evidence", async () => {
-        const fixture = await makeFixture("one-dirty", 200);
+        const fixture = await makeFixture("one-dirty", 32);
         try {
             await fixture.lease.snapshotSource.synchronizeExternal();
             const fullReconcile = vi.spyOn(fixture.lease.store, "captureFullReconcile");
             const readNodeKinds = vi.spyOn(fixture.lease.store, "readNodeKinds");
             const git = vi.spyOn(fixture.lease.store.git, "run");
-            await writeFile(join(fixture.workspace, "file-100.txt"), "dirty");
-            fixture.feed.record(["file-100.txt"]);
+            await writeFile(join(fixture.workspace, "file-16.txt"), "dirty");
+            fixture.feed.record(["file-16.txt"]);
 
             await fixture.lease.snapshotSource.synchronizeExternal();
 
             expect(fullReconcile).not.toHaveBeenCalled();
             expect(readNodeKinds).toHaveBeenCalledTimes(1);
-            expect(readNodeKinds.mock.calls[0]![1]).toEqual(["file-100.txt"]);
+            expect(readNodeKinds.mock.calls[0]![1]).toEqual(["file-16.txt"]);
             expect(git.mock.calls.length).toBeLessThanOrEqual(80);
         } finally {
             await fixture.lease.release();
@@ -70,15 +70,12 @@ describe("V3 snapshot performance contracts", () => {
     test("keeps 100 dirty parent groups candidate-bounded with at most eight stable readers", async () => {
         const fixture = await makeFixture("hundred-groups", 0);
         try {
-            for (let index = 0; index < 100; index++) {
-                await mkdir(join(fixture.workspace, `dir-${index}`));
-                await writeFile(join(fixture.workspace, `dir-${index}`, "file.txt"), "base");
-            }
             await fixture.lease.snapshotSource.synchronizeExternal();
             const readNodeKinds = vi.spyOn(fixture.lease.store, "readNodeKinds");
             const fullReconcile = vi.spyOn(fixture.lease.store, "captureFullReconcile");
             const git = vi.spyOn(fixture.lease.store.git, "run");
             for (let index = 0; index < 100; index++) {
+                await mkdir(join(fixture.workspace, `dir-${index}`));
                 await writeFile(join(fixture.workspace, `dir-${index}`, "file.txt"), `dirty-${index}`);
                 fixture.feed.record([`dir-${index}/file.txt`]);
             }

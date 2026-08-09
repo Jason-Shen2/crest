@@ -17,10 +17,13 @@ import { discoverWorkspaceScope } from "./workspace-scope";
 const TemporaryRoots: string[] = [];
 const CandidateCaptures: WorkspaceCandidateCapture[] = [];
 const OriginalDataHome = process.env.WAVETERM_DATA_HOME;
+const OriginalTmpDir = process.env.TMPDIR;
 
 afterEach(async () => {
     if (OriginalDataHome == null) delete process.env.WAVETERM_DATA_HOME;
     else process.env.WAVETERM_DATA_HOME = OriginalDataHome;
+    if (OriginalTmpDir == null) delete process.env.TMPDIR;
+    else process.env.TMPDIR = OriginalTmpDir;
     await Promise.allSettled(CandidateCaptures.splice(0).map((capture) => capture.dispose()));
     await Promise.all(TemporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -216,20 +219,20 @@ describe("WorkspaceCandidateCapture", () => {
 
     it("cleans abandoned staging and invalidates every pending result", async () => {
         const fixture = await makeFixture();
-        const before = new Set(
-            (await readdir(tmpdir())).filter((name) => name.startsWith("crest-workspace-candidate-capture-"))
-        );
+        const stagingParent = join(fixture.root, "candidate-staging");
+        await mkdir(stagingParent);
+        process.env.TMPDIR = stagingParent;
         await writeFile(join(fixture.workspace, "plain.txt"), "changed");
         const first = await fixture.capture.capture(["plain.txt"]);
         const second = await fixture.capture.capture([]);
-        const staging = (await readdir(tmpdir())).filter(
-            (name) => name.startsWith("crest-workspace-candidate-capture-") && !before.has(name)
+        const staging = (await readdir(stagingParent)).filter((name) =>
+            name.startsWith("crest-workspace-candidate-capture-")
         );
         expect(staging).toHaveLength(1);
 
         await fixture.capture.dispose();
 
-        await expect(stat(join(tmpdir(), staging[0]!))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(stat(join(stagingParent, staging[0]!))).rejects.toMatchObject({ code: "ENOENT" });
         await expect(fixture.capture.discardCaptured(first)).rejects.toThrow(/pending|discarded|consumed/i);
         await expect(fixture.capture.discardCaptured(second)).rejects.toThrow(/pending|discarded|consumed/i);
     });
@@ -290,7 +293,7 @@ async function makeFixture(maxNewlyHashedBytes = 1024 ** 2) {
     };
     const capture = new WorkspaceCandidateCapture(options);
     CandidateCaptures.push(capture);
-    return { capture, options, store, workspace };
+    return { capture, options, root, store, workspace };
 }
 
 function gitBlobOid(bytes: Buffer): string {

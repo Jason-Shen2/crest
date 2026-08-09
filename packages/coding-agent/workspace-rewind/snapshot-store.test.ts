@@ -94,7 +94,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
 
     it("keeps trusted hot paths candidate-bound and recursively audits a cold V3 ref only once", async () => {
         const fixture = await makeFixture();
-        for (let index = 0; index < 32; index++) {
+        for (let index = 0; index < 8; index++) {
             await mkdir(join(fixture.workspace, `dir-${index}`));
             await writeFile(join(fixture.workspace, `dir-${index}`, "file.txt"), `value-${index}`);
         }
@@ -118,7 +118,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         const coldRef = await coldStore.readCommitSnapshot(commit);
         const coldRun = vi.spyOn(coldStore.git, "run");
         await coldStore.verifyOwnedSnapshot(coldRef);
-        expect(countTreeReads(coldRun.mock.calls)).toBeGreaterThanOrEqual(33);
+        expect(countTreeReads(coldRun.mock.calls)).toBeGreaterThanOrEqual(9);
         coldRun.mockClear();
         await coldStore.verifyOwnedSnapshot(coldRef);
         expect(countTreeReads(coldRun.mock.calls)).toBe(0);

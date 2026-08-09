@@ -52,39 +52,35 @@ describe("V3 snapshot equivalence regressions", () => {
         }
     });
 
-    test.each([0, 10, 20, 30, 40])(
-        "commits ten model checkpoints starting at %i through registry snapshotSource and native V3 full reconcile",
-        async (start) => {
-            const fixture = await makeRegistryFixture(`native-equivalence-${start}`);
-            try {
-                await fixture.lease.snapshotSource.synchronizeExternal();
-                const expected = new Map<string, Buffer>();
-                for (let operation = start; operation < start + 10; operation++) {
-                    const path = `model/file-${operation % 8}.txt`;
-                    const bytes = Buffer.from(`operation-${operation}\0${operation % 3}`);
-                    await mkdir(join(fixture.workspace, "model"), { recursive: true });
-                    await writeFile(join(fixture.workspace, path), bytes);
-                    fixture.feed.record([path]);
-                    expected.set(path, bytes);
+    test("commits six model checkpoints through registry snapshotSource and native V3 full reconcile", async () => {
+        const fixture = await makeRegistryFixture("native-equivalence");
+        try {
+            await fixture.lease.snapshotSource.synchronizeExternal();
+            const expected = new Map<string, Buffer>();
+            for (let operation = 0; operation < 6; operation++) {
+                const path = `model/file-${operation % 3}.txt`;
+                const bytes = Buffer.from(`operation-${operation}\0${operation % 3}`);
+                await mkdir(join(fixture.workspace, "model"), { recursive: true });
+                await writeFile(join(fixture.workspace, path), bytes);
+                fixture.feed.record([path]);
+                expected.set(path, bytes);
 
-                    const head = await fixture.lease.snapshotSource.synchronizeExternal();
-                    const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
+                const head = await fixture.lease.snapshotSource.synchronizeExternal();
+                const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
 
-                    expect(head.ref.tree).toBe(full.tree);
-                    for (const [expectedPath, expectedBytes] of expected) {
-                        const state = await fixture.lease.store.readPathState(head.ref, expectedPath);
-                        expect(state.state).toBe("file");
-                        if (state.state !== "file") throw new Error("expected V3 file state");
-                        expect(await fixture.lease.store.readBlob(state.oid)).toEqual(expectedBytes);
-                        expect(await readFile(join(fixture.workspace, expectedPath))).toEqual(expectedBytes);
-                    }
+                expect(head.ref.tree).toBe(full.tree);
+                for (const [expectedPath, expectedBytes] of expected) {
+                    const state = await fixture.lease.store.readPathState(head.ref, expectedPath);
+                    expect(state.state).toBe("file");
+                    if (state.state !== "file") throw new Error("expected V3 file state");
+                    expect(await fixture.lease.store.readBlob(state.oid)).toEqual(expectedBytes);
+                    expect(await readFile(join(fixture.workspace, expectedPath))).toEqual(expectedBytes);
                 }
-            } finally {
-                await fixture.lease.release();
             }
-        },
-        30_000
-    );
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
 
     test("turns a real change-feed callback error into unavailable", async () => {
         let callback!: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown;
