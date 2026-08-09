@@ -169,6 +169,7 @@ function addEvents(state: FeedState, events: readonly WorkspaceChangeEvent[]): v
             loseTrust(state, "unsafe-path");
             return;
         }
+        if (path === ".git" || path.startsWith(".git/")) continue;
         if (state.callbackPaths.has(path)) continue;
         if (state.callbackPaths.size >= state.callbackPathCapacity) {
             loseTrust(state, "overflow");

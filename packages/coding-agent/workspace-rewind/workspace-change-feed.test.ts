@@ -93,6 +93,18 @@ describe("ParcelWorkspaceChangeFeed", () => {
         expect([...first.changedPaths, ...second.changedPaths].sort()).toEqual(["before.txt", "racing.txt"]);
     });
 
+    test("ignores Git metadata events that cannot change eligible Workspace content", async () => {
+        await feed.start();
+        watcher.emit(
+            { path: ".git/index", type: "update" },
+            { path: join(workspaceRoot, ".git", "fsmonitor--daemon", "cookies", "token"), type: "create" },
+            { path: "source.ts", type: "update" }
+        );
+
+        await expect(feed.drain()).resolves.toEqual({ status: "complete", changedPaths: ["source.ts"] });
+        expect(feed.isTrusted()).toBe(true);
+    });
+
     test("ignores callbacks from a subscription replaced by restart", async () => {
         await feed.start();
         const staleCallback = [...watcher.callbacks][0]!;
