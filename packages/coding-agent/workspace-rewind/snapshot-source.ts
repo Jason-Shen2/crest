@@ -462,16 +462,23 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
 
     async importSourceTree(sourceHeadTree: string, signal?: AbortSignal): Promise<void> {
         const visited = new Set<string>();
-        const copy = async (tree: string): Promise<void> => {
+        const copy = async (tree: string, knownMissing = false): Promise<void> => {
             if (visited.has(tree)) return;
             visited.add(tree);
-            if (await this.privateTreeExists(tree, signal)) return;
+            if (!knownMissing && (await this.privateTreePresence([tree], signal))[0]) return;
             const raw = await this.candidates!.userGit!.run(["cat-file", "tree", tree], {
                 cwd: this.store.identity.canonicalRoot,
                 timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
                 signal,
             });
-            for (const child of readSubtreeOids(raw.stdout)) await copy(child);
+            const children = [...new Set(readSubtreeOids(raw.stdout).filter((child) => !visited.has(child)))];
+            const presence = await this.privateTreePresence(children, signal);
+            for (let index = 0; index < children.length; index++) {
+                if (presence[index]) visited.add(children[index]!);
+            }
+            for (let index = 0; index < children.length; index++) {
+                if (!presence[index]) await copy(children[index]!, true);
+            }
             const imported = await this.store.git.run(["hash-object", "-t", "tree", "-w", "--stdin", "--literally"], {
                 gitDir: this.store.storeRoot,
                 stdin: raw.stdout,
@@ -486,18 +493,34 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         await copy(sourceHeadTree);
     }
 
-    async privateTreeExists(tree: string, signal?: AbortSignal): Promise<boolean> {
+    async privateTreePresence(trees: readonly string[], signal?: AbortSignal): Promise<boolean[]> {
+        if (trees.length === 0) return [];
         const checked = await this.store.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
             gitDir: this.store.storeRoot,
-            stdin: Buffer.from(`${tree}\n`),
+            stdin: Buffer.from(`${trees.join("\n")}\n`),
             timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
             signal,
-            maxStdoutBytes: 128,
         });
         if (checked.stderr.length !== 0) throw new Error("Private source-tree lookup wrote to stderr");
-        if (checked.stdout.equals(Buffer.from(`${tree} tree\n`))) return true;
-        if (checked.stdout.equals(Buffer.from(`${tree} missing\n`))) return false;
-        throw new Error("Private source-tree lookup returned an invalid object result");
+        const presence: boolean[] = [];
+        let offset = 0;
+        for (const tree of trees) {
+            const newline = checked.stdout.indexOf(0x0a, offset);
+            if (newline < 0) throw new Error("Private source-tree lookup returned an invalid object result");
+            const line = checked.stdout.subarray(offset, newline);
+            if (line.equals(Buffer.from(`${tree} tree`))) {
+                presence.push(true);
+            } else if (line.equals(Buffer.from(`${tree} missing`))) {
+                presence.push(false);
+            } else {
+                throw new Error("Private source-tree lookup returned an invalid object result");
+            }
+            offset = newline + 1;
+        }
+        if (offset !== checked.stdout.length) {
+            throw new Error("Private source-tree lookup returned an invalid object result");
+        }
+        return presence;
     }
 
     async writeCandidateBlob(bytes: Buffer, signal?: AbortSignal): Promise<string> {

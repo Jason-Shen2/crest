@@ -572,20 +572,31 @@ describe("Workspace checkpoint snapshot source", () => {
         await source.dispose?.();
     });
 
-    it("imports only missing source-tree ancestors and changed subtrees", async () => {
+    it("batch-checks wide stable siblings while importing only the missing source-tree chain", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-pruned-source-import-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
+        const stableSiblingCount = 32;
         await mkdir(join(workspaceRoot, "changed"), { recursive: true });
-        await mkdir(join(workspaceRoot, "stable"));
         const git = new WorkspaceGitRunner();
         await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
         await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "before\n");
-        await writeFile(join(workspaceRoot, "stable", "leaf.txt"), "stable\n");
+        for (let index = 0; index < stableSiblingCount; index++) {
+            const stable = join(workspaceRoot, `stable-${index.toString().padStart(2, "0")}`);
+            await mkdir(stable);
+            await writeFile(join(stable, "leaf.txt"), `stable ${index}\n`);
+        }
         await commitAll(git, workspaceRoot, "base");
-        const stableTree = parseTestOid(
-            (await git.run(["rev-parse", "HEAD:stable"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
-        );
+        const stableTrees: string[] = [];
+        for (let index = 0; index < stableSiblingCount; index++) {
+            const name = `stable-${index.toString().padStart(2, "0")}`;
+            stableTrees.push(
+                parseTestOid(
+                    (await git.run(["rev-parse", `HEAD:${name}`], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+                )
+            );
+        }
+        const stableTree = stableTrees[0]!;
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
             dataRoot: join(root, "data"),
@@ -613,6 +624,7 @@ describe("Workspace checkpoint snapshot source", () => {
             (await git.run(["rev-parse", "HEAD:changed"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
         );
         const userCatFileTrees: string[] = [];
+        const privateBatchChecks: string[][] = [];
         let corruptPrivateTreeLookup = false;
         const run = git.run.bind(git);
         vi.spyOn(git, "run").mockImplementation(async (args, options) => {
@@ -625,6 +637,9 @@ describe("Workspace checkpoint snapshot source", () => {
                 const requested = options.stdin!.toString("ascii").trim();
                 return { stdout: Buffer.from(`${requested} blob\n`), stderr: Buffer.alloc(0) };
             }
+            if (args[0] === "cat-file" && args[1]?.startsWith("--batch-check=") && options.gitDir) {
+                privateBatchChecks.push(options.stdin!.toString("ascii").trim().split("\n"));
+            }
             if (args[0] === "cat-file" && args[1] === "tree" && options.cwd === identity.canonicalRoot) {
                 userCatFileTrees.push(args[2]!);
             }
@@ -635,13 +650,18 @@ describe("Workspace checkpoint snapshot source", () => {
 
         expect(userCatFileTrees).toEqual([sourceTree, changedTree]);
         expect(userCatFileTrees).not.toContain(stableTree);
+        expect(privateBatchChecks).toHaveLength(8);
+        const childTrees = new Set([changedTree, ...stableTrees]);
+        const importChildChecks = privateBatchChecks.filter((batch) => batch.some((oid) => childTrees.has(oid)));
+        expect(importChildChecks).toEqual([expect.arrayContaining([...childTrees])]);
+        expect(importChildChecks[0]).toHaveLength(stableSiblingCount + 1);
 
         await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "after again\n");
         await commitAll(git, workspaceRoot, "change leaf again");
         corruptPrivateTreeLookup = true;
         await expect(source.synchronizeExternal()).rejects.toThrow(/invalid object result/i);
         await source.dispose?.();
-    });
+    }, 20_000);
 
     it("bootstraps a fresh authority as an external mutation before serving no-tool turns", async () => {
         const fixture = makeStore();
