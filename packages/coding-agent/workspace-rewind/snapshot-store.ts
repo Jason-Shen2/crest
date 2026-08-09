@@ -810,6 +810,7 @@ export class WorkspaceSnapshotStore {
 
     async #readSnapshotAssociation(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
         validateCrestRefName(refName);
+        await assertNoSymlinkRefPath(this.storeRoot, refName);
         const result = await this.git.run(
             ["for-each-ref", "--format=%(refname)%00%(objectname)%00%(symref)", "--count=2", refName],
             {
@@ -819,6 +820,7 @@ export class WorkspaceSnapshotStore {
                 signal: runtime.signal,
             }
         );
+        await assertNoSymlinkRefPath(this.storeRoot, refName);
         if (result.stdout.length === 0) return undefined;
         let association: string | undefined;
         for (const line of splitLines(result.stdout)) {
@@ -1576,6 +1578,22 @@ export class WorkspaceSnapshotStore {
         validateRefToken(record.boundaryToken, "boundary token");
         const sessionHash = createHash("sha256").update(record.sessionId, "utf8").digest("hex");
         return `refs/crest/pending/${sessionHash}/${record.boundaryToken}`;
+    }
+}
+
+async function assertNoSymlinkRefPath(storeRoot: string, refName: string): Promise<void> {
+    let cursor = storeRoot;
+    for (const segment of refName.split("/")) {
+        cursor = join(cursor, segment);
+        try {
+            const state = await lstat(cursor);
+            if (state.isSymbolicLink()) {
+                throw new Error("Workspace snapshot association path must not contain a symlink");
+            }
+        } catch (error) {
+            if (isCode(error, "ENOENT")) return;
+            throw error;
+        }
     }
 }
 

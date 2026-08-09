@@ -3,9 +3,9 @@
 
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -91,6 +91,187 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         });
         expect(await readFile(join(fixture.workspace, "plain.txt"))).toEqual(Buffer.from("after\r\n"));
     });
+
+    it("keeps trusted hot paths candidate-bound and recursively audits a cold V3 ref only once", async () => {
+        const fixture = await makeFixture();
+        for (let index = 0; index < 32; index++) {
+            await mkdir(join(fixture.workspace, `dir-${index}`));
+            await writeFile(join(fixture.workspace, `dir-${index}`, "file.txt"), `value-${index}`);
+        }
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const commit = await appendMutation(fixture, captured.tree);
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const ref = await fixture.store.publishCommitSnapshot({ commit, ...captured });
+        expect(countTreeReads(run.mock.calls)).toBe(0);
+        run.mockClear();
+        await fixture.store.verifyOwnedSnapshot(ref);
+        await fixture.store.verifyOwnedSnapshot(ref);
+        expect(countTreeReads(run.mock.calls)).toBe(0);
+
+        const coldStore = await WorkspaceSnapshotStore.open({
+            dataRoot: fixture.dataRoot,
+            identity: fixture.identity,
+            git: fixture.git,
+            processOwner: fixture.processOwner,
+        });
+        const coldRef = await coldStore.readCommitSnapshot(commit);
+        const coldRun = vi.spyOn(coldStore.git, "run");
+        await coldStore.verifyOwnedSnapshot(coldRef);
+        expect(countTreeReads(coldRun.mock.calls)).toBeGreaterThanOrEqual(33);
+        coldRun.mockClear();
+        await coldStore.verifyOwnedSnapshot(coldRef);
+        expect(countTreeReads(coldRun.mock.calls)).toBe(0);
+    });
+
+    it("fails closed for conflicting, malformed, and symbolic V3 associations", async () => {
+        const fixture = await makeFixture();
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const commit = await appendMutation(fixture, captured.tree);
+        const ref = await fixture.store.publishCommitSnapshot({ commit, ...captured });
+
+        await expect(
+            fixture.store.publishCommitSnapshot({
+                commit,
+                scope: captured.scope,
+                coverage: {
+                    ...captured.coverage,
+                    complete: false,
+                    exclusions: [{ path: "ignored", reason: "ignored" }],
+                },
+            })
+        ).rejects.toThrow(/association|manifest/i);
+
+        const malformed = await writeBlob(
+            fixture,
+            Buffer.from(
+                JSON.stringify(JSON.parse((await fixture.store.readBlob(ref.scopeManifest)).toString("utf8")), null, 2)
+            )
+        );
+        const association = fixture.store.ownerRefName(commit);
+        await fixture.git.run(["update-ref", "--no-deref", association, malformed, ref.scopeManifest], {
+            gitDir: fixture.store.storeRoot,
+            timeoutMs: 5_000,
+        });
+        await expect(fixture.store.readCommitSnapshot(commit)).rejects.toThrow(/canonical/i);
+
+        await fixture.git.run(["update-ref", "-d", association, malformed], {
+            gitDir: fixture.store.storeRoot,
+            timeoutMs: 5_000,
+        });
+        const target = "refs/crest/ops/symbolic-manifest";
+        await fixture.git.run(["update-ref", target, ref.scopeManifest], {
+            gitDir: fixture.store.storeRoot,
+            timeoutMs: 5_000,
+        });
+        const associationPath = join(fixture.store.storeRoot, association);
+        await mkdir(dirname(associationPath), { recursive: true });
+        await writeFile(associationPath, `ref: ${target}\n`);
+        await expect(fixture.store.readCommitSnapshot(commit)).rejects.toThrow(/symbolic/i);
+
+        await rm(associationPath);
+        await symlink(join(fixture.store.storeRoot, target), associationPath);
+        await expect(fixture.store.readCommitSnapshot(commit)).rejects.toThrow(/symbolic|symlink|unsafe/i);
+    });
+
+    it("recursively audits V3 eligible counts and coverage completeness", async () => {
+        const fixture = await makeFixture();
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const wrongCountCommit = await appendMutation(fixture, captured.tree);
+        const wrongCount = await fixture.store.publishCommitSnapshot({
+            commit: wrongCountCommit,
+            scope: captured.scope,
+            coverage: { ...captured.coverage, eligibleEntryCount: captured.coverage.eligibleEntryCount + 1 },
+        });
+        await expect(fixture.store.verify(wrongCount)).rejects.toThrow(/coverage|eligible/i);
+
+        const nextCommit = await appendMutation(fixture, captured.tree, wrongCountCommit, "coverage-shape");
+        expect(() =>
+            fixture.store.publishCommitSnapshot({
+                commit: nextCommit,
+                scope: captured.scope,
+                coverage: {
+                    complete: true,
+                    eligibleEntryCount: captured.coverage.eligibleEntryCount,
+                    exclusions: [{ path: "ignored", reason: "ignored" }],
+                },
+            })
+        ).toThrow(/coverage|complete/i);
+    });
+
+    it("rejects unsorted, invalid-mode, and non-UTF8 raw V3 trees", async () => {
+        const fixture = await makeFixture();
+        const blob = await writeBlob(fixture, Buffer.from("value"));
+        const scope = (await fixture.store.captureFullReconcile({ profile: "terminal" })).scope;
+        const cases = [
+            Buffer.concat([
+                rawTreeEntry("100644", Buffer.from("z.txt"), blob),
+                rawTreeEntry("100644", Buffer.from("a.txt"), blob),
+            ]),
+            Buffer.concat([
+                Buffer.from([0xb1, 0xb0, 0xb0, 0xb6, 0xb4, 0xb4, 0x20]),
+                Buffer.from("mode.txt\0"),
+                Buffer.from(blob, "hex"),
+            ]),
+            rawTreeEntry("100644", Buffer.from([0xff]), blob),
+        ];
+        let parent: string | undefined;
+        for (let index = 0; index < cases.length; index++) {
+            const tree = await writeRawTree(fixture, cases[index]!);
+            const commit = await appendMutation(fixture, tree, parent, `raw-${index}`);
+            parent = commit;
+            const ref = await fixture.store.publishCommitSnapshot({
+                commit,
+                scope,
+                coverage: { complete: true, eligibleEntryCount: index === 0 ? 2 : 1, exclusions: [] },
+            });
+            await expect(fixture.store.verify(ref)).rejects.toThrow(/tree|order|mode|utf|path/i);
+        }
+    });
+
+    it("rejects a missing V3 blob and a branch that points to a blob", async () => {
+        const fixture = await makeFixture();
+        const scope = (await fixture.store.captureFullReconcile({ profile: "terminal" })).scope;
+        const missingTree = await writeRawTree(
+            fixture,
+            rawTreeEntry("100644", Buffer.from("missing.txt"), "f".repeat(40))
+        );
+        const missingCommit = await appendMutation(fixture, missingTree, undefined, "missing-blob");
+        const missing = await fixture.store.publishCommitSnapshot({
+            commit: missingCommit,
+            scope,
+            coverage: { complete: true, eligibleEntryCount: 1, exclusions: [] },
+        });
+        await expect(fixture.store.verify(missing)).rejects.toThrow(/missing|blob|object/i);
+
+        const blob = await writeBlob(fixture, Buffer.from("not a tree"));
+        const branchTree = await writeRawTree(fixture, rawTreeEntry("40000", Buffer.from("branch"), blob));
+        const branchCommit = await appendMutation(fixture, branchTree, missingCommit, "blob-branch");
+        const branch = await fixture.store.publishCommitSnapshot({
+            commit: branchCommit,
+            scope,
+            coverage: { complete: true, eligibleEntryCount: 1, exclusions: [] },
+        });
+        await expect(fixture.store.verify(branch)).rejects.toMatchObject({ code: "corrupt_snapshot" });
+    });
+
+    it("keeps V3 metadata reachable through GC and includes it in usage traversal", async () => {
+        const fixture = await makeFixture();
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const commit = await appendMutation(fixture, captured.tree);
+        const ref = await fixture.store.publishCommitSnapshot({ commit, ...captured });
+
+        await expect(fixture.store.measureSnapshotUsage([ref])).resolves.toBeGreaterThan(0);
+        await fixture.git.run(["reflog", "expire", "--expire=now", "--all"], {
+            gitDir: fixture.store.storeRoot,
+            timeoutMs: 5_000,
+        });
+        await fixture.git.run(["gc", "--prune=now"], { gitDir: fixture.store.storeRoot, timeoutMs: 30_000 });
+
+        await expect(fixture.store.readCommitSnapshot(commit)).resolves.toEqual(ref);
+        await expect(fixture.store.readBlob(ref.scopeManifest)).resolves.toBeInstanceOf(Buffer);
+        await expect(fixture.store.verifyOwnedSnapshot(ref)).resolves.toBeUndefined();
+    });
 });
 
 async function makeFixture() {
@@ -107,11 +288,65 @@ async function makeFixture() {
 
     const git = new WorkspaceGitRunner();
     const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+    const processOwner = {
+        pid: process.pid,
+        processStartToken: "snapshot-store-v3",
+        nonce: "e".repeat(64),
+    };
     const store = await WorkspaceSnapshotStore.open({
         dataRoot: join(root, "data"),
         identity,
         git,
-        processOwner: { pid: process.pid, processStartToken: "snapshot-store-v3", nonce: "e".repeat(64) },
+        processOwner,
     });
-    return { root, workspace, store };
+    return { root, workspace, store, dataRoot: join(root, "data"), identity, git, processOwner };
+}
+
+async function appendMutation(
+    fixture: Awaited<ReturnType<typeof makeFixture>>,
+    tree: string,
+    expectedHead?: string,
+    turnId = "v3-safety"
+): Promise<string> {
+    return await fixture.store.mutationLog.append({
+        ...(expectedHead ? { expectedHead } : {}),
+        tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: fixture.identity.workspaceIdentity,
+            workspaceincarnation: fixture.identity.workspaceIncarnation,
+            kind: "agent-turn",
+            sessionid: "v3-safety-session",
+            turnid: turnId,
+        },
+    });
+}
+
+async function writeBlob(fixture: Awaited<ReturnType<typeof makeFixture>>, bytes: Buffer): Promise<string> {
+    const result = await fixture.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+        gitDir: fixture.store.storeRoot,
+        stdin: bytes,
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
+async function writeRawTree(fixture: Awaited<ReturnType<typeof makeFixture>>, bytes: Buffer): Promise<string> {
+    const result = await fixture.git.run(["hash-object", "-t", "tree", "-w", "--stdin", "--literally"], {
+        gitDir: fixture.store.storeRoot,
+        stdin: bytes,
+        timeoutMs: 5_000,
+    });
+    return result.stdout.toString("ascii").trim();
+}
+
+function rawTreeEntry(mode: string, name: Buffer, oid: string): Buffer {
+    return Buffer.concat([Buffer.from(`${mode} `), name, Buffer.from([0]), Buffer.from(oid, "hex")]);
+}
+
+function countTreeReads(calls: readonly (readonly unknown[])[]): number {
+    return calls.filter((call) => {
+        const args = call[0];
+        return Array.isArray(args) && args[0] === "cat-file" && args[1] === "tree";
+    }).length;
 }
