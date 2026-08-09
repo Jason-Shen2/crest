@@ -436,23 +436,35 @@ integration suites passed both specification and quality review.
 - Modify: `emain/agent-rewind-service.ts`
 - Test: `emain/agent-rewind-service.test.ts`
 
-- [ ] **Step 1: Write failing sharing tests**
+- [x] **Step 1: Write failing sharing tests**
 
 All Sessions in one canonical Workspace share store, mutation log, candidates, and writer leases; different incarnations remain isolated; last release disposes only in-memory hints.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/workspace-tracker-registry.test.ts emain/agent-rewind-feature.test.ts emain/agent-rewind-service.test.ts
 ```
 
-- [ ] **Step 3: Replace tracker resources**
+- [x] **Step 3: Replace tracker resources**
 
 Return `store`, `mutationLog`, `candidates`, and `writerLeases` from the shared resource. Wire checkpoint and rewind services to those exact objects.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run the same suites and commit.
+
+**Implementation note (2026-08-09):** One canonical Workspace resource now owns the exact store, mutation log,
+candidate feed, writer leases, and checkpoint snapshot source shared by every Session in the same incarnation.
+Read, checkpoint, rewind, and recovery paths use those exact objects and release short-lived leases in `finally`;
+last release disposes only in-memory capture and hint resources. Git and non-Git warm captures inspect candidate
+paths only, validate watcher generation and HEAD boundaries after staging, retry a union once, and fail closed on
+continued mutation. Scope invalidation uses an explicit full reconcile instead of the drained legacy tracker.
+Nested Git Workspaces use their repository prefix and `HEAD:<prefix>` subtree, exclude siblings, and keep paths
+Workspace-relative. Source-tree import batches private object probes and prunes existing subtrees, so warm cost
+tracks changed tree depth rather than monorepo width. The legacy path-capture dependency remains isolated behind
+one snapshot-source adapter for Task 9 removal. Specification and quality review passed after real Git,
+same-path race, cross-Session, recovery, performance, and E2E regressions.
 
 ### Task 9: Delete the superseded durable authority
 
