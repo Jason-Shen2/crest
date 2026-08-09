@@ -425,6 +425,33 @@ describe.sequential("WorkspaceGitRunner", () => {
         ).rejects.toMatchObject({ code: "spawn_failed" });
     });
 
+    test("allows exact literal-magic ls-tree paths through validation", async () => {
+        const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
+
+        await expect(
+            runner.run(["ls-tree", "-z", "--full-tree", TestSha1, "--", ":(literal)x"], {
+                pathspecMode: "literal-magic",
+                timeoutMs: 100,
+            })
+        ).rejects.toMatchObject({ code: "spawn_failed" });
+    });
+
+    test.each([
+        ["glob magic", ["ls-tree", "-z", TestSha1, "--", ":(glob)*"]],
+        ["empty literal remainder", ["ls-tree", "-z", TestSha1, "--", ":(literal)"]],
+        ["missing path separator", ["ls-tree", "-z", TestSha1, ":(literal)x"]],
+        ["non-ls-tree command", ["cat-file", "-p", TestSha1]],
+    ] as const)("rejects literal-magic %s before spawning", async (_name, args) => {
+        const runner = new WorkspaceGitRunner(join(root, "missing-executable"));
+
+        await expect(
+            runner.run(args, {
+                pathspecMode: "literal-magic",
+                timeoutMs: 100,
+            })
+        ).rejects.toMatchObject({ code: "invalid_options" });
+    });
+
     test.each([
         ["commit-tree without a tree", () => ["commit-tree"], false],
         ["commit signing", () => ["commit-tree", TestSha1, "-S"], true],

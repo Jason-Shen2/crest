@@ -75,6 +75,8 @@ const QuotaMaxRefCount = 200_000;
 const QuotaMaxObjectCount = 1_000_000;
 const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
+const CandidateLookupMaxPaths = 512;
+const CandidateLookupMaxArgumentBytes = 128 * 1024;
 
 export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
@@ -587,44 +589,41 @@ export class WorkspaceSnapshotStore {
         paths: readonly string[],
         signal?: AbortSignal
     ): Promise<ReadonlyMap<string, WorkspaceTreePathEntry>> {
-        const treeCache = new Map<string, Map<string, { mode: string; oid: string }>>();
         const expectedObjectTypes = new Map<string, "blob" | "tree">();
         const results = new Map<string, WorkspaceTreePathEntry>();
+        const byDepth = new Map<number, string[]>();
         for (const path of paths) {
-            if (signal?.aborted) throw signal.reason;
-            const segments = path.split("/");
-            let treeOid = tree;
-            let entry: { mode: string; oid: string } | undefined;
-            for (let index = 0; index < segments.length; index++) {
-                let treeEntries = treeCache.get(treeOid);
-                if (!treeEntries) {
-                    const result = await this.git.run(["cat-file", "tree", treeOid], {
+            const depth = path.split("/").length;
+            const group = byDepth.get(depth) ?? [];
+            group.push(path);
+            byDepth.set(depth, group);
+        }
+        for (const group of byDepth.values()) {
+            for (const chunk of chunkCandidateLookupPaths(group)) {
+                if (signal?.aborted) throw signal.reason;
+                const requested = new Set(chunk);
+                const result = await this.git.run(
+                    ["ls-tree", "-z", "--full-tree", tree, "--", ...chunk.map((path) => `:(literal)${path}`)],
+                    {
                         gitDir: this.storeRoot,
                         timeoutMs: StoreGitTimeoutMs,
+                        maxStdoutBytes: QuotaMaxObjectOutputBytes,
                         signal,
-                    });
-                    treeEntries = parseRawTreeEntries(result.stdout, treeOid.length / 2);
-                    treeCache.set(treeOid, treeEntries);
-                }
-                entry = treeEntries.get(segments[index]!);
-                if (!entry) break;
-                if (index < segments.length - 1) {
-                    if (entry.mode !== "40000") {
-                        entry = undefined;
-                        break;
+                        pathspecMode: "literal-magic",
                     }
-                    treeOid = entry.oid;
+                );
+                for (const [path, entry] of parseNulLsTreeEntries(result.stdout, requested)) {
+                    const converted = workspaceTreePathEntry(entry);
+                    const expectedType = converted.kind === "tree" ? "tree" : "blob";
+                    const previousType = expectedObjectTypes.get(entry.oid);
+                    if (previousType && previousType !== expectedType) {
+                        throw new Error("Workspace tree object has conflicting types");
+                    }
+                    expectedObjectTypes.set(entry.oid, expectedType);
+                    if (results.has(path)) throw new Error("Git returned a duplicate candidate path");
+                    results.set(path, converted);
                 }
             }
-            if (!entry) continue;
-            const converted = workspaceTreePathEntry(entry);
-            const expectedType = converted.kind === "tree" ? "tree" : "blob";
-            const previousType = expectedObjectTypes.get(entry.oid);
-            if (previousType && previousType !== expectedType) {
-                throw new Error("Workspace tree object has conflicting types");
-            }
-            expectedObjectTypes.set(entry.oid, expectedType);
-            results.set(path, converted);
         }
         if (expectedObjectTypes.size > 0) {
             const expected = [...expectedObjectTypes].map(([oid, type]) => ({ oid, type }));
@@ -2877,6 +2876,60 @@ function workspaceTreePathEntry(entry: { mode: string; oid: string }): Workspace
         kind: "leaf",
         state: { state: "file", oid: entry.oid, executable: entry.mode === "100755" },
     };
+}
+
+function chunkCandidateLookupPaths(paths: readonly string[]): string[][] {
+    const chunks: string[][] = [];
+    let chunk: string[] = [];
+    let bytes = 0;
+    for (const path of paths) {
+        const pathBytes = Buffer.byteLength(path) + 16;
+        if (
+            chunk.length > 0 &&
+            (chunk.length >= CandidateLookupMaxPaths || bytes + pathBytes > CandidateLookupMaxArgumentBytes)
+        ) {
+            chunks.push(chunk);
+            chunk = [];
+            bytes = 0;
+        }
+        chunk.push(path);
+        bytes += pathBytes;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+    return chunks;
+}
+
+function parseNulLsTreeEntries(
+    value: Buffer,
+    requested: ReadonlySet<string>
+): Map<string, { mode: string; oid: string }> {
+    if (value.length > 0 && value.at(-1) !== 0) throw new Error("Invalid Git candidate tree output");
+    const entries = new Map<string, { mode: string; oid: string }>();
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        const record = value.subarray(start, index);
+        const tab = record.indexOf(0x09);
+        if (tab <= 0) throw new Error("Invalid Git candidate tree output");
+        const header = record.subarray(0, tab).toString("ascii").split(" ");
+        const pathBytes = record.subarray(tab + 1);
+        const path = pathBytes.toString("utf8");
+        if (!Buffer.from(path).equals(pathBytes)) throw new Error("Invalid UTF-8 Git candidate path");
+        validateRelativePath(path);
+        if (!requested.has(path) || entries.has(path)) throw new Error("Git returned an unexpected candidate path");
+        if (header.length !== 3) throw new Error("Invalid Git candidate tree output");
+        const [mode, type, oid] = header;
+        validateOid(oid!);
+        if (
+            !((mode === "040000" && type === "tree") ||
+                (["100644", "100755", "120000"].includes(mode!) && type === "blob"))
+        ) {
+            throw new Error("Git candidate tree entry has an invalid mode or type");
+        }
+        entries.set(path, { mode: mode === "040000" ? "40000" : mode!, oid: oid! });
+        start = index + 1;
+    }
+    return entries;
 }
 
 function compareGitTreeBaseNames(left: Buffer, leftMode: string, right: Buffer, rightMode: string): number {

@@ -33,6 +33,7 @@ export interface GitRunOptions {
     maxStderrBytes?: number;
     signal?: AbortSignal;
     fsmonitor?: "builtin";
+    pathspecMode?: "literal-magic";
 }
 
 export interface GitRunResult {
@@ -142,7 +143,7 @@ export class WorkspaceGitRunner {
         const env = makeIsolatedEnv(
             options.gitDir == null,
             securePaths.globalConfig,
-            !checkIgnoreStdin,
+            !checkIgnoreStdin && options.pathspecMode !== "literal-magic",
             options.indexFile,
             args[0] === "commit-tree"
         );
@@ -301,6 +302,9 @@ function validateOptions(
     if (options.stdin != null && !Buffer.isBuffer(options.stdin)) {
         throw makeError("invalid_options");
     }
+    if (options.pathspecMode != null && (options.pathspecMode !== "literal-magic" || args[0] !== "ls-tree")) {
+        throw makeError("invalid_options");
+    }
     if (isCheckIgnoreStdin(args) && !isValidNulDelimitedPaths(options.stdin)) {
         throw makeError("invalid_options");
     }
@@ -354,7 +358,7 @@ function isSafeApprovedInvocation(args: readonly string[], options: GitRunOption
         case "update-index":
             return isSafeUpdateIndexArgs(commandArgs, options.indexFile, options.stdin);
         case "ls-tree":
-            return isSafeLsTreeArgs(commandArgs);
+            return isSafeLsTreeArgs(commandArgs, options.pathspecMode);
         case "status":
             return isSafeStatusArgs(commandArgs, options);
         case "log":
@@ -381,7 +385,7 @@ function isSafeUpdateIndexArgs(args: readonly string[], indexFile?: string, stdi
     );
 }
 
-function isSafeLsTreeArgs(args: readonly string[]): boolean {
+function isSafeLsTreeArgs(args: readonly string[], pathspecMode?: GitRunOptions["pathspecMode"]): boolean {
     const safeOptions = new Set([
         "-r",
         "-d",
@@ -400,7 +404,13 @@ function isSafeLsTreeArgs(args: readonly string[]): boolean {
     let paths = false;
     for (const arg of args) {
         if (paths) {
-            if (!isSafeLiteralArgument(arg)) return false;
+            if (
+                pathspecMode === "literal-magic"
+                    ? !arg.startsWith(":(literal)") || !isSafeLiteralArgument(arg.slice(10))
+                    : !isSafeLiteralArgument(arg)
+            ) {
+                return false;
+            }
             continue;
         }
         if (arg === "--") {
@@ -417,7 +427,7 @@ function isSafeLsTreeArgs(args: readonly string[]): boolean {
         }
         return false;
     }
-    return sawTree;
+    return sawTree && (pathspecMode !== "literal-magic" || paths);
 }
 
 function isSafeStatusArgs(args: readonly string[], options: GitRunOptions): boolean {

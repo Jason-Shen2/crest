@@ -51,10 +51,31 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         expect([...kinds.values()]).toEqual(Array.from({ length: 100 }, () => "leaf"));
         expect(run).toHaveBeenCalledTimes(5);
         expect(run.mock.calls.slice(-2).map(([args]) => args.slice(0, 2))).toEqual([
-            ["cat-file", "tree"],
+            ["ls-tree", "-z"],
             ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
         ]);
     });
+
+    it("batches distributed candidates by depth and preserves ancestor and descendant nodes", async () => {
+        const fixture = await makeFixture();
+        const paths = Array.from({ length: 100 }, (_, index) => `distributed-${index}/file.txt`);
+        await Promise.all(
+            paths.map(async (path) => {
+                await mkdir(dirname(join(fixture.workspace, path)), { recursive: true });
+                await writeFile(join(fixture.workspace, path), "value");
+            })
+        );
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const requested = ["distributed-0", ...paths];
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const kinds = await fixture.store.readNodeKinds(captured.ref, requested);
+
+        expect(kinds.get("distributed-0")).toBe("tree");
+        expect(paths.map((path) => kinds.get(path))).toEqual(Array.from({ length: 100 }, () => "leaf"));
+        expect(run).toHaveBeenCalledTimes(6);
+        expect(run.mock.calls.filter(([args]) => args[0] === "ls-tree")).toHaveLength(2);
+    }, 30_000);
 
     it("publishes only a compact V3 manifest and preserves exact raw bytes", async () => {
         const fixture = await makeFixture();
