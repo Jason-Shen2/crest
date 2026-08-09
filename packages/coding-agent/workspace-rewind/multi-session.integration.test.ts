@@ -95,14 +95,19 @@ async function makeFixture(
         locateSession,
         verifyWorkspace: vi.fn(async () => {}),
     });
+    const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+        store,
+        legacyCapture: store,
+    });
     const engine = new WorkspaceRewindEngine({
         store,
         recovery,
         confirmations,
+        snapshotSource,
         onCommitted: published,
         ...(options.applyPath ? { applyPath: options.applyPath } : {}),
     });
-    return { root, workspaceRoot, identity, store, sessions, confirmations, recovery, engine };
+    return { root, workspaceRoot, identity, store, sessions, confirmations, recovery, snapshotSource, engine };
 }
 
 async function checkpoint(
@@ -111,14 +116,10 @@ async function checkpoint(
     prompt: string,
     mutate: () => Promise<void>
 ) {
-    const source = await initializeWorkspaceCheckpointSnapshotSource({
-        store: value.store,
-        legacyCapture: value.store,
-    });
-    const before = await source.synchronizeExternal();
+    const before = await value.snapshotSource.synchronizeExternal();
     const turnId = await session.appendMessage({ role: "user", content: prompt, timestamp: Date.now() } as never);
     await mutate();
-    const after = await source.captureOwnedTurn({
+    const after = await value.snapshotSource.captureOwnedTurn({
         base: before.ref,
         sessionId: (await session.getMetadata()).id,
         turnId,
@@ -213,23 +214,17 @@ describe("workspace rewind across sessions", () => {
 
         try {
             expect(leaseB.tracker).toBe(leaseA.tracker);
-            const [snapshotSourceA, snapshotSourceB] = await Promise.all([
-                initializeWorkspaceCheckpointSnapshotSource({
-                    store: leaseA.store,
-                    legacyCapture: leaseA.tracker,
-                }),
-                initializeWorkspaceCheckpointSnapshotSource({
-                    store: leaseB.store,
-                    legacyCapture: leaseB.tracker,
-                }),
-            ]);
+            const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+                store: leaseA.store,
+                legacyCapture: leaseA.tracker,
+            });
             managerA = registerWorkspaceCheckpointManager({
                 harness: harnessA.harness,
                 session: value.sessions.a,
                 sessionId: "session-a",
                 workspaceRoot: value.workspaceRoot,
                 store: value.store,
-                snapshotSource: snapshotSourceA,
+                snapshotSource,
                 mutationBarrier: new SessionMutationBarrier(),
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
@@ -241,7 +236,7 @@ describe("workspace rewind across sessions", () => {
                 sessionId: "session-b",
                 workspaceRoot: value.workspaceRoot,
                 store: value.store,
-                snapshotSource: snapshotSourceB,
+                snapshotSource,
                 mutationBarrier: new SessionMutationBarrier(),
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
@@ -569,7 +564,7 @@ describe("workspace rewind across sessions", () => {
             state: "needs-user",
             view: {
                 paths: [{ path: "shared.txt", classification: "unknown" }],
-                allowedActions: ["retry", "abandon-current"],
+                allowedActions: ["retry"],
             },
         });
     }, 30_000);

@@ -1386,6 +1386,41 @@ describe("workspace snapshots", () => {
         ]);
     });
 
+    test("derives candidate-bound v3 result coverage across exact create, delete, and excluded leaf transitions", async () => {
+        const fixture = await makeStoreFixture();
+        const kept = await testFileState(fixture, Buffer.from("kept"));
+        const deleted = await testFileState(fixture, Buffer.from("deleted"));
+        const created = await testFileState(fixture, Buffer.from("created"));
+        const included = await testFileState(fixture, Buffer.from("included"));
+        const tree = await writeCommitTree(fixture, [
+            { path: "README.md", state: kept },
+            { path: "delete.txt", state: deleted },
+        ]);
+        const commit = await appendTestMutation(fixture, tree);
+        const source = await fixture.store.publishCommitSnapshot({
+            commit,
+            scope: makeCommitScope(),
+            coverage: makeCommitCoverage(2, [{ path: "ignored.log", reason: "ignored" }]),
+        });
+        const capture = vi.spyOn(fixture.store, "capture");
+        fixture.git.runs.length = 0;
+
+        const coverage = await fixture.store.computeIncrementalSnapshotCoverage(source, [
+            { path: "created.txt", state: created },
+            { path: "delete.txt", state: { state: "absent" } },
+            { path: "ignored.log", state: included },
+            { path: "README.md", state: { state: "excluded", reason: "ignored" } },
+        ]);
+
+        expect(coverage).toEqual({
+            complete: false,
+            eligibleEntryCount: 2,
+            exclusions: [{ path: "README.md", reason: "ignored" }],
+        });
+        expect(capture).not.toHaveBeenCalled();
+        expect(snapshotAuditCallCounts(fixture.git.runs).treeReads).toBe(4);
+    });
+
     test("roots v3 metadata across pruning and includes it in snapshot usage traversal", async () => {
         const fixture = await makeStoreFixture();
         const state = await testFileState(fixture, Buffer.from("reachable"));

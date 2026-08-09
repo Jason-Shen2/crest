@@ -174,7 +174,7 @@ describe("AgentRuntimeClient", () => {
         await client.resolveWorkspaceRecovery({
             sessionMetadata,
             operationId: "operation-a",
-            action: "abandon-current",
+            action: "retry",
             paths: ["src/renderer-must-not-send.ts"],
             phase: "applying_files",
             refName: "refs/crest/ops/renderer-must-not-send",
@@ -193,7 +193,7 @@ describe("AgentRuntimeClient", () => {
         expect(agent.resolveWorkspaceRecovery).toHaveBeenCalledWith(identity, {
             sessionMetadata,
             operationId: "operation-a",
-            action: "abandon-current",
+            action: "retry",
         });
         expect(agent.cleanupWorkspaceCheckpoints).toHaveBeenCalledWith(identity, { sessionMetadata });
         expect(agent.listCheckpointStorageOwners).toHaveBeenCalledWith(identity, { sessionMetadata });

@@ -40,12 +40,14 @@ afterEach(async () => {
 test("executes a result-commit restore without any restore-time workspace capture", async () => {
     const fixture = await makeFixture();
     const capture = vi.spyOn(fixture.store, "capture");
+    const coverage = vi.spyOn(fixture.store, "computeIncrementalSnapshotCoverage");
     const onCommitted = vi.fn(async () => {});
     const executor = makeExecutor(fixture, { onCommitted });
 
     const result = await execute(executor, fixture, fixture.plan);
 
     expect(capture).not.toHaveBeenCalled();
+    expect(coverage).toHaveBeenCalledWith(fixture.source, [{ path: "file.txt", state: fixture.target }]);
     expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("planned\n");
     const head = await fixture.store.mutationLog.readHead();
     expect(head).toBeDefined();

@@ -182,7 +182,14 @@ function harness() {
             files: [],
         })),
         previewRewind: vi.fn(async () => previewResult),
-        previewRedo: vi.fn(async () => ({ ...previewResult, target: { kind: "redo" as const } })),
+        previewRedo: vi.fn(async () => ({
+            ...previewResult,
+            target: {
+                kind: "redo" as const,
+                sourceRewindOperationId: "rewind-1",
+                linkedOperation: linkedOperation("rewind-1"),
+            },
+        })),
         previewTurnUndo: vi.fn(async () => {
             const target = { kind: "turn-undo" as const, sourceTurnId: "turn-1" };
             return {
@@ -295,12 +302,13 @@ describe("AgentRewindService", () => {
     it.each(["rewind", "redo"] as const)("previews %s without safety, journal, or mutation writes", async (kind) => {
         const value = harness();
 
-        await value.service.preview({
+        const preview = await value.service.preview({
             sessionMetadata: Metadata,
             expectedSemanticLeafId: "checkpoint-1",
             target: kind === "rewind" ? { kind, targetTurnId: "turn-1" } : { kind },
         });
 
+        expect(preview.target).toEqual(kind === "rewind" ? { kind, targetTurnId: "turn-1" } : { kind });
         expect(kind === "rewind" ? value.engine.previewRewind : value.engine.previewRedo).toHaveBeenCalledOnce();
         expect(value.engine.applyRewind).not.toHaveBeenCalled();
         expect(value.engine.applyRedo).not.toHaveBeenCalled();
@@ -444,16 +452,29 @@ describe("AgentRewindService", () => {
                     ? await value.service.applyTurnUndo(applyInput)
                     : await value.service.applyTurnRedo(applyInput);
 
-            expect(preview.target.kind).toBe(kind === "undo" ? "turn-undo" : "turn-redo");
+            expect(preview.target).toEqual(
+                kind === "undo"
+                    ? { kind: "turn-undo", sourceTurnId: "turn-1" }
+                    : { kind: "turn-redo", sourceTurnId: "turn-1", undoOperationId: "undo-1" }
+            );
             expect(preview).not.toHaveProperty("messageCount");
             expect(preview).not.toHaveProperty("targetPrompt");
             expect(result.semanticLeafId).toBe(kind === "undo" ? "turn-undo-leaf" : "turn-redo-leaf");
             expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
             const applied = kind === "undo" ? value.engine.applyTurnUndo : value.engine.applyTurnRedo;
+            const confirmedTarget =
+                kind === "undo"
+                    ? preview.target
+                    : expect.objectContaining({
+                          kind: "turn-redo",
+                          sourceTurnId: "turn-1",
+                          undoOperationId: "undo-1",
+                          linkedOperation: linkedOperation("undo-1"),
+                      });
             expect(applied).toHaveBeenCalledWith(
                 expect.objectContaining({
                     confirmation: expect.objectContaining({
-                        binding: expect.objectContaining({ target: preview.target }),
+                        binding: expect.objectContaining({ target: confirmedTarget }),
                     }),
                 })
             );

@@ -675,7 +675,7 @@ describe("AgentContent", () => {
             corrupt: false,
             message: "Recovery required",
             paths: [{ path: "src/frozen.ts", classification: "target" }],
-            allowedActions: ["retry", "abandon-current"],
+            allowedActions: ["retry"],
         };
         const { client, session } = renderRewindContent(
             makeRewindClient({ getWorkspaceRecovery: vi.fn(async () => recovery) })

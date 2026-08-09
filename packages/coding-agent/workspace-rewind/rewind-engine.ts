@@ -280,14 +280,14 @@ export class WorkspaceRewindEngine {
         });
     }
 
-    async previewRewind(input: PreviewRewindInput): Promise<AgentRewindPreviewResult> {
+    async previewRewind(input: PreviewRewindInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return (await this.preview(await this.computeRewind(input))) as AgentRewindPreviewResult;
+        return await this.preview(await this.computeRewind(input));
     }
 
-    async previewRedo(input: PreviewRedoInput): Promise<AgentRewindPreviewResult> {
+    async previewRedo(input: PreviewRedoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return (await this.preview(await this.computeRedo(input))) as AgentRewindPreviewResult;
+        return await this.preview(await this.computeRedo(input));
     }
 
     async previewTurnUndo(input: PreviewTurnUndoInput): Promise<WorkspaceRestorePreviewResult> {

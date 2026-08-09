@@ -101,13 +101,19 @@ async function fixture(
         locateSession:
             options.locateSession ?? (async (sessionId) => (sessionId === metadata.id ? session : undefined)),
         verifyWorkspace: vi.fn(async () => {}),
+        withSessionMutation: async (_sessionPath, operation) => await operation(),
     });
     const confirmations = new RewindConfirmationRegistry();
+    const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+        store,
+        legacyCapture: store,
+    });
     const engine = new WorkspaceRewindEngine({
         store,
         pending,
         recovery,
         confirmations,
+        snapshotSource,
         onCommitted: published,
         applyPath: options.applyPath?.(workspaceRoot),
         verifyPath: options.verifyPath?.(workspaceRoot),
@@ -122,6 +128,7 @@ async function fixture(
         pending,
         recovery,
         confirmations,
+        snapshotSource,
         engine,
         published,
     };
@@ -132,18 +139,14 @@ async function appendAvailableCheckpoint(
     prompt: string,
     mutate: () => Promise<void>
 ) {
-    const source = await initializeWorkspaceCheckpointSnapshotSource({
-        store: value.store,
-        legacyCapture: value.store,
-    });
-    const before = await source.synchronizeExternal();
+    const before = await value.snapshotSource.synchronizeExternal();
     const turnId = await value.session.appendMessage({
         role: "user",
         content: prompt,
         timestamp: Date.now(),
     } as never);
     await mutate();
-    const after = await source.captureOwnedTurn({
+    const after = await value.snapshotSource.captureOwnedTurn({
         base: before.ref,
         sessionId: value.metadata.id,
         turnId,
@@ -388,6 +391,8 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             semanticLeafId: rewind.semanticLeafId,
         });
         expect(redoPreview.forceRequired).toBe(false);
+        expect(redoPreview.hardBlocked, JSON.stringify(redoPreview.coverageWarnings)).toBe(false);
+        expect(redoPreview.confirmationToken).toBeTypeOf("string");
         const redo = await value.engine.applyRedo({
             session: value.session,
             sessionId: value.metadata.id,
@@ -605,7 +610,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         });
     }, 30_000);
 
-    it("cleans a committed pending record before the next owning-session leaf mutation", async () => {
+    it("retries committed pending cleanup before returning to the next owning-session mutation", async () => {
         const value = await fixture();
         const file = join(value.workspaceRoot, "cleanup.txt");
         await writeFile(file, "before");
@@ -631,12 +636,8 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
                 mode: "normal",
                 confirmation: value.confirmations.take(planned.confirmationToken!),
             })
-        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
+        ).resolves.toBeDefined();
         const markerLeaf = await value.session.getLeafId();
-        await expect(value.pending.readLocked()).resolves.toMatchObject({ kind: "valid" });
-
-        await value.recovery.assertWorkspaceWritable();
-        expect(await value.session.getLeafId()).toBe(markerLeaf);
         await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
 
         const nextLeaf = await value.session.appendMessage({
@@ -648,13 +649,9 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         expect(await readFile(file, "utf8")).toBe("before");
     }, 30_000);
 
-    it("keeps current for a missing owning Session without changing workspace bytes or the Session tree", async () => {
+    it("keeps a missing owning Session frozen without changing workspace bytes or the Session tree", async () => {
         const value = await fixture({
             locateSession: async () => undefined,
-            applyPath: (workspaceRoot) => async (input) => {
-                await applyCapturedPath(input);
-                throw new Error(`owner disappeared after applying ${join(workspaceRoot, input.path)}`);
-            },
         });
         const file = join(value.workspaceRoot, "missing-owner.txt");
         await writeFile(file, "before");
@@ -686,11 +683,21 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         const leafBefore = await value.session.getLeafId();
         const bytesBefore = await readFile(file);
 
-        await value.recovery.keepCurrent(pending.record.operationId);
+        await expect(value.recovery.inspectPending()).resolves.toMatchObject({
+            state: "needs-user",
+            view: { operationId: pending.record.operationId, allowedActions: ["retry"] },
+        });
+        await expect(value.recovery.resolvePending(pending.record.operationId)).resolves.toMatchObject({
+            state: "needs-user",
+            view: { operationId: pending.record.operationId, allowedActions: ["retry"] },
+        });
 
         expect(await value.session.getLeafId()).toBe(leafBefore);
         expect(await readFile(file)).toEqual(bytesBefore);
-        await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
+        await expect(value.pending.readLocked()).resolves.toMatchObject({
+            kind: "valid",
+            record: { operationId: pending.record.operationId },
+        });
     }, 30_000);
 });
 

@@ -125,7 +125,7 @@ import {
     resolveCanonicalWorkspaceIdentity,
     type CanonicalWorkspaceIdentity,
 } from "@crest/coding-agent/workspace-rewind/workspace-identity";
-import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
+import { WorkspaceFrozenError, WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import { Thread } from "../frontend/app/agent/assistant-ui";
 import { DiffReviewDialog } from "../frontend/app/agent/rewind/diff-review-dialog";
@@ -578,6 +578,7 @@ async function makeFixture() {
             store,
             recovery,
             confirmations,
+            snapshotSource,
             applyPath,
             onCommitted: async () => await publishState(),
         });
@@ -658,6 +659,7 @@ async function makeFixture() {
         workspaceRoot,
         metadata,
         store,
+        snapshotSource,
         repo,
         session,
         manager,
@@ -674,15 +676,19 @@ async function appendCheckpoint(
     prompt: string,
     mutate: () => Promise<void>
 ) {
-    const before = await value.store.capture({ profile: "pre-turn" });
+    const before = await value.snapshotSource.synchronizeExternal();
+    const metadata = await session.getMetadata();
     const turnId = await session.appendMessage({
         role: "user",
         content: [{ type: "text", text: prompt }],
         timestamp: Date.now(),
     } as never);
     await mutate();
-    const after = await value.store.capture({ profile: "terminal" });
-    const metadata = await session.getMetadata();
+    const after = await value.snapshotSource.captureOwnedTurn({
+        base: before.ref,
+        sessionId: metadata.id,
+        turnId,
+    });
     const checkpoint: Extract<WorkspaceCheckpointV1, { status: "available" }> = {
         schemaVersion: 1,
         status: "available",
@@ -691,8 +697,8 @@ async function appendCheckpoint(
         workspaceIdentity: value.store.identity.workspaceIdentity,
         workspaceIncarnation: value.store.identity.workspaceIncarnation,
         before: before.ref,
-        after: after.ref,
-        changes: await value.store.diff(before.ref, after.ref),
+        after: after.after,
+        changes: after.changes,
         coverage: after.coverage,
     };
     const checkpointId = await session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, checkpoint);
@@ -1240,8 +1246,8 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 expect(
                     JSON.parse((await value.store.readBlob(third.after.scopeManifest)).toString("utf8"))
                 ).toMatchObject({
-                    schemaversion: 2,
-                    statetree: expect.any(String),
+                    schemaversion: 3,
+                    coverage: expect.objectContaining({ complete: true }),
                 });
                 complete = true;
             } catch (error) {
@@ -1632,64 +1638,71 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         value.session.close();
     }, 30_000);
 
-    it("surfaces and resolves a real interrupted pending restore through IPC", async () => {
+    it("surfaces V2 unknown facts and keeps retry frozen through IPC", async () => {
         const value = await makeFixture();
         const file = join(value.workspaceRoot, "recovery.txt");
-        await writeFile(file, "pre-crash");
-        const safety = await value.store.capture({ profile: "safety", requiredPaths: ["recovery.txt"] });
-        const preState = await value.store.readPathState(safety.ref, "recovery.txt");
-        await writeFile(file, "target");
-        const target = await value.store.capture({ profile: "terminal", requiredPaths: ["recovery.txt"] });
-        const targetState = await value.store.readPathState(target.ref, "recovery.txt");
-        await writeFile(file, "pre-crash");
-        const expectedLeaf = await value.session.appendMessage({
-            role: "user",
-            content: "interrupted restore",
-            timestamp: Date.now(),
-        } as never);
-        const pending = new PendingWorkspaceRestoreStore(value.store);
-        await value.store.withWorkspaceLock(() =>
-            pending.publishLocked({
-                schemaVersion: 1,
-                workspaceIdentity: value.store.identity.workspaceIdentity,
-                workspaceIncarnation: value.store.identity.workspaceIncarnation,
-                sessionId: value.metadata.id,
-                sessionPath: value.metadata.path,
-                operationId: "operation-e2e-crash",
-                target: { kind: "rewind", targetTurnId: expectedLeaf },
-                commitParentId: null,
-                applyMode: "normal",
-                expectedSemanticLeafId: expectedLeaf,
-                safetySnapshot: safety.ref,
-                forcedPaths: [],
-                paths: [
-                    {
-                        path: "recovery.txt",
-                        before: preState,
-                        target: targetState,
-                        createdParentDirectories: [],
-                    },
-                ],
-                workspaceStateEntryId: "workspace-state-e2e-crash",
-            })
+        await writeFile(file, "before");
+        const turnId = await value.sendTurn("interrupted restore", async () => {
+            await writeFile(file, "after");
+        });
+        await value.manager.dispose();
+        const checkpointEntry = (await value.session.getEntries()).find(
+            (entry) => decodeWorkspaceCheckpointEntry(entry)?.turnId === turnId
         );
-        await writeFile(file, "external-after-crash");
+        if (!checkpointEntry) throw new Error("missing interrupted restore checkpoint");
+
+        const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
+            store: value.store,
+            legacyCapture: value.store,
+        });
+        const pending = new PendingWorkspaceRestoreStore(value.store);
         const recovery = new WorkspaceRecovery({
             workspace: value.store.identity,
             store: value.store,
             pending,
-            locateSession: async (sessionId) => (sessionId === value.metadata.id ? value.session : undefined),
+            locateSession: async () => undefined,
+            withSessionMutation: async (_sessionPath, operation) => await operation(),
         });
+        const confirmations = new RewindConfirmationRegistry();
+        const engine = new WorkspaceRewindEngine({
+            store: value.store,
+            pending,
+            recovery,
+            confirmations,
+            snapshotSource,
+            createOperationId: () => "operation-e2e-crash",
+        });
+        const preview = await engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.store.identity,
+            semanticLeafId: checkpointEntry.id,
+            targetTurnId: turnId,
+        });
+        await expect(
+            engine.applyRewind({
+                session: value.session,
+                sessionId: value.metadata.id,
+                workspace: value.store.identity,
+                semanticLeafId: checkpointEntry.id,
+                targetTurnId: turnId,
+                mode: "normal",
+                confirmation: confirmations.take(preview.confirmationToken!),
+            })
+        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
+
+        await writeFile(file, "external-after-crash");
         const recoveryGate: NonNullable<Parameters<typeof registerAgentIpcHandlers>[0]["recoveryGate"]> = {
             scanBeforeIpcRegistration: async () => {},
             assertWorkspaceWritable: async () => recovery.assertWorkspaceWritable(),
             getRecovery: async () => {
-                const decision = await recovery.resolvePending();
+                const decision = await recovery.inspectPending();
                 return decision.state === "needs-user" ? decision.view : undefined;
             },
             resolveRecovery: async (_workspace, operationId, action, assertCurrent) => {
-                if (action !== "abandon-current") throw new Error(`unexpected recovery action ${action}`);
-                await recovery.keepCurrent(operationId, assertCurrent);
+                if (action !== "retry") throw new Error(`unexpected recovery action ${action}`);
+                await assertCurrent();
+                await recovery.resolvePending(operationId);
             },
         };
         const running = value.makeService();
@@ -1698,16 +1711,25 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         const frozen = await client.getWorkspaceRecovery({ sessionMetadata: value.metadata });
         expect(frozen).toMatchObject({
             operationId: "operation-e2e-crash",
-            allowedActions: expect.arrayContaining(["abandon-current"]),
+            corrupt: false,
+            paths: [{ path: "recovery.txt", classification: "unknown" }],
+            allowedActions: ["retry"],
         });
         expect(frozen).not.toHaveProperty("phase");
         expect(JSON.stringify(frozen)).not.toMatch(/force/i);
         await client.resolveWorkspaceRecovery({
             sessionMetadata: value.metadata,
-            operationId: "operation-e2e-crash",
-            action: "abandon-current",
+            operationId: frozen!.operationId,
+            action: "retry",
         });
-        await expect(client.getWorkspaceRecovery({ sessionMetadata: value.metadata })).resolves.toBeUndefined();
+        await expect(client.getWorkspaceRecovery({ sessionMetadata: value.metadata })).resolves.toMatchObject({
+            operationId: frozen!.operationId,
+            allowedActions: ["retry"],
+        });
+        await expect(pending.readLocked()).resolves.toMatchObject({
+            kind: "valid",
+            record: { schemaVersion: 2, operationId: frozen!.operationId },
+        });
         expect(await readFile(file, "utf8")).toBe("external-after-crash");
         value.session.close();
     }, 30_000);
@@ -1755,9 +1777,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             const quotaBefore = await value.store.getQuotaStatus();
             expect(quotaBefore).toMatchObject({
                 status: "soft-quota-exceeded",
-                referencedBytes: 0,
                 softQuotaBytes: WorkspaceCheckpointLimits.softQuotaBytes,
             });
+            expect(quotaBefore.referencedBytes).toBeGreaterThan(0);
             expect(quotaBefore.usedBytes).toBeGreaterThan(quotaBefore.softQuotaBytes);
 
             const running = value.makeService();

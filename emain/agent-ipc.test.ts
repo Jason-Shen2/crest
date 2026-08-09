@@ -4275,7 +4275,7 @@ describe("agent-ipc command helpers", () => {
             corrupt: false,
             message: "choose",
             paths: [],
-            allowedActions: ["retry" as const, "abandon-current" as const],
+            allowedActions: ["retry" as const],
         };
         const order: string[] = [];
         let sessionAccessDepth = 0;
@@ -4473,12 +4473,11 @@ describe("agent-ipc command helpers", () => {
             return { state: "committed" as const, operationId: "operation-committed" };
         });
         const resolver = {
+            inspectPending: vi.fn(async () => ({ state: "none" as const })),
             resolvePending,
             assertWorkspaceWritable: vi.fn(async () => {
                 await resolvePending();
             }),
-            keepCurrent: vi.fn(async () => {}),
-            quarantine: vi.fn(async () => {}),
         };
         const gate = makeAgentWorkspaceRecoveryGate({
             scanPendingWorkspaces: async () => [],
@@ -5088,7 +5087,7 @@ describe("agent-ipc command helpers", () => {
             handlers.get("agent:resolve-workspace-recovery")?.(event, TrustedRequestContext, {
                 sessionMetadata: metadata,
                 operationId: "restore-1",
-                action: "quarantine-corrupt",
+                action: "retry",
             })
         ).resolves.toBeUndefined();
         expect(resolveRecovery).toHaveBeenCalledOnce();

@@ -15,7 +15,7 @@ const Recovery: AgentWorkspaceRecoveryView = {
         { path: "src/changed.ts", classification: "target" },
         { path: "src/unknown.ts", classification: "unknown" },
     ],
-    allowedActions: ["retry", "abandon-current"],
+    allowedActions: ["retry"],
 };
 
 afterEach(cleanup);
@@ -32,17 +32,15 @@ describe("RecoveryDialog", () => {
         expect(screen.getByText("src/unknown.ts")).not.toBeNull();
         expect(screen.getByText(Recovery.message)).not.toBeNull();
         expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
-        expect(screen.getByRole("button", { name: "Keep current and abandon operation" })).not.toBeNull();
         expect(screen.queryByText(/force/i)).toBeNull();
-        expect(screen.queryByRole("button", { name: /quarantine/i })).toBeNull();
+        expect(screen.getAllByRole("button")).toHaveLength(2);
 
         fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-        fireEvent.click(screen.getByRole("button", { name: "Keep current and abandon operation" }));
 
-        expect(onAction.mock.calls).toEqual([["retry"], ["abandon-current"]]);
+        expect(onAction).toHaveBeenCalledWith("retry");
     });
 
-    it("shows quarantine only when allowed and locks mutations while resolving", () => {
+    it("keeps retry as the only action and locks it while resolving corrupt facts", () => {
         const onAction = vi.fn();
         render(
             <RecoveryDialog
@@ -50,7 +48,6 @@ describe("RecoveryDialog", () => {
                 recovery={{
                     ...Recovery,
                     corrupt: true,
-                    allowedActions: ["quarantine-corrupt"],
                 }}
                 busy
                 errorMessage="Recovery is still busy."
@@ -60,11 +57,9 @@ describe("RecoveryDialog", () => {
         );
 
         expect(screen.getByRole("alert").textContent).toContain("Recovery is still busy.");
-        const quarantine = screen.getByRole("button", {
-            name: "Quarantine corrupt record and keep current",
-        }) as HTMLButtonElement;
-        expect(quarantine.disabled).toBe(true);
-        expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+        const retry = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+        expect(retry.disabled).toBe(true);
+        expect(screen.getAllByRole("button")).toHaveLength(2);
         expect(screen.queryByText(/force/i)).toBeNull();
     });
 });

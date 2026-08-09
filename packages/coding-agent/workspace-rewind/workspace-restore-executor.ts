@@ -233,11 +233,17 @@ export class WorkspaceRestoreExecutor {
                         : {}),
                 },
             });
-            const metadata = await this.store.readSnapshotMetadata(input.source);
+            const [metadata, coverage] = await Promise.all([
+                this.store.readSnapshotMetadata(input.source),
+                this.store.computeIncrementalSnapshotCoverage(
+                    input.source,
+                    paths.map((path) => ({ path: path.path, state: path.target }))
+                ),
+            ]);
             const snapshot = await this.store.publishCommitSnapshot({
                 commit: prepared.commit,
                 scope: metadata.scope,
-                coverage: metadata.coverage,
+                coverage,
             });
             return { prepared, snapshot };
         } finally {

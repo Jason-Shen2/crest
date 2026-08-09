@@ -107,6 +107,31 @@ function turnState(kind: "turn-undo" | "turn-redo", operationId: string, undoOpe
     } as WorkspaceStateV1;
 }
 
+function conversationRedoState(checkpointValue: Extract<WorkspaceCheckpointV1, { status: "available" }>) {
+    const rewindOperationId = "rewind-operation-1";
+    const redoOperationId = "redo-operation-1";
+    const rewindResult = snapshot(resultOid(rewindOperationId), OidD);
+    return {
+        schemaVersion: 1,
+        sessionId: "session-1",
+        operationId: redoOperationId,
+        workspaceIdentity: Workspace.workspaceIdentity,
+        workspaceIncarnation: Workspace.workspaceIncarnation,
+        kind: "redo",
+        sourceRewindOperationId: rewindOperationId,
+        linkedOperation: {
+            operationId: rewindOperationId,
+            sourceSnapshot: checkpointValue.after,
+            currentSnapshot: rewindResult,
+        },
+        applyMode: "normal",
+        forcedPaths: [],
+        sourceSnapshot: rewindResult,
+        currentSnapshot: snapshot(resultOid(redoOperationId), checkpointValue.after.tree),
+        currentStates: [],
+    } satisfies WorkspaceStateV1;
+}
+
 function branch(checkpointValue: WorkspaceCheckpointV1, tail: SessionTreeEntry[] = []): SessionTreeEntry[] {
     const user = message("u1", null, "user");
     const assistant = message("a1", user.id, "assistant");
@@ -177,7 +202,7 @@ function baseInput(
         if (state?.kind === "turn-undo") {
             return value.changes.map((change) => ({ path: change.path, before: change.after, after: change.before }));
         }
-        if (state?.kind === "turn-redo") return value.changes;
+        if (state?.kind === "turn-redo" || state?.kind === "redo") return value.changes;
         return [];
     })
 ) {
@@ -189,6 +214,12 @@ function baseInput(
     vi.mocked(history.read).mockImplementation(async (commit) => {
         const state = states.find((candidate) => candidate.currentSnapshot.id === commit);
         if (state) {
+            const turnId =
+                state.kind === "rewind"
+                    ? state.rewind.targetTurnId
+                    : state.kind === "turn-undo" || state.kind === "turn-redo"
+                      ? state.sourceTurnId
+                      : undefined;
             return {
                 parent: state.sourceSnapshot.id,
                 tree: state.currentSnapshot.tree,
@@ -199,11 +230,35 @@ function baseInput(
                     kind: state.kind,
                     sessionid: state.sessionId,
                     operationid: state.operationId,
-                    turnid: state.sourceTurnId,
-                    ...(state.kind === "turn-redo" ? { sourceoperationid: state.undoOperationId } : {}),
-                    ...(state.kind === "turn-redo"
+                    ...(turnId ? { turnid: turnId } : {}),
+                    ...(state.kind === "redo"
+                        ? { sourceoperationid: state.sourceRewindOperationId }
+                        : state.kind === "turn-redo"
+                          ? { sourceoperationid: state.undoOperationId }
+                          : {}),
+                    ...(state.kind === "redo" || state.kind === "turn-redo"
                         ? { linkedresultcommitid: state.linkedOperation.currentSnapshot.id }
                         : {}),
+                },
+            };
+        }
+        const linked = states.find(
+            (candidate) =>
+                (candidate.kind === "redo" || candidate.kind === "turn-redo") &&
+                candidate.linkedOperation.currentSnapshot.id === commit
+        );
+        if (linked?.kind === "redo" || linked?.kind === "turn-redo") {
+            return {
+                parent: linked.linkedOperation.sourceSnapshot.id,
+                tree: linked.linkedOperation.currentSnapshot.tree,
+                metadata: {
+                    schemaversion: 1,
+                    workspaceidentity: Workspace.workspaceIdentity,
+                    workspaceincarnation: Workspace.workspaceIncarnation,
+                    kind: linked.kind === "redo" ? "rewind" : "turn-undo",
+                    sessionid: linked.sessionId,
+                    operationid: linked.linkedOperation.operationId,
+                    ...(linked.kind === "turn-redo" ? { turnid: linked.sourceTurnId } : {}),
                 },
             };
         }
@@ -223,7 +278,7 @@ function baseInput(
             const value = entry.data as WorkspaceStateV1;
             refs.set(value.sourceSnapshot.id, value.sourceSnapshot);
             refs.set(value.currentSnapshot.id, value.currentSnapshot);
-            if (value.kind === "turn-redo") {
+            if (value.kind === "redo" || value.kind === "turn-redo") {
                 refs.set(value.linkedOperation.sourceSnapshot.id, value.linkedOperation.sourceSnapshot);
                 refs.set(value.linkedOperation.currentSnapshot.id, value.linkedOperation.currentSnapshot);
             }
@@ -437,6 +492,58 @@ describe("per-turn restore planning", () => {
         );
         expect(plan).toMatchObject({ hardBlocked: true, forceRequired: false });
         expect(plan.paths).toEqual([expect.objectContaining({ path: "a.ts", conflict: "hard-blocker" })]);
+    });
+
+    it("allows Turn Undo after an authority-checked conversation Revert and net-neutral Redo", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const checkpointValue = checkpoint([change]);
+        const redoState = conversationRedoState(checkpointValue);
+        const history = mutationLog();
+        const input = baseInput(
+            branch(checkpointValue, [custom("redo-marker", null, WorkspaceControlCustomTypes.state, redoState)]),
+            { "a.ts": live(change.after) },
+            history
+        );
+
+        const plan = await planTurnUndo(input);
+
+        expect(plan).toMatchObject({ hardBlocked: false, forceRequired: false });
+        expect(plan.paths).toEqual([expect.objectContaining({ path: "a.ts", conflict: "none" })]);
+        expect(history.findForeignOverlap).toHaveBeenCalledWith({
+            afterCommit: checkpointValue.after.id,
+            paths: ["a.ts"],
+            includedCommits: new Set([redoState.linkedOperation.currentSnapshot.id, redoState.currentSnapshot.id]),
+            ownerSessionId: "session-1",
+        });
+    });
+
+    it("does not exempt a conversation Redo whose result differs from its linked Revert source", async () => {
+        const change = {
+            path: "a.ts",
+            before: { state: "file", oid: OidA, executable: false } as const,
+            after: { state: "file", oid: OidB, executable: false } as const,
+        };
+        const checkpointValue = checkpoint([change]);
+        const redoState = conversationRedoState(checkpointValue);
+        redoState.currentSnapshot = snapshot(redoState.currentSnapshot.id, OidE);
+        const history = mutationLog();
+        const input = baseInput(
+            branch(checkpointValue, [custom("redo-marker", null, WorkspaceControlCustomTypes.state, redoState)]),
+            { "a.ts": live(change.after) },
+            history
+        );
+
+        const plan = await planTurnUndo(input);
+
+        expect(plan.hardBlocked).toBe(true);
+        expect(plan.coverageWarnings).toContainEqual(
+            expect.objectContaining({ reason: expect.stringMatching(/does not restore/i) })
+        );
+        expect(history.findForeignOverlap).not.toHaveBeenCalled();
     });
 
     it("keeps external same-path drift forceable when the path is present in the preview", async () => {

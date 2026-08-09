@@ -27,7 +27,7 @@ import {
     type WorkspaceTurnMutationAuthority,
     type WorkspaceTurnMutationStateV1,
 } from "./session-state";
-import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1 } from "./types";
+import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
@@ -357,7 +357,8 @@ async function classifyTurnTransitions(
     input: PlanTurnRestoreBaseInput,
     redo: boolean,
     historyBoundary = checkpoint.after.id,
-    blockExternal = false
+    blockExternal = false,
+    includedCommits: ReadonlySet<string> = new Set()
 ): Promise<RestorePlanV1> {
     if (!enforceRestoreTransitionLimit(plan, transitions)) return plan;
     if (checkpoint.before.id === checkpoint.after.id) {
@@ -367,7 +368,7 @@ async function classifyTurnTransitions(
         mutationLog: input.mutationLog,
         afterCommit: historyBoundary,
         paths: [...transitions.keys()].sort(),
-        includedCommits: new Set(),
+        includedCommits,
         ownerSessionId: input.sessionId,
         ...(blockExternal ? { blockExternal: true } : {}),
     });
@@ -380,6 +381,40 @@ async function classifyTurnTransitions(
         redo,
         historyBlockers
     );
+}
+
+async function neutralConversationRedoCommits(
+    plan: RestorePlanV1,
+    branch: SessionTreeEntry[],
+    visibleEntries: ReadonlySet<SessionTreeEntry>,
+    afterIndex: number,
+    input: PlanTurnRestoreBaseInput
+): Promise<ReadonlySet<string> | undefined> {
+    const commits = new Set<string>();
+    for (const entry of branch.slice(afterIndex + 1)) {
+        if (!visibleEntries.has(entry)) continue;
+        const state = decodeWorkspaceStateEntry(entry);
+        if (state?.sessionId !== input.sessionId || state.kind !== "redo") continue;
+        if (state.currentSnapshot.tree !== state.linkedOperation.sourceSnapshot.tree) {
+            hardBlock(plan, "conversation Redo does not restore its linked Revert tree");
+            return undefined;
+        }
+        if (!(await verifyResultSnapshots(plan, state, input))) return undefined;
+        if (
+            !(await validateResultMutationAuthority(
+                plan,
+                state,
+                input.mutationLog,
+                input.diffSnapshots,
+                input.readCommitSnapshot
+            ))
+        ) {
+            return undefined;
+        }
+        commits.add(state.linkedOperation.currentSnapshot.id);
+        commits.add(state.currentSnapshot.id);
+    }
+    return commits;
 }
 
 export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePlanV1> {
@@ -396,6 +431,7 @@ export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePla
     }
     let transitions: Map<string, RestorePathTransitionV1> | undefined;
     let historyBoundary = prepared.checkpoint.after.id;
+    let historyEntryIndex = prepared.checkpointIndex!;
     if (resolved.latestState?.kind === "turn-redo") {
         if (!(await verifyResultSnapshots(prepared.plan, resolved.latestState, input))) return prepared.plan;
         const exact = await validateResultMutationAuthority(
@@ -408,11 +444,31 @@ export async function planTurnUndo(input: PlanTurnUndoInput): Promise<RestorePla
         if (!exact) return prepared.plan;
         transitions = reverseResultTransitions(prepared.plan, exact);
         historyBoundary = resolved.latestState.currentSnapshot.id;
+        historyEntryIndex = prepared.branch!.findIndex(
+            (entry) => decodeWorkspaceStateEntry(entry)?.operationId === resolved.latestState!.operationId
+        );
     } else {
         transitions = transitionsForCheckpoint(prepared.plan, prepared.checkpoint, "undo");
     }
     if (!transitions) return prepared.plan;
-    return classifyTurnTransitions(prepared.plan, prepared.checkpoint, transitions, input, false, historyBoundary);
+    const includedCommits = await neutralConversationRedoCommits(
+        prepared.plan,
+        prepared.branch!,
+        prepared.visibleEntries!,
+        historyEntryIndex,
+        input
+    );
+    if (!includedCommits) return prepared.plan;
+    return classifyTurnTransitions(
+        prepared.plan,
+        prepared.checkpoint,
+        transitions,
+        input,
+        false,
+        historyBoundary,
+        false,
+        includedCommits
+    );
 }
 
 export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePlanV1> {
@@ -474,7 +530,7 @@ export async function planTurnRedo(input: PlanTurnRedoInput): Promise<RestorePla
 
 async function verifyResultSnapshots(
     plan: RestorePlanV1,
-    state: WorkspaceTurnMutationStateV1,
+    state: WorkspaceStateV1,
     input: PlanTurnRestoreBaseInput
 ): Promise<boolean> {
     for (const snapshot of [state.sourceSnapshot, state.currentSnapshot]) {

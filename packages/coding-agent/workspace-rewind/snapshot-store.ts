@@ -940,12 +940,12 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(async () => {
             const manifest = await this.#readStoredManifest(snapshot);
             const coverage = manifest.getCoverage();
-            if (manifest.manifest.schemaversion !== 2 || !coverage) {
-                throw new Error("Incremental snapshot coverage requires a v2 snapshot");
+            if (manifest.manifest.schemaversion === 1 || !coverage) {
+                throw new Error("Incremental snapshot coverage requires a v2 or v3 snapshot");
             }
             const changes: WorkspacePathChangeV1[] = [];
             for (const mutation of ownedMutations) {
-                if (mutation.state.state === "absent") {
+                if (manifest.manifest.schemaversion === 2 && mutation.state.state === "absent") {
                     const existingPaths = await manifest.collectExplicitPathsUnder(mutation.path);
                     if (existingPaths.length > 0) {
                         for (const path of existingPaths) {
@@ -960,7 +960,7 @@ export class WorkspaceSnapshotStore {
                 }
                 changes.push({
                     path: mutation.path,
-                    before: await manifest.readPathState(mutation.path),
+                    before: await this.#readPathStateFromManifest(snapshot, manifest, mutation.path),
                     after: mutation.state,
                 });
             }

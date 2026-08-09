@@ -66,13 +66,43 @@ interface LockedSession {
     engine: WorkspaceRewindEngine;
 }
 
+function conversationMutationPreview(result: WorkspaceRestorePreviewResult): AgentRewindPreviewResult {
+    if (result.target.kind !== "rewind" && result.target.kind !== "redo") {
+        throw new Error("Conversation preview returned an invalid restore target");
+    }
+    return {
+        ...(result.confirmationToken == null ? {} : { confirmationToken: result.confirmationToken }),
+        target:
+            result.target.kind === "rewind"
+                ? { kind: "rewind", targetTurnId: result.target.targetTurnId }
+                : { kind: "redo" },
+        ...(result.targetPrompt == null ? {} : { targetPrompt: result.targetPrompt }),
+        semanticLeafId: result.semanticLeafId,
+        displayLeafId: result.displayLeafId,
+        expectedSemanticLeafId: result.expectedSemanticLeafId,
+        messageCount: result.messageCount,
+        fileCount: result.fileCount,
+        files: result.files,
+        coverageWarnings: result.coverageWarnings,
+        forceRequired: result.forceRequired,
+        hardBlocked: result.hardBlocked,
+    };
+}
+
 function turnMutationPreview(result: WorkspaceRestorePreviewResult): AgentTurnMutationPreviewResult {
     if (result.target.kind !== "turn-undo" && result.target.kind !== "turn-redo") {
         throw new Error("Turn mutation preview returned an invalid restore target");
     }
     return {
         ...(result.confirmationToken == null ? {} : { confirmationToken: result.confirmationToken }),
-        target: result.target,
+        target:
+            result.target.kind === "turn-undo"
+                ? { kind: "turn-undo", sourceTurnId: result.target.sourceTurnId }
+                : {
+                      kind: "turn-redo",
+                      sourceTurnId: result.target.sourceTurnId,
+                      undoOperationId: result.target.undoOperationId,
+                  },
         semanticLeafId: result.semanticLeafId,
         displayLeafId: result.displayLeafId,
         expectedSemanticLeafId: result.expectedSemanticLeafId,
@@ -145,22 +175,24 @@ export class AgentRewindService {
     }
 
     preview(input: AgentPreviewRewindInput): Promise<AgentRewindPreviewResult> {
-        return this.withLockedSession(input.sessionMetadata, ({ session, workspace, engine }) =>
-            input.target.kind === "rewind"
-                ? engine.previewRewind({
-                      session,
-                      sessionId: input.sessionMetadata.id,
-                      workspace,
-                      semanticLeafId: input.expectedSemanticLeafId,
-                      targetTurnId: input.target.targetTurnId,
-                  })
-                : engine.previewRedo({
-                      session,
-                      sessionId: input.sessionMetadata.id,
-                      workspace,
-                      semanticLeafId: input.expectedSemanticLeafId,
-                  })
-        );
+        return this.withLockedSession(input.sessionMetadata, async ({ session, workspace, engine }) => {
+            const result =
+                input.target.kind === "rewind"
+                    ? await engine.previewRewind({
+                          session,
+                          sessionId: input.sessionMetadata.id,
+                          workspace,
+                          semanticLeafId: input.expectedSemanticLeafId,
+                          targetTurnId: input.target.targetTurnId,
+                      })
+                    : await engine.previewRedo({
+                          session,
+                          sessionId: input.sessionMetadata.id,
+                          workspace,
+                          semanticLeafId: input.expectedSemanticLeafId,
+                      });
+            return conversationMutationPreview(result);
+        });
     }
 
     getTurnChangeSummary(input: AgentTurnTargetInput): Promise<AgentTurnChangeSummaryView> {
