@@ -579,6 +579,24 @@ describe("private V3 bare-store bootstrap safety", () => {
         expect((await stat(storeRoot)).isDirectory()).toBe(true);
     });
 
+    it("removes abandoned object-import staging directories during bootstrap", async () => {
+        const root = await temporaryBootstrapRoot("object-import");
+        const storeRoot = join(root, "repo.git");
+        const input = {
+            storeRoot,
+            git: new WorkspaceGitRunner(),
+            processOwner: await makeProcessOwnerIdentity(),
+        };
+        await initializePrivateStore(input);
+        const abandoned = join(storeRoot, "objects", "crest-object-import-abandoned");
+        await mkdir(join(abandoned, "pack"), { recursive: true });
+        await writeFile(join(abandoned, "pack", "seed.pack"), "partial");
+
+        await initializePrivateStore(input);
+
+        await expect(lstat(abandoned)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
     it("repairs every repository directory and file to owner-only permissions", async () => {
         const root = await temporaryBootstrapRoot("permissions");
         const storeRoot = join(root, "repo.git");

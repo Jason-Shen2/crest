@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -43,6 +44,19 @@ if (command === "report") {
 } else {
     process.stderr.write("unknown fake command");
     process.exit(91);
+}
+`;
+
+const InvalidIndexPackSource = `#!/usr/bin/env node
+const argv = process.argv.slice(2);
+if (argv.includes("pack-objects")) {
+    process.stdin.resume();
+    process.stdin.on("end", () => process.stdout.write("pack bytes"));
+} else if (argv.includes("index-pack")) {
+    process.stdin.resume();
+    process.stdin.on("end", () => process.stdout.write("unexpected output\\n"));
+} else {
+    process.exit(90);
 }
 `;
 
@@ -707,14 +721,18 @@ describe.sequential("WorkspaceGitRunner", () => {
                 stdin: Buffer.from("private baseline bytes"),
                 timeoutMs: 5_000,
             })
-        ).stdout.toString("ascii").trim();
+        ).stdout
+            .toString("ascii")
+            .trim();
         const tree = (
             await runner.run(["mktree"], {
                 cwd: sourceRoot,
                 stdin: Buffer.from(`100644 blob ${blob}\tfile.txt\n`),
                 timeoutMs: 5_000,
             })
-        ).stdout.toString("ascii").trim();
+        ).stdout
+            .toString("ascii")
+            .trim();
 
         const imported = await runner.importObjectClosure({
             sourceRoot,
@@ -725,6 +743,10 @@ describe.sequential("WorkspaceGitRunner", () => {
         });
 
         expect(imported.packBytes).toBeGreaterThan(0);
+        expect(imported.pack).toMatch(/^[0-9a-f]{40}$/);
+        expect((await readdir(join(destinationGitDir, "objects", "pack"))).sort()).toEqual(
+            ["idx", "pack", "rev"].map((extension) => `pack-${imported.pack}.${extension}`).sort()
+        );
         await rm(join(sourceRoot, ".git"), { recursive: true, force: true });
         await expect(
             runner.run(["cat-file", "blob", blob], { gitDir: destinationGitDir, timeoutMs: 5_000 })
@@ -732,6 +754,119 @@ describe.sequential("WorkspaceGitRunner", () => {
         await expect(
             runner.run(["cat-file", "-t", tree], { gitDir: destinationGitDir, timeoutMs: 5_000 })
         ).resolves.toMatchObject({ stdout: Buffer.from("tree\n") });
+    });
+
+    test("removes staged pack artifacts when a closure exceeds its byte budget", async () => {
+        const runner = new WorkspaceGitRunner();
+        const sourceRoot = join(root, "oversized-source");
+        const destinationGitDir = join(root, "oversized-destination.git");
+        await mkdir(sourceRoot);
+        await runner.run(["init", "--quiet"], { cwd: sourceRoot, timeoutMs: 5_000 });
+        await runner.run(["init", "--quiet", "--bare", destinationGitDir], { cwd: root, timeoutMs: 5_000 });
+        const blob = (
+            await runner.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+                cwd: sourceRoot,
+                stdin: randomBytes(256 * 1024),
+                timeoutMs: 5_000,
+            })
+        ).stdout
+            .toString("ascii")
+            .trim();
+        const tree = (
+            await runner.run(["mktree"], {
+                cwd: sourceRoot,
+                stdin: Buffer.from(`100644 blob ${blob}\tfile.bin\n`),
+                timeoutMs: 5_000,
+            })
+        ).stdout
+            .toString("ascii")
+            .trim();
+        const packDirectory = join(destinationGitDir, "objects", "pack");
+        const before = await readdir(packDirectory);
+
+        await expect(
+            runner.importObjectClosure({
+                sourceRoot,
+                sourceTree: tree,
+                destinationGitDir,
+                maxPackBytes: 1024,
+                timeoutMs: 5_000,
+            })
+        ).rejects.toMatchObject({ code: "stdout_overflow" });
+
+        expect(await readdir(packDirectory)).toEqual(before);
+    });
+
+    test("removes staged pack artifacts when a closure import is aborted", async () => {
+        const runner = new WorkspaceGitRunner();
+        const sourceRoot = join(root, "aborted-source");
+        const destinationGitDir = join(root, "aborted-destination.git");
+        await mkdir(sourceRoot);
+        await runner.run(["init", "--quiet"], { cwd: sourceRoot, timeoutMs: 5_000 });
+        await runner.run(["init", "--quiet", "--bare", destinationGitDir], { cwd: root, timeoutMs: 5_000 });
+        const blob = (
+            await runner.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+                cwd: sourceRoot,
+                stdin: randomBytes(8 * 1024 * 1024),
+                timeoutMs: 5_000,
+            })
+        ).stdout
+            .toString("ascii")
+            .trim();
+        const tree = (
+            await runner.run(["mktree"], {
+                cwd: sourceRoot,
+                stdin: Buffer.from(`100644 blob ${blob}\tfile.bin\n`),
+                timeoutMs: 5_000,
+            })
+        ).stdout
+            .toString("ascii")
+            .trim();
+        const controller = new AbortController();
+        const importPromise = runner.importObjectClosure({
+            sourceRoot,
+            sourceTree: tree,
+            destinationGitDir,
+            maxPackBytes: 16 * 1024 * 1024,
+            timeoutMs: 5_000,
+            signal: controller.signal,
+        });
+        setTimeout(() => controller.abort(), 1);
+
+        await expect(importPromise).rejects.toMatchObject({ code: "aborted" });
+        expect(await readdir(join(destinationGitDir, "objects", "pack"))).toEqual([]);
+        expect(
+            (await readdir(join(destinationGitDir, "objects"))).some((name) => name.startsWith("crest-object-import-"))
+        ).toBe(false);
+    });
+
+    test("rejects malformed index-pack output without publishing objects", async () => {
+        const realRunner = new WorkspaceGitRunner();
+        const sourceRoot = join(root, "malformed-source");
+        const destinationGitDir = join(root, "malformed-destination.git");
+        const invalidGit = join(root, "invalid-index-pack.mjs");
+        await mkdir(sourceRoot);
+        await realRunner.run(["init", "--quiet", "--bare", destinationGitDir], {
+            cwd: root,
+            timeoutMs: 5_000,
+        });
+        await writeFile(invalidGit, InvalidIndexPackSource);
+        await chmod(invalidGit, 0o755);
+
+        await expect(
+            new WorkspaceGitRunner(invalidGit).importObjectClosure({
+                sourceRoot,
+                sourceTree: TestSha1,
+                destinationGitDir,
+                maxPackBytes: 1024,
+                timeoutMs: 5_000,
+            })
+        ).rejects.toMatchObject({ code: "invalid_output" });
+
+        expect(await readdir(join(destinationGitDir, "objects", "pack"))).toEqual([]);
+        expect(
+            (await readdir(join(destinationGitDir, "objects"))).some((name) => name.startsWith("crest-object-import-"))
+        ).toBe(false);
     });
 
     test("handles child stdin EPIPE without an unhandled error", async () => {

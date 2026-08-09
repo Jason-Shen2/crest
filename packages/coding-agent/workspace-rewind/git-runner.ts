@@ -2,7 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { spawn } from "node:child_process";
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import {
+    chmodSync,
+    closeSync,
+    existsSync,
+    fsyncSync,
+    linkSync,
+    lstatSync,
+    mkdirSync,
+    mkdtempSync,
+    openSync,
+    rmSync,
+    unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -20,7 +32,8 @@ export type WorkspaceGitRunnerErrorCode =
     | "timeout"
     | "aborted"
     | "stdout_overflow"
-    | "stderr_overflow";
+    | "stderr_overflow"
+    | "invalid_output";
 
 export interface GitRunOptions {
     cwd?: string;
@@ -106,6 +119,7 @@ const ApprovedGitSubcommands = new Set([
     "fsck",
     "gc",
     "reflog",
+    "verify-pack",
 ]);
 
 interface SecureGitPaths {
@@ -125,13 +139,19 @@ const SecureGitState = getSecureGitProcessState();
 export class WorkspaceGitRunner {
     constructor(readonly executable = "git") {}
 
-    async importObjectClosure(options: GitObjectClosureImportOptions): Promise<{ packBytes: number }> {
+    async importObjectClosure(options: GitObjectClosureImportOptions): Promise<{ packBytes: number; pack: string }> {
         validateObjectClosureImportOptions(options);
         if (options.signal?.aborted) throw makeError("aborted");
+        const deadline = Date.now() + options.timeoutMs;
+        const stagingObjectDirectory = mkdtempSync(join(options.destinationGitDir, "objects", "crest-object-import-"));
+        const stagingPackDirectory = join(stagingObjectDirectory, "pack");
+        const stagingPack = join(stagingPackDirectory, "seed.pack");
+        mkdirSync(stagingPackDirectory);
         let securePaths: SecureGitPaths;
         try {
             securePaths = getSecureGitPaths();
         } catch (cause) {
+            rmSync(stagingObjectDirectory, { recursive: true, force: true });
             throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
         }
         const commonArgs = [
@@ -151,14 +171,7 @@ export class WorkspaceGitRunner {
         try {
             source = spawn(
                 this.executable,
-                [
-                    "--no-replace-objects",
-                    ...commonArgs,
-                    "pack-objects",
-                    "--stdout",
-                    "--revs",
-                    "--delta-base-offset",
-                ],
+                ["--no-replace-objects", ...commonArgs, "pack-objects", "--stdout", "--revs", "--delta-base-offset"],
                 {
                     cwd: options.sourceRoot,
                     env,
@@ -171,11 +184,17 @@ export class WorkspaceGitRunner {
                 this.executable,
                 [
                     ...commonArgs,
+                    "-c",
+                    "core.fsync=pack,pack-metadata",
+                    "-c",
+                    "core.fsyncMethod=fsync",
                     `--git-dir=${options.destinationGitDir}`,
                     "index-pack",
                     "--stdin",
                     "--strict",
+                    "--rev-index",
                     `--max-input-size=${options.maxPackBytes}`,
+                    stagingPack,
                 ],
                 {
                     env,
@@ -187,6 +206,7 @@ export class WorkspaceGitRunner {
         } catch (cause) {
             source?.kill("SIGKILL");
             destination?.kill("SIGKILL");
+            rmSync(stagingObjectDirectory, { recursive: true, force: true });
             throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
         }
 
@@ -221,12 +241,14 @@ export class WorkspaceGitRunner {
         source.stdout.on("end", () => destination.stdin.end());
         const onAbort = () => terminate(makeError("aborted"));
         options.signal?.addEventListener("abort", onAbort, { once: true });
-        const timer = setTimeout(() => terminate(makeError("timeout")), options.timeoutMs);
+        const timer = setTimeout(() => terminate(makeError("timeout")), remainingTimeout(deadline));
         source.stdin.on("error", (cause: NodeJS.ErrnoException) => {
-            if (cause.code !== "EPIPE") terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+            if (cause.code !== "EPIPE")
+                terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
         });
         destination.stdin.on("error", (cause: NodeJS.ErrnoException) => {
-            if (cause.code !== "EPIPE") terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+            if (cause.code !== "EPIPE")
+                terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
         });
         source.stdin.end(Buffer.from(`${options.sourceTree}\n`));
         try {
@@ -236,7 +258,10 @@ export class WorkspaceGitRunner {
             if (rejected) {
                 throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, rejected.reason);
             }
-            const [sourceResult, destinationResult] = settled as [PromiseFulfilledResult<number>, PromiseFulfilledResult<number>];
+            const [sourceResult, destinationResult] = settled as [
+                PromiseFulfilledResult<number>,
+                PromiseFulfilledResult<number>,
+            ];
             if (sourceResult.value !== 0) {
                 throw makeError("nonzero_exit", Buffer.alloc(0), sourceStderr.bytes(), sourceResult.value);
             }
@@ -248,10 +273,41 @@ export class WorkspaceGitRunner {
                     destinationResult.value
                 );
             }
-            return { packBytes };
+            const sourceError = sourceStderr.bytes();
+            const destinationError = destinationStderr.bytes();
+            const output = destinationStdout.bytes();
+            if (sourceError.length !== 0 || destinationError.length !== 0) {
+                throw makeError("invalid_output", output, Buffer.concat([sourceError, destinationError]));
+            }
+            const match = /^pack\t([0-9a-f]{40})\n$/.exec(output.toString("ascii"));
+            if (!match) throw makeError("invalid_output", output);
+            const pack = match[1];
+            const published = publishStagedPack(stagingPackDirectory, options.destinationGitDir, pack);
+            try {
+                await this.run(
+                    ["verify-pack", join(options.destinationGitDir, "objects", "pack", `pack-${pack}.idx`)],
+                    {
+                        timeoutMs: remainingTimeout(deadline),
+                        signal: options.signal,
+                    }
+                );
+                const verified = await this.run(["cat-file", "-t", options.sourceTree], {
+                    gitDir: options.destinationGitDir,
+                    timeoutMs: remainingTimeout(deadline),
+                    signal: options.signal,
+                });
+                if (!verified.stdout.equals(Buffer.from("tree\n")) || verified.stderr.length !== 0) {
+                    throw makeError("invalid_output", verified.stdout, verified.stderr);
+                }
+            } catch (cause) {
+                removePublishedPack(published, options.destinationGitDir);
+                throw cause;
+            }
+            return { packBytes, pack };
         } finally {
             clearTimeout(timer);
             options.signal?.removeEventListener("abort", onAbort);
+            rmSync(stagingObjectDirectory, { recursive: true, force: true });
         }
     }
 
@@ -498,6 +554,87 @@ function makeBoundedCapture(limit: number): { push(chunk: Buffer): boolean; byte
     };
 }
 
+function remainingTimeout(deadline: number): number {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw makeError("timeout");
+    return remaining;
+}
+
+function publishStagedPack(stagingPackDirectory: string, destinationGitDir: string, pack: string): string[] {
+    const destinationPackDirectory = join(destinationGitDir, "objects", "pack");
+    const published: string[] = [];
+    const extensions = ["pack", "rev", "idx"];
+    try {
+        for (const extension of extensions) {
+            const source = join(stagingPackDirectory, `seed.${extension}`);
+            if (!lstatSync(source).isFile()) throw makeError("invalid_output");
+            fsyncFile(source);
+        }
+        fsyncDirectory(stagingPackDirectory);
+        for (const extension of extensions) {
+            const source = join(stagingPackDirectory, `seed.${extension}`);
+            const destination = join(destinationPackDirectory, `pack-${pack}.${extension}`);
+            if (existsSync(destination)) {
+                const sourceStat = lstatSync(source);
+                const destinationStat = lstatSync(destination);
+                if (!destinationStat.isFile() || sourceStat.size !== destinationStat.size) {
+                    throw makeError("invalid_output");
+                }
+                continue;
+            }
+            linkSync(source, destination);
+            published.push(destination);
+        }
+        fsyncDirectory(destinationPackDirectory);
+        return published;
+    } catch (cause) {
+        removePublishedPack(published, destinationGitDir);
+        throw cause;
+    }
+}
+
+function removePublishedPack(published: readonly string[], destinationGitDir: string): void {
+    for (const path of published) {
+        try {
+            unlinkSync(path);
+        } catch (cause) {
+            if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+        }
+    }
+    if (published.length !== 0) fsyncDirectory(join(destinationGitDir, "objects", "pack"));
+}
+
+function fsyncFile(path: string): void {
+    const descriptor = openSync(path, "r");
+    try {
+        fsyncSync(descriptor);
+    } finally {
+        closeSync(descriptor);
+    }
+}
+
+function fsyncDirectory(path: string): void {
+    let descriptor: number;
+    try {
+        descriptor = openSync(path, "r");
+    } catch (cause) {
+        if (isUnsupportedDirectorySync(cause)) return;
+        throw cause;
+    }
+    try {
+        fsyncSync(descriptor);
+    } catch (cause) {
+        if (!isUnsupportedDirectorySync(cause)) throw cause;
+    } finally {
+        closeSync(descriptor);
+    }
+}
+
+function isUnsupportedDirectorySync(cause: unknown): boolean {
+    const code = (cause as NodeJS.ErrnoException)?.code;
+    return ["EINVAL", "ENOTSUP", "EISDIR", "EBADF"].includes(code ?? "");
+}
+
 function isValidLimit(value: number, hardCap: number): boolean {
     return isNonnegativeSafeInteger(value) && value <= hardCap;
 }
@@ -534,6 +671,8 @@ function isSafeApprovedInvocation(args: readonly string[], options: GitRunOption
             return isSafeStatusArgs(commandArgs, options);
         case "log":
             return isSafeLogArgs(commandArgs);
+        case "verify-pack":
+            return commandArgs.length === 1 && isAbsolute(commandArgs[0]) && commandArgs[0].endsWith(".idx");
         default:
             return true;
     }

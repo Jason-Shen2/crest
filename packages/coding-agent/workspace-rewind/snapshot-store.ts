@@ -1712,11 +1712,29 @@ async function initializePrivateStoreImpl(input: {
             await assertSafeExistingTree(input.storeRoot, join(input.storeRoot, "journal", "restores"));
             await initializeBareRepository(input.storeRoot, input.git);
         }
+        await removeAbandonedObjectImports(input.storeRoot);
         await repairStorePermissions(input.storeRoot);
         await verifyPrivateStore(input.storeRoot, input.git);
     } finally {
         await removeOwnerIfUnchanged(ownerPath, canonicalJson(makeBootstrapOwnerRecord(input.processOwner)));
     }
+}
+
+async function removeAbandonedObjectImports(storeRoot: string): Promise<void> {
+    const objects = join(storeRoot, "objects");
+    const entries = await readdir(objects, { withFileTypes: true });
+    let removed = false;
+    for (const entry of entries) {
+        if (!/^crest-object-import-[A-Za-z0-9_-]+$/.test(entry.name)) continue;
+        const path = join(objects, entry.name);
+        const state = await lstat(path);
+        if (!entry.isDirectory() || state.isSymbolicLink()) {
+            throw new Error("Unsafe object-import staging path");
+        }
+        await rm(path, { recursive: true, force: true });
+        removed = true;
+    }
+    if (removed) await syncDirectory(objects);
 }
 
 async function initializeBareRepository(
