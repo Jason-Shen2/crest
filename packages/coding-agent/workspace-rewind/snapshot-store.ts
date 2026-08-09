@@ -95,6 +95,12 @@ type WorkspaceTreePathEntry =
     | { kind: "tree" }
     | { kind: "leaf"; state: Extract<CapturedPathStateV1, { state: "file" | "symlink" }> };
 
+interface WorkspaceRawTreeDeltaEntry {
+    path: string;
+    before: Extract<CapturedPathStateV1, { state: "absent" | "file" | "symlink" }>;
+    after: Extract<CapturedPathStateV1, { state: "absent" | "file" | "symlink" }>;
+}
+
 export interface WorkspaceSnapshotQuotaStatus {
     status: "ok" | "soft-quota-exceeded" | "referenced-over-quota";
     usedBytes: number;
@@ -508,13 +514,16 @@ export class WorkspaceSnapshotStore {
         try {
             const beforeManifest = await this.#readStoredManifest(before);
             const afterManifest = await this.#readStoredManifest(after);
-            const paths = new Set((await this.#readTreeDelta(before.tree, after.tree)).paths);
-            await this.#collectManifestDiffPaths(beforeManifest, paths);
-            await this.#collectManifestDiffPaths(afterManifest, paths);
+            const rawChanges = await this.#readRawTreeDelta(before.tree, after.tree);
+            const rawByPath = new Map(rawChanges.map((change) => [change.path, change]));
+            const beforeExclusions = manifestPathExclusionPaths(beforeManifest);
+            const afterExclusions = manifestPathExclusionPaths(afterManifest);
+            const paths = new Set([...rawByPath.keys(), ...beforeExclusions.keys(), ...afterExclusions.keys()]);
             const changes: WorkspacePathChangeV1[] = [];
             for (const path of [...paths].sort(comparePathBytes)) {
-                const beforeState = await this.#readPathStateFromManifest(before, beforeManifest, path);
-                const afterState = await this.#readPathStateFromManifest(after, afterManifest, path);
+                const raw = rawByPath.get(path);
+                const beforeState = await mergeRawTreeState(raw?.before, beforeManifest, path);
+                const afterState = await mergeRawTreeState(raw?.after, afterManifest, path);
                 if (canonicalJson(beforeState).equals(canonicalJson(afterState))) continue;
                 changes.push({ path, before: beforeState, after: afterState });
             }
@@ -711,10 +720,47 @@ export class WorkspaceSnapshotStore {
         return parseNulWorkspaceTreeDelta(result.stdout);
     }
 
-    async #collectManifestDiffPaths(manifest: StoredManifestReader, paths: Set<string>): Promise<void> {
-        for (const exclusion of manifest.manifest.coverage.exclusions) {
-            if ("path" in exclusion) paths.add(exclusion.path);
+    async #readRawTreeDelta(beforeTree: string, afterTree: string): Promise<WorkspaceRawTreeDeltaEntry[]> {
+        if (beforeTree === afterTree) return [];
+        if (beforeTree.length !== afterTree.length) throw new Error("Workspace tree object formats do not match");
+        const result = await this.git.run(
+            [
+                "diff-tree",
+                "--no-commit-id",
+                "--raw",
+                "-r",
+                "-z",
+                "--no-renames",
+                "--no-abbrev",
+                beforeTree,
+                afterTree,
+            ],
+            { gitDir: this.storeRoot, timeoutMs: StoreGitTimeoutMs, maxStdoutBytes: QuotaMaxObjectOutputBytes }
+        );
+        const entries = parseNulWorkspaceRawTreeDelta(result.stdout, beforeTree.length);
+        const objectIds = [
+            ...new Set(
+                entries.flatMap((entry) =>
+                    [entry.before, entry.after]
+                        .filter(
+                            (state): state is Extract<CapturedPathStateV1, { state: "file" | "symlink" }> =>
+                                state.state === "file" || state.state === "symlink"
+                        )
+                        .map((state) => state.oid)
+                )
+            ),
+        ];
+        if (objectIds.length > 0) {
+            const expected = objectIds.map((oid) => ({ oid, type: "blob" as const }));
+            const objectInfo = await this.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+                gitDir: this.storeRoot,
+                stdin: Buffer.from(`${objectIds.join("\n")}\n`),
+                timeoutMs: StoreGitTimeoutMs,
+                maxStdoutBytes: QuotaMaxObjectOutputBytes,
+            });
+            assertBatchObjectTypes(objectInfo.stdout, expected);
         }
+        return entries;
     }
 
     readSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
@@ -2870,6 +2916,23 @@ function workspaceTreePathEntry(entry: { mode: string; oid: string }): Workspace
     };
 }
 
+function manifestPathExclusionPaths(manifest: StoredManifestReader): Set<string> {
+    const exclusions = new Set<string>();
+    for (const exclusion of manifest.getCoverage().exclusions) {
+        if (exclusion.path != null) exclusions.add(exclusion.path);
+    }
+    return exclusions;
+}
+
+async function mergeRawTreeState(
+    state: Extract<CapturedPathStateV1, { state: "absent" | "file" | "symlink" }> | undefined,
+    manifest: StoredManifestReader,
+    path: string
+): Promise<CapturedPathStateV1> {
+    if (state && state.state !== "absent") return state;
+    return await manifest.readCoveragePathState(path);
+}
+
 function chunkCandidateLookupPaths(paths: readonly string[]): string[][] {
     const chunks: string[][] = [];
     let chunk: string[] = [];
@@ -2971,6 +3034,95 @@ function parseNulWorkspaceTreeDelta(value: Buffer): { paths: string[]; eligibleE
     }
     if (status != null) throw new Error("Invalid Git tree delta output");
     return { paths: paths.sort(comparePathBytes), eligibleEntryDelta };
+}
+
+function parseNulWorkspaceRawTreeDelta(value: Buffer, hashLength: number): WorkspaceRawTreeDeltaEntry[] {
+    if (hashLength !== 40 && hashLength !== 64) throw new Error("Unsupported Git object format");
+    if (value.length === 0) return [];
+    if (value.at(-1) !== 0) throw new Error("Invalid raw Git tree delta output");
+    const records: Buffer[] = [];
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        records.push(value.subarray(start, index));
+        start = index + 1;
+    }
+    if (records.length % 2 !== 0) throw new Error("Invalid raw Git tree delta output");
+    const zeroOid = "0".repeat(hashLength);
+    const oidPattern = new RegExp(`^[0-9a-f]{${hashLength}}$`);
+    const seen = new Set<string>();
+    const entries: WorkspaceRawTreeDeltaEntry[] = [];
+    for (let index = 0; index < records.length; index += 2) {
+        const headerBytes = records[index]!;
+        const header = headerBytes.toString("ascii");
+        if (!Buffer.from(header, "ascii").equals(headerBytes)) throw new Error("Invalid raw Git tree delta header");
+        const fields = header.split(" ");
+        if (fields.length !== 5 || !fields[0]!.startsWith(":")) {
+            throw new Error("Invalid raw Git tree delta header");
+        }
+        const beforeMode = fields[0]!.slice(1);
+        const afterMode = fields[1]!;
+        const beforeOid = fields[2]!;
+        const afterOid = fields[3]!;
+        const status = fields[4]!;
+        if (
+            !["000000", "100644", "100755", "120000"].includes(beforeMode) ||
+            !["000000", "100644", "100755", "120000"].includes(afterMode) ||
+            !oidPattern.test(beforeOid) ||
+            !oidPattern.test(afterOid) ||
+            !/^[ADMT]$/.test(status)
+        ) {
+            throw new Error("Invalid raw Git tree delta header");
+        }
+        const beforeAbsent = beforeMode === "000000";
+        const afterAbsent = afterMode === "000000";
+        if (beforeAbsent !== (beforeOid === zeroOid) || afterAbsent !== (afterOid === zeroOid)) {
+            throw new Error("Invalid raw Git tree delta zero object id");
+        }
+        if (
+            (status === "A" && (!beforeAbsent || afterAbsent)) ||
+            (status === "D" && (beforeAbsent || !afterAbsent)) ||
+            ((status === "M" || status === "T") && (beforeAbsent || afterAbsent))
+        ) {
+            throw new Error("Invalid raw Git tree delta status");
+        }
+        if (status === "M" && rawModeKind(beforeMode) !== rawModeKind(afterMode)) {
+            throw new Error("Invalid raw Git tree delta modification");
+        }
+        if (status === "T" && rawModeKind(beforeMode) === rawModeKind(afterMode)) {
+            throw new Error("Invalid raw Git tree delta type change");
+        }
+        const pathBytes = records[index + 1]!;
+        const path = pathBytes.toString("utf8");
+        if (!Buffer.from(path).equals(pathBytes)) throw new Error("Invalid UTF-8 raw Git tree delta path");
+        validateRelativePath(path);
+        if (seen.has(path)) throw new Error("Duplicate raw Git tree delta path");
+        seen.add(path);
+        const before = rawTreeDeltaState(beforeMode, beforeOid);
+        const after = rawTreeDeltaState(afterMode, afterOid);
+        if (canonicalJson(before).equals(canonicalJson(after))) {
+            throw new Error("Raw Git tree delta entry does not change state");
+        }
+        entries.push({ path, before, after });
+    }
+    return entries.sort((left, right) => comparePathBytes(left.path, right.path));
+}
+
+function rawModeKind(mode: string): "absent" | "file" | "symlink" {
+    if (mode === "000000") return "absent";
+    if (mode === "100644" || mode === "100755") return "file";
+    if (mode === "120000") return "symlink";
+    throw new Error("Invalid raw Git tree delta mode");
+}
+
+function rawTreeDeltaState(
+    mode: string,
+    oid: string
+): Extract<CapturedPathStateV1, { state: "absent" | "file" | "symlink" }> {
+    const kind = rawModeKind(mode);
+    if (kind === "absent") return { state: "absent" };
+    if (kind === "symlink") return { state: "symlink", oid };
+    return { state: "file", oid, executable: mode === "100755" };
 }
 
 function comparePathBytes(left: string, right: string): number {

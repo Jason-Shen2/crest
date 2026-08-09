@@ -157,15 +157,21 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         await writeFile(join(fixture.workspace, "plain.txt"), "after\r\n");
         await chmod(join(fixture.workspace, "tool.sh"), 0o755);
         await rm(join(fixture.workspace, "link"));
+        await writeFile(join(fixture.workspace, "link"), "link replaced by file");
         await symlink("plain.txt", join(fixture.workspace, "new-link"));
         const after = await fixture.store.capture({ profile: "terminal" });
 
-        expect((await fixture.store.diff(before.ref, after.ref)).map((change) => change.path)).toEqual([
+        const changes = await fixture.store.diff(before.ref, after.ref);
+        expect(changes.map((change) => change.path)).toEqual([
             "link",
             "new-link",
             "plain.txt",
             "tool.sh",
         ]);
+        expect(changes.find((change) => change.path === "link")).toMatchObject({
+            before: { state: "symlink" },
+            after: { state: "file", executable: false },
+        });
         expect(await fixture.store.readPathState(after.ref, "tool.sh")).toMatchObject({
             state: "file",
             executable: true,
@@ -173,22 +179,97 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         expect(await readFile(join(fixture.workspace, "plain.txt"))).toEqual(Buffer.from("after\r\n"));
     });
 
-    it("fails closed for malformed or unknown native tree-delta statuses", async () => {
+    it("diffs one hundred changed paths with a fixed Git-call bound", async () => {
+        const { fixture, before, after, paths } = await makeHundredChangedCandidates();
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const changes = await fixture.store.diff(before.ref, after.ref);
+
+        expect(changes.map((change) => change.path)).toEqual(paths.sort(compareTestPaths));
+        expect(run).toHaveBeenCalledTimes(8);
+        expect(run.mock.calls.map(([args]) => args[0])).toEqual([
+            "cat-file",
+            "cat-file",
+            "cat-file",
+            "cat-file",
+            "cat-file",
+            "cat-file",
+            "diff-tree",
+            "cat-file",
+        ]);
+    });
+
+    it("preserves ancestor exclusion semantics when a path becomes captured", async () => {
+        const fixture = await makeFixture();
+        const before = await fixture.store.capture({ profile: "terminal" });
+        await writeFile(join(fixture.workspace, ".gitignore"), "");
+        const after = await fixture.store.capture({ profile: "terminal" });
+
+        const changes = await fixture.store.diff(before.ref, after.ref);
+
+        expect(changes.find((change) => change.path === "cache")).toEqual({
+            path: "cache",
+            before: { state: "excluded", reason: "ignored" },
+            after: { state: "absent" },
+        });
+        expect(changes.find((change) => change.path === "cache/ignored.txt")).toMatchObject({
+            before: { state: "excluded", reason: "ignored" },
+            after: { state: "file", executable: false },
+        });
+    });
+
+    it("fails closed for malformed raw tree deltas and missing objects", async () => {
         const fixture = await makeFixture();
         const before = await fixture.store.capture({ profile: "terminal" });
         await writeFile(join(fixture.workspace, "plain.txt"), "after");
         const after = await fixture.store.capture({ profile: "terminal" });
+        const beforeState = await fixture.store.readPathState(before.ref, "plain.txt");
+        const afterState = await fixture.store.readPathState(after.ref, "plain.txt");
+        if (beforeState.state !== "file" || afterState.state !== "file") throw new Error("expected file states");
+        const zeroOid = "0".repeat(beforeState.oid.length);
+        const validHeader = `:100644 100644 ${beforeState.oid} ${afterState.oid} M`;
+        const record = (header: string, path = Buffer.from("plain.txt")) =>
+            Buffer.concat([Buffer.from(header), Buffer.from([0]), path, Buffer.from([0])]);
         const originalRun = fixture.store.git.run.bind(fixture.store.git);
         let injected = Buffer.alloc(0);
+        let injectObjectTypeMismatch = false;
         vi.spyOn(fixture.store.git, "run").mockImplementation(async (args, options) => {
             if (args[0] === "diff-tree") return { stdout: injected, stderr: Buffer.alloc(0) };
+            if (injectObjectTypeMismatch && args[0] === "cat-file" && args[1]?.startsWith("--batch-check=")) {
+                return {
+                    stdout: Buffer.from(`${beforeState.oid} tree\n${afterState.oid} blob\n`),
+                    stderr: Buffer.alloc(0),
+                };
+            }
             return await originalRun(args, options);
         });
 
-        for (const output of [Buffer.from("Q\0plain.txt\0"), Buffer.from("A\0plain.txt")]) {
+        const malformed = [
+            ["odd record count", Buffer.concat([Buffer.from(validHeader), Buffer.from([0])])],
+            ["truncated path", record(validHeader).subarray(0, -1)],
+            ["unknown status", record(`${validHeader.slice(0, -1)}Q`)],
+            ["A with a present base", record(`${validHeader.slice(0, -1)}A`)],
+            ["D with a present result", record(`${validHeader.slice(0, -1)}D`)],
+            ["M with a zero base", record(`:100644 100644 ${zeroOid} ${afterState.oid} M`)],
+            ["T without a type change", record(`${validHeader.slice(0, -1)}T`)],
+            ["duplicate path", Buffer.concat([record(validHeader), record(validHeader)])],
+            ["invalid UTF-8 path", record(validHeader, Buffer.from([0xff]))],
+            ["invalid mode", record(`:100600 100644 ${beforeState.oid} ${afterState.oid} M`)],
+        ] as const;
+        for (const [_label, output] of malformed) {
             injected = output;
-            await expect(fixture.store.diff(before.ref, after.ref)).rejects.toThrow(/tree delta|status/i);
+            await expect(fixture.store.diff(before.ref, after.ref)).rejects.toThrow(/tree delta|status|UTF-8/i);
         }
+
+        injected = record(validHeader);
+        injectObjectTypeMismatch = true;
+        await expect(fixture.store.diff(before.ref, after.ref)).rejects.toThrow(/object|blob|snapshot/i);
+
+        injectObjectTypeMismatch = false;
+        injected = record(
+            `:100644 100644 ${"a".repeat(beforeState.oid.length)} ${"b".repeat(beforeState.oid.length)} M`
+        );
+        await expect(fixture.store.diff(before.ref, after.ref)).rejects.toThrow(/object|blob|snapshot/i);
     });
 
     it("keeps trusted hot paths candidate-bound and recursively audits a cold V3 ref only once", async () => {
@@ -575,6 +656,10 @@ async function makeHundredChangedCandidates() {
         state: { state: "file" as const, oid: state.oid, executable: false },
     }));
     return { fixture, before, after, paths, candidates };
+}
+
+function compareTestPaths(left: string, right: string): number {
+    return Buffer.compare(Buffer.from(left), Buffer.from(right));
 }
 
 async function appendMutation(
