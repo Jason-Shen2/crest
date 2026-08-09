@@ -126,6 +126,7 @@ import {
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
 import { initializeWorkspaceCheckpointSnapshotSource } from "@crest/coding-agent/workspace-rewind/snapshot-source";
+import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import type { PiAgentEvent } from "../frontend/app/store/use-pi-chat";
 import {
@@ -140,6 +141,7 @@ import {
     listAgentCommandsForIpc,
     listAgentForkPointsForIpc,
     listAgentTreeForIpc,
+    makeProductionAgentWorkspaceRecoveryGate,
     navigateAgentTreeForIpc,
     registerAgentIpcHandlers as registerAgentIpcHandlersImpl,
     releaseTrackerAfterCheckpointManager,
@@ -303,6 +305,86 @@ const DefaultAgentIpcRegistrationDependencies = {
 };
 
 describe("agent-ipc command helpers", () => {
+    it("uses a short shared Workspace lease for every production recovery operation", async () => {
+        const workspace = {
+            canonicalRoot: "/tmp/recovery-short-lease",
+            workspaceIdentity: "1".repeat(64),
+            workspaceIncarnation: "2".repeat(64),
+            storeKey: "recovery-short-lease",
+            ancestorIdentityChain: [],
+        } as never;
+        const store = {
+            identity: workspace,
+            storeRoot: "/tmp/recovery-short-lease-store",
+            mutationLog: { readHead: vi.fn() },
+        };
+        const writerLeases = { acquire: vi.fn() };
+        const releases: Array<ReturnType<typeof vi.fn>> = [];
+        const openImplementation = vi.mocked(openAgentRewindFeature).getMockImplementation()!;
+        const acquireImplementation = vi.mocked(acquireAgentRewindFeature).getMockImplementation()!;
+        vi.mocked(openAgentRewindFeature).mockResolvedValue({
+            state: "enabled",
+            processOwner: {} as never,
+            store,
+        } as never);
+        vi.mocked(acquireAgentRewindFeature).mockImplementation(async () => {
+            const release = vi.fn(async () => undefined);
+            releases.push(release);
+            return {
+                state: "enabled",
+                processOwner: {} as never,
+                store,
+                tracker: {} as never,
+                mutationLog: store.mutationLog,
+                candidates: {} as never,
+                writerLeases,
+                snapshotSource: {} as never,
+                release,
+            } as never;
+        });
+        const observedWriterLeases: unknown[] = [];
+        const assertWritable = vi
+            .spyOn(WorkspaceRecovery.prototype, "assertWorkspaceWritable")
+            .mockImplementation(async function (this: WorkspaceRecovery) {
+                observedWriterLeases.push(this.writerLeases);
+            });
+        const inspectPending = vi
+            .spyOn(WorkspaceRecovery.prototype, "inspectPending")
+            .mockImplementation(async function (this: WorkspaceRecovery) {
+                observedWriterLeases.push(this.writerLeases);
+                return { state: "none" };
+            });
+        const resolvePending = vi
+            .spyOn(WorkspaceRecovery.prototype, "resolvePending")
+            .mockImplementation(async function (this: WorkspaceRecovery) {
+                observedWriterLeases.push(this.writerLeases);
+                return { state: "none" };
+            });
+        const gate = makeProductionAgentWorkspaceRecoveryGate("/tmp/data");
+
+        try {
+            await gate.assertWorkspaceWritable(workspace);
+            await gate.getRecovery(workspace);
+            await gate.resolveRecovery(workspace, "operation", "retry", async () => undefined);
+            inspectPending.mockRejectedValueOnce(new Error("inspect failed"));
+            await expect(gate.getRecovery(workspace)).rejects.toThrow("inspect failed");
+
+            expect(acquireAgentRewindFeature).toHaveBeenCalledTimes(4);
+            expect(openAgentRewindFeature).not.toHaveBeenCalled();
+            expect(observedWriterLeases).toEqual([writerLeases, writerLeases, writerLeases]);
+            expect(releases).toHaveLength(4);
+            for (const release of releases) expect(release).toHaveBeenCalledOnce();
+        } finally {
+            assertWritable.mockRestore();
+            inspectPending.mockRestore();
+            resolvePending.mockRestore();
+            vi.mocked(openAgentRewindFeature).mockImplementation(openImplementation);
+            vi.mocked(acquireAgentRewindFeature).mockImplementation(acquireImplementation);
+            vi.mocked(openAgentRewindFeature).mockClear();
+            vi.mocked(acquireAgentRewindFeature).mockClear();
+        }
+    });
+
     let tmpConfigHome: string;
     let previousConfigHome: string | undefined;
 

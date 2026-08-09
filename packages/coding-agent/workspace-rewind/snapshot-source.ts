@@ -3,7 +3,11 @@
 
 import { join } from "node:path";
 
-import { IncrementalPathCapture, materializeIncrementalCapturedBatch } from "./incremental-path-capture";
+import {
+    IncrementalPathCapture,
+    materializeIncrementalCapturedBatch,
+    type IncrementalPathCaptureResult,
+} from "./incremental-path-capture";
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
 import { encodeCanonicalStoredJson } from "./stored-manifest";
@@ -36,6 +40,7 @@ export interface WorkspaceCheckpointSnapshotSource {
 
 export interface LegacyWorkspaceSnapshotCapture {
     capture(options: CaptureWorkspaceOptions): Promise<WorkspaceCheckpointHead>;
+    fullReconcile?(options: CaptureWorkspaceOptions): Promise<WorkspaceCheckpointHead>;
 }
 
 const WorkspaceSourceInitializations = new Map<string, Promise<void>>();
@@ -248,7 +253,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             const retried = await this.captureCandidatePaths(base, refreshedScope, discovered.paths, signal);
             if (retried) return retried;
         }
-        return await this.captureLegacy(signal);
+        return await this.captureLegacyFullReconcile(signal);
     }
 
     async captureCandidatePaths(
@@ -257,6 +262,61 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         paths: readonly string[],
         signal?: AbortSignal
     ): Promise<CapturedWorkspaceState | undefined> {
+        let capturePaths = [...paths];
+        let candidateBoundary = await this.readCandidateBoundary(base.tree, signal);
+        let captureScope = scope;
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const staged = await this.stageCandidatePaths(base, captureScope, capturePaths, signal);
+            if (!staged) {
+                if (attempt === 1) throw new Error("Workspace changed during candidate capture");
+                return undefined;
+            }
+            let collectionBoundary: WorkspaceCandidateBoundary;
+            let validationBoundary: WorkspaceCandidateBoundary;
+            let validation;
+            try {
+                collectionBoundary = await this.readCandidateBoundary(base.tree, signal);
+                validation = await this.candidates!.collect(collectionBoundary, signal);
+                validationBoundary = await this.readCandidateBoundary(base.tree, signal);
+            } catch (error) {
+                await this.discardCandidateCapture(staged);
+                throw error;
+            }
+            if (validation.status !== "complete") {
+                await this.discardCandidateCapture(staged);
+                throw new Error(`Workspace candidate validation unavailable: ${validation.reason}`);
+            }
+            const nextPaths = mergeCandidatePaths(capturePaths, validation.paths);
+            const boundaryChanged =
+                !candidateBoundariesEqual(candidateBoundary, collectionBoundary) ||
+                !candidateBoundariesEqual(collectionBoundary, validationBoundary);
+            const pathsChanged = nextPaths.length !== capturePaths.length;
+            if (boundaryChanged || pathsChanged) {
+                await this.discardCandidateCapture(staged);
+                if (attempt === 1) throw new Error("Workspace changed during candidate capture");
+                capturePaths = nextPaths;
+                candidateBoundary = validationBoundary;
+                if (validationBoundary.kind === "git") {
+                    captureScope = await refreshWorkspaceScopeGitIndexEvidence({
+                        identity: this.store.identity,
+                        git: this.store.git,
+                        scope: captureScope,
+                        signal,
+                    });
+                }
+                continue;
+            }
+            return await this.commitCandidateCapture(base, captureScope, staged, signal);
+        }
+        throw new Error("Workspace changed during candidate capture");
+    }
+
+    async stageCandidatePaths(
+        base: WorkspaceSnapshotRefV1,
+        scope: WorkspaceScopeManifest,
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<StagedCandidateCapture | undefined> {
         const capture = new IncrementalPathCapture({
             identity: this.store.identity,
             git: this.store.git,
@@ -272,9 +332,26 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             },
         });
         try {
-            const captured = await capture.capture(paths, signal);
-            if (captured.status === "reconcile") return undefined;
-            return await capture.consumeCaptured(captured, async (batch) => {
+            const result = await capture.capture(paths, signal);
+            if (result.status === "reconcile") {
+                await capture.dispose();
+                return undefined;
+            }
+            return { capture, result };
+        } catch (error) {
+            await capture.dispose();
+            throw error;
+        }
+    }
+
+    async commitCandidateCapture(
+        base: WorkspaceSnapshotRefV1,
+        scope: WorkspaceScopeManifest,
+        staged: StagedCandidateCapture,
+        signal?: AbortSignal
+    ): Promise<CapturedWorkspaceState> {
+        try {
+            return await staged.capture.consumeCaptured(staged.result, async (batch) => {
                 await materializeIncrementalCapturedBatch(batch, {
                     storeRoot: this.store.storeRoot,
                     writeBlob: (bytes) => this.writeCandidateBlob(bytes, signal),
@@ -285,22 +362,46 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                     indexFile: join(this.store.storeRoot, "journal", "workspace-candidate.index"),
                 });
                 await index.load(base.tree);
-                await index.apply(captured.mutations);
+                await index.apply(staged.result.mutations);
                 const tree = await index.writeTree();
-                const coverage = await this.store.computeIncrementalSnapshotCoverage(base, captured.mutations);
+                const coverage = await this.store.computeIncrementalSnapshotCoverage(base, staged.result.mutations);
                 return {
                     tree,
                     scope,
-                    coverage: { ...coverage, newlyHashedBytes: captured.newlyHashedBytes },
+                    coverage: { ...coverage, newlyHashedBytes: staged.result.newlyHashedBytes },
                 };
             });
         } finally {
-            await capture.dispose();
+            await staged.capture.dispose();
+        }
+    }
+
+    async discardCandidateCapture(staged: StagedCandidateCapture): Promise<void> {
+        try {
+            await staged.capture.discardCaptured(staged.result);
+        } finally {
+            await staged.capture.dispose();
         }
     }
 
     async captureLegacy(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
         const captured = await this.legacyCapture.capture({
+            profile: "terminal",
+            ...(signal ? { signal } : {}),
+        });
+        const metadata = await this.store.readSnapshotMetadata(captured.ref);
+        return {
+            tree: captured.ref.tree,
+            scope: metadata.scope,
+            coverage: cloneCoverage(captured.coverage),
+        };
+    }
+
+    async captureLegacyFullReconcile(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
+        if (!this.legacyCapture.fullReconcile) {
+            throw new Error("Workspace candidate capture requires an explicit full reconcile");
+        }
+        const captured = await this.legacyCapture.fullReconcile({
             profile: "terminal",
             ...(signal ? { signal } : {}),
         });
@@ -393,6 +494,25 @@ interface CapturedWorkspaceState {
     tree: string;
     scope: WorkspaceScopeManifest;
     coverage: WorkspaceSnapshotCoverage;
+}
+
+interface StagedCandidateCapture {
+    capture: IncrementalPathCapture;
+    result: Extract<IncrementalPathCaptureResult, { status: "captured" }>;
+}
+
+function mergeCandidatePaths(left: readonly string[], right: readonly string[]): string[] {
+    return [...new Set([...left, ...right])].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+}
+
+function candidateBoundariesEqual(left: WorkspaceCandidateBoundary, right: WorkspaceCandidateBoundary): boolean {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "non-git" || right.kind === "non-git") return true;
+    return (
+        left.shadowGitDir === right.shadowGitDir &&
+        left.sourceHeadTree === right.sourceHeadTree &&
+        left.shadowTree === right.shadowTree
+    );
 }
 
 function cloneCoverage(coverage: WorkspaceSnapshotCoverage): WorkspaceSnapshotCoverage {

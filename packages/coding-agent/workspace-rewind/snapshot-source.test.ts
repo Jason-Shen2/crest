@@ -15,6 +15,7 @@ import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types"
 import { WorkspaceCandidates } from "./workspace-candidates";
 import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 
 const WorkspaceIdentity = "a".repeat(64);
 const WorkspaceIncarnation = "b".repeat(64);
@@ -150,13 +151,20 @@ function makeStore() {
 
 class TestCandidateFeed implements WorkspaceChangeFeed {
     trusted = false;
+    changedPaths: string[] = [];
+
+    record(path: string): void {
+        this.changedPaths.push(path);
+    }
 
     async start(): Promise<void> {
         this.trusted = true;
     }
 
     async drain(): Promise<WorkspaceChangeDrain> {
-        return { status: "complete", changedPaths: [] };
+        const changedPaths = this.changedPaths;
+        this.changedPaths = [];
+        return { status: "complete", changedPaths };
     }
 
     isTrusted(): boolean {
@@ -270,6 +278,132 @@ describe("Workspace checkpoint snapshot source", () => {
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
         expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        await source.dispose?.();
+    });
+
+    it("full-reconciles after candidate discovery drains a scope-invalidating change", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-scope-fallback-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "file.txt"), "tracked");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-fallback", nonce: "1".repeat(64) },
+        });
+        const fullReconcile = vi.spyOn(store, "captureFullReconcile");
+        const feed = new TestCandidateFeed();
+        const tracker = new WorkspaceSnapshotTracker({ store, feed });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot,
+            feed,
+            reconcile: async () => [".gitignore", "file.txt"],
+        });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: tracker,
+            candidates,
+        });
+        const before = await source.readHead();
+
+        await writeFile(join(workspaceRoot, ".gitignore"), "file.txt\n");
+        feed.record(".gitignore");
+        const after = await source.synchronizeExternal();
+
+        expect(after.ref.tree).not.toBe(before.ref.tree);
+        expect(after.coverage.eligibleEntryCount).toBe(1);
+        expect(fullReconcile).toHaveBeenCalledTimes(2);
+        await source.dispose?.();
+        await tracker.dispose();
+    });
+
+    it("recaptures the union when a new path changes during candidate capture", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-post-validate-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "a.txt"), "a-before");
+        await writeFile(join(workspaceRoot, "b.txt"), "b-before");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-validation", nonce: "2".repeat(64) },
+        });
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: { capture: (options) => store.capture(options) },
+            candidates,
+        });
+        const before = await source.readHead();
+        const readNodeKinds = store.readNodeKinds.bind(store);
+        let injected = false;
+        vi.spyOn(store, "readNodeKinds").mockImplementation(async (...args) => {
+            const result = await readNodeKinds(...args);
+            if (!injected) {
+                injected = true;
+                await writeFile(join(workspaceRoot, "b.txt"), "b-during-capture");
+                feed.record("b.txt");
+            }
+            return result;
+        });
+
+        await writeFile(join(workspaceRoot, "a.txt"), "a-after");
+        const after = await source.synchronizeExternal();
+
+        await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
+            expect.objectContaining({ path: "a.txt" }),
+            expect.objectContaining({ path: "b.txt" }),
+        ]);
+        await source.dispose?.();
+    });
+
+    it("fails closed when paths keep changing during the single candidate recapture", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-continuous-change-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "a.txt"), "a-before");
+        await writeFile(join(workspaceRoot, "b.txt"), "b-before");
+        await writeFile(join(workspaceRoot, "c.txt"), "c-before");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-continuous", nonce: "3".repeat(64) },
+        });
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: { capture: (options) => store.capture(options) },
+            candidates,
+        });
+        const before = await source.readHead();
+        const readNodeKinds = store.readNodeKinds.bind(store);
+        let captureAttempt = 0;
+        vi.spyOn(store, "readNodeKinds").mockImplementation(async (...args) => {
+            const result = await readNodeKinds(...args);
+            captureAttempt++;
+            const changed = captureAttempt === 1 ? "b.txt" : "c.txt";
+            await writeFile(join(workspaceRoot, changed), `${changed}-during-capture`);
+            feed.record(changed);
+            return result;
+        });
+
+        await writeFile(join(workspaceRoot, "a.txt"), "a-after");
+        await expect(source.synchronizeExternal()).rejects.toThrow(/changed during candidate capture/i);
+        await expect(source.readHead()).resolves.toMatchObject({ ref: { id: before.ref.id } });
         await source.dispose?.();
     });
 

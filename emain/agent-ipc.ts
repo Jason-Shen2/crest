@@ -202,71 +202,73 @@ function withRecoverySessionMutation<T>(sessionPath: string, operation: () => Pr
 }
 
 export function makeProductionAgentWorkspaceRecoveryGate(dataRoot: string): AgentWorkspaceRecoveryGate {
-    const features = new Map<string, Promise<Extract<AgentRewindFeature, { state: "enabled" }>>>();
     const workspaceKey = (workspace: { workspaceIdentity: string; workspaceIncarnation: string }) =>
         `${workspace.workspaceIdentity}\0${workspace.workspaceIncarnation}`;
 
-    const featureFor = async (workspace: CanonicalWorkspaceIdentity) => {
-        const key = workspaceKey(workspace);
-        const existing = features.get(key);
-        if (existing) return existing;
-        const loading = openAgentRewindFeature({
-            workspaceRoot: workspace.canonicalRoot,
-            dataRoot,
-        }).then((feature) => {
+    const withRecovery = async <T>(
+        workspace: CanonicalWorkspaceIdentity,
+        assertCurrent: () => Promise<void>,
+        operation: (recovery: WorkspaceRecovery) => Promise<T>
+    ): Promise<T> => {
+        const feature = await acquireAgentRewindFeature({ workspaceRoot: workspace.canonicalRoot, dataRoot });
+        try {
             if (feature.state !== "enabled") {
                 throw new Error(feature.state === "unavailable" ? feature.message : "Workspace rewind is unavailable");
             }
-            if (workspaceKey(feature.store.identity) !== key) {
+            if (workspaceKey(feature.store.identity) !== workspaceKey(workspace)) {
                 throw new Error("Workspace identity changed while opening recovery storage");
             }
-            return feature;
-        });
-        features.set(key, loading);
-        return await loading.catch((error) => {
-            features.delete(key);
-            throw error;
-        });
+            const recovery = new WorkspaceRecovery({
+                workspace,
+                store: feature.store,
+                writerLeases: feature.writerLeases,
+                locateSession: async (sessionId, sessionPath) => {
+                    const metadata = await getSessionsRepo().findById(sessionId);
+                    if (!metadata || metadata.path !== sessionPath) return undefined;
+                    return {
+                        async getLeafId() {
+                            const session = await openPaneSessionByPath(metadata.path);
+                            try {
+                                return await session.getLeafId();
+                            } finally {
+                                session.close();
+                            }
+                        },
+                        async getEntry(id) {
+                            const session = await openPaneSessionByPath(metadata.path);
+                            try {
+                                return await session.getEntry(id);
+                            } finally {
+                                session.close();
+                            }
+                        },
+                        async appendEntries(entries, options) {
+                            const session = await openPaneSessionByPath(metadata.path);
+                            try {
+                                await session.appendEntries(entries, options);
+                            } finally {
+                                session.close();
+                            }
+                        },
+                    };
+                },
+                withSessionMutation: withRecoverySessionMutation,
+                assertCurrent,
+            });
+            return await operation(recovery);
+        } finally {
+            if (feature.state === "enabled") await feature.release();
+        }
     };
 
     const recoveryFor = async (workspace: CanonicalWorkspaceIdentity, assertCurrent = async () => {}) => {
-        const feature = await featureFor(workspace);
-        return new WorkspaceRecovery({
-            workspace,
-            store: feature.store,
-            locateSession: async (sessionId, sessionPath) => {
-                const metadata = await getSessionsRepo().findById(sessionId);
-                if (!metadata || metadata.path !== sessionPath) return undefined;
-                return {
-                    async getLeafId() {
-                        const session = await openPaneSessionByPath(metadata.path);
-                        try {
-                            return await session.getLeafId();
-                        } finally {
-                            session.close();
-                        }
-                    },
-                    async getEntry(id) {
-                        const session = await openPaneSessionByPath(metadata.path);
-                        try {
-                            return await session.getEntry(id);
-                        } finally {
-                            session.close();
-                        }
-                    },
-                    async appendEntries(entries, options) {
-                        const session = await openPaneSessionByPath(metadata.path);
-                        try {
-                            await session.appendEntries(entries, options);
-                        } finally {
-                            session.close();
-                        }
-                    },
-                };
-            },
-            withSessionMutation: withRecoverySessionMutation,
-            assertCurrent,
-        });
+        return {
+            inspectPending: () => withRecovery(workspace, assertCurrent, (recovery) => recovery.inspectPending()),
+            resolvePending: (operationId?: string) =>
+                withRecovery(workspace, assertCurrent, (recovery) => recovery.resolvePending(operationId)),
+            assertWorkspaceWritable: () =>
+                withRecovery(workspace, assertCurrent, (recovery) => recovery.assertWorkspaceWritable()),
+        };
     };
 
     return makeAgentWorkspaceRecoveryGate({
