@@ -357,23 +357,29 @@ association live even when no Session owns it; older unowned associations still 
 - Modify: `packages/coding-agent/workspace-rewind/rewind-engine.ts`
 - Test: `packages/coding-agent/workspace-rewind/multi-session.integration.test.ts`
 
-- [ ] **Step 1: Write failing ownership tests**
+- [x] **Step 1: Write failing ownership tests**
 
 Cover different paths allowed; same path blocked; same path then same bytes still blocked; suffix-owned commits folded; external drift forceable only when previewed; Crest-owned overlap never forceable.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/restore-plan.test.ts packages/coding-agent/workspace-rewind/turn-restore-plan.test.ts packages/coding-agent/workspace-rewind/multi-session.integration.test.ts
 ```
 
-- [ ] **Step 3: Add history authority**
+- [x] **Step 3: Add history authority**
 
 Validate each changed checkpoint's `after.id` as an `agent-turn` commit owned by its Session/turn and parented by `before.id`. Ask `findForeignOverlap()` before live-byte drift classification; foreign Crest overlap is a hard blocker.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run the same suites plus `rewind-engine.integration.test.ts`, then commit planner/engine changes.
+
+**Implementation note (2026-08-09):** Restore planning now validates every checkpoint against its exact
+`agent-turn` commit and parent, rejects later same-path Crest history including ABA changes, and permits Force
+only for previewed external drift. Turn Undo/Redo and conversation Rewind/Redo retain separate public semantics;
+linked result commits remain internal confirmation authority. Cross-Session, same-path, suffix-folding, and
+create/delete Undo-to-Redo integration coverage passed.
 
 ### Task 7: Result commits and minimal pending restore
 
@@ -386,31 +392,39 @@ Run the same suites plus `rewind-engine.integration.test.ts`, then commit planne
 - Test: `packages/coding-agent/workspace-rewind/workspace-recovery.test.ts`
 - Test: `packages/coding-agent/workspace-rewind/restore-crash.test.ts`
 
-- [ ] **Step 1: Write failing crash tests**
+- [x] **Step 1: Write failing crash tests**
 
 Cover pending absent, head at source with partial paths, head at planned with leaf pending, and unknown head/path state. Only the affected Workspace is gated.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/pending-restore-store.test.ts packages/coding-agent/workspace-rewind/workspace-recovery.test.ts packages/coding-agent/workspace-rewind/restore-crash.test.ts
 ```
 
-- [ ] **Step 3: Reduce pending to one intent**
+- [x] **Step 3: Reduce pending to one intent**
 
 Persist operation ID, source/planned commits, affected paths, Session ID, expected leaf, and target leaf. Persist no phases and no second frozen registry.
 
-- [ ] **Step 4: Append result commits**
+- [x] **Step 4: Append result commits**
 
 After file verification, CAS the Shadow head to `turn-undo`, `turn-redo`, `rewind`, or `redo`; move conversation only after the file commit; clear pending last.
 
-- [ ] **Step 5: Implement three-way recovery**
+- [x] **Step 5: Implement three-way recovery**
 
 Source head restores source paths; planned head completes leaf CAS; any other state emits one manual diagnostic without Force.
 
-- [ ] **Step 6: Run GREEN and commit**
+- [x] **Step 6: Run GREEN and commit**
 
 Run pending/executor/recovery/crash suites and commit.
+
+**Implementation note (2026-08-09):** Pending restore is now one durable V2 intent with no phase machine.
+Execution writes and verifies files, publishes the exact result commit, moves the Session leaf, and clears the
+intent last. Recovery derives only source, planned, or unknown from durable facts; inspection is read-only and
+unknown state remains frozen for manual diagnosis. Result coverage is recomputed from exact target path states,
+including create/delete changes. Public DTOs omit linked operation authority, and Workspace resource leases are
+released even when Session open or close fails. Focused Task 6/7, crash-process, IPC, frontend, and real-Git
+integration suites passed both specification and quality review.
 
 ### Task 8: Registry cutover
 
