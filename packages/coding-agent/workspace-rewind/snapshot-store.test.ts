@@ -107,7 +107,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
             { path: "cache", state: { state: "absent" } },
         ]);
         const restored = await fixture.store.computeCandidateSnapshotCoverage(captured.ref, captured.ref.tree, [
-            { path: "cache", state: { state: "excluded", reason: "untracked-too-large" } },
+            { path: "cache", state: { state: "excluded", reason: "oversized-untracked" } },
         ]);
 
         expect(base.coverage.exclusions).toEqual(
@@ -118,7 +118,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         );
         expect(cleared.exclusions).not.toContainEqual(expect.objectContaining({ path: "cache" }));
         expect(cleared.exclusions).toContainEqual({ path: "cache-keep", reason: "ignored" });
-        expect(restored.exclusions).toContainEqual({ path: "cache", reason: "untracked-too-large" });
+        expect(restored.exclusions).toContainEqual({ path: "cache", reason: "oversized-untracked" });
         expect(restored.exclusions).toContainEqual({ path: "cache-keep", reason: "ignored" });
     });
 
