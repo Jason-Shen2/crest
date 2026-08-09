@@ -487,17 +487,17 @@ same-path race, cross-Session, recovery, performance, and E2E regressions.
 - Modify: `packages/coding-agent/workspace-rewind/snapshot-retention.ts`
 - Test: `packages/coding-agent/workspace-rewind/snapshot-retention.test.ts`
 
-- [ ] **Step 1: Find stale production imports**
+- [x] **Step 1: Find stale production imports**
 
 ```bash
 rg -n "WorkspaceSnapshotTracker|workspace-tracker-state|workspace-change-feed-storage|statetree" packages/coding-agent emain frontend
 ```
 
-- [ ] **Step 2: Delete tracker/cursor/custom-state authority**
+- [x] **Step 2: Delete tracker/cursor/custom-state authority**
 
 Keep compact coverage metadata, Git tree/blob readers, candidate hints, one mutation ref, and pending/session-owned reachability only.
 
-- [ ] **Step 3: Run cutover verification**
+- [x] **Step 3: Run cutover verification**
 
 ```bash
 rg -n "WorkspaceSnapshotTracker|workspace-tracker-state|workspace-change-feed-storage|statetree" packages/coding-agent emain frontend
@@ -506,9 +506,37 @@ npx vitest run packages/coding-agent/workspace-rewind emain/agent-rewind-feature
 
 Expected: no production matches and all selected tests PASS.
 
-- [ ] **Step 4: Commit the atomic authority cutover**
+- [x] **Step 4: Commit the atomic authority cutover**
 
 Commit deletions and retention/store simplification together so no shipped revision has two durable authorities.
+
+**Implementation note (2026-08-09):** Task 9 completed the authority cutover and its follow-up quality fixes.
+Fresh non-Git initialization now starts observation before the initial full capture, retains events observed during
+that capture for the first warm candidate pass, and adopts the baseline only while the feed remains trusted and a
+concurrent CAS winner has equivalent tree, scope, and coverage semantics. Snapshot object anchors and manifest
+associations publish in one `update-ref --no-deref --stdin` transaction with two compare-and-swap updates; exact
+quota traversal includes and deduplicates both `refs/crest` and `refs/crest-objects`, including historical orphan
+anchors. Candidate coverage derives eligible-entry deltas from one native
+`diff-tree --name-status -r -z --no-renames` result, so directory renames and file/directory replacements remain
+exact without scanning the live Workspace or spawning per-path tree readers.
+
+The equivalence regression is now an eleven-operation real Git/non-Git matrix covering create, same-size rewrite,
+executable mode, symlink, delete, file-to-directory, directory rename, directory-to-file, `.gitignore` invalidation,
+and nested repository boundaries. Every step compares the candidate head with an independent native full reconcile
+for tree, scope, semantic coverage, and exact changed paths. The self-referential 50×100 in-memory projection and
+the legacy `writeStateTree` path were deleted together with the tracker, durable watcher WAL/cursor, and custom
+state-tree authority. The shipped design therefore retains candidate hints and compact coverage metadata only;
+there is no tracker, WAL, custom tree, or other second durable authority beside the Shadow Git commit chain.
+
+Specification and quality review both passed. Post-fix evidence was 122/122 combined focused tests across nine
+files; 126/126 IPC and production E2E tests across two files; 75/75 feature, service, checkpoint-manager, engine,
+multi-Session, and tool-independent tests across seven files; and 2/2 performance contracts, including the
+100-dirty-parent-group bound. The forbidden-authority scan had no matches, the full three-commit diff passed
+`git diff --check`, and the worktree was clean. The known pre-closeout concurrent full-suite baseline was 42/45
+files passing, 731 tests passing, six timing out, and two skipped; the only failures were existing five-second
+concurrency timeouts in `pending-restore` (four), `snapshot-retention` (one), and `snapshot-source` (one), while
+those three files passed 45/45 when focused. A full correctness-gate rerun remains explicitly assigned to Task 10;
+Task 9 did not raise timeouts, report zero latency, or claim that pre-closeout baseline as a latest-HEAD full run.
 
 ### Task 10: Production-scale gates and documentation
 

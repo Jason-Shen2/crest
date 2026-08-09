@@ -298,3 +298,33 @@ fallback 和故障 reconcile 也可能扫描目录 metadata，但不再是每 tu
 
 最终保留的复杂度都直接对应一个不可删除的硬约束；任何新缓存或索引都必须先有 production
 profiling 证据，并保持可从 Shadow Git 完全重建。
+
+## 实现记录：Task 9 authority cutover（2026-08-09）
+
+Task 9 已完成规格与质量双重审查。最终实现删除了旧 `writeStateTree`、durable tracker、watcher
+WAL/cursor 和自定义 state tree；候选路径与 compact coverage 只是可验证输入，不构成第二权威。
+持久事实仍只有 private Shadow Git 的 object/tree/commit/ref 与 Session/pending owner reachability。
+
+本轮 closeout 前的必要优化如下：
+
+- fresh non-Git authority 在首次 full capture 前启动 feed，保留 capture 期间事件，并只在 feed
+  仍可信且并发 CAS winner 的 tree/scope/coverage 语义等价时采用 warm baseline；
+- snapshot object anchor 与 manifest association 使用一次带双 CAS 的
+  `update-ref --no-deref --stdin` transaction 原子发布，quota roots 同时遍历并去重 `refs/crest`
+  与 `refs/crest-objects`，不会漏算只由历史 orphan anchor 保活的对象；
+- candidate eligible-entry coverage 从一次 native
+  `diff-tree --name-status -r -z --no-renames` 的 A/D/M/T leaf delta 派生，directory rename 与
+  file/directory replacement 不再造成计数漂移，也不回退到 live Workspace full scan；
+- 删除自证的 50×100 `Map` projection oracle，改为十一项真实 Git/non-Git V3 操作矩阵；每一步
+  都对 candidate head 与独立 native full reconcile 的 tree、scope、semantic coverage 和 exact
+  changed paths 做比较，覆盖 same-size rewrite、chmod、symlink、delete、file↔directory、directory
+  rename、`.gitignore` invalidation 与 nested repository boundary。
+
+验证证据：联合 focused 九文件 122/122；IPC 与 production E2E 两文件 126/126；feature/service、
+checkpoint-manager、engine、multi-Session 与 tool-independent 七文件 75/75；performance contracts
+2/2（包含 100 dirty parent groups bound）。forbidden authority scan 无匹配，三次实现提交的 diff
+通过 `git diff --check`，closeout 前 worktree clean。已知的 pre-closeout full-suite 并发基线为
+42/45 files、731 pass、6 timeout、2 skip；仅 `pending-restore` 四项、`snapshot-retention` 一项和
+`snapshot-source` 一项触发既有 5 秒并发 timeout，三文件 focused 为 45/45 PASS。A/B/C 后没有
+把该旧基线表述成 latest-HEAD full run，也没有提高 timeout 或伪报零延迟；Task 10 的 correctness
+gate 将负责重新执行完整门禁。
