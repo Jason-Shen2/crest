@@ -774,20 +774,21 @@ export class WorkspaceSnapshotStore {
         if (previousObject != null && previousObject !== ref.id) {
             throw new Error("Workspace snapshot object anchor conflicts with an existing value");
         }
-        await this.git.run(
-            ["update-ref", "--no-deref", objectRefName, ref.id, previousObject ?? "0".repeat(ref.id.length)],
-            {
-                gitDir: this.storeRoot,
-                timeoutMs: remainingTimeout(runtime.deadline),
-                signal: runtime.signal,
-            }
-        );
         const previous = await this.#readSnapshotAssociation(refName, runtime);
         if (previous != null && previous !== target) {
             throw new Error("Workspace snapshot manifest association conflicts with an existing value");
         }
-        await this.git.run(["update-ref", "--no-deref", refName, target, previous ?? "0".repeat(target.length)], {
+        const commands = [
+            "start",
+            `update ${objectRefName} ${ref.id} ${previousObject ?? "0".repeat(ref.id.length)}`,
+            `update ${refName} ${target} ${previous ?? "0".repeat(target.length)}`,
+            "prepare",
+            "commit",
+            "",
+        ];
+        await this.git.run(["update-ref", "--no-deref", "--stdin"], {
             gitDir: this.storeRoot,
+            stdin: Buffer.from(commands.join("\n")),
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
@@ -1047,13 +1048,16 @@ export class WorkspaceSnapshotStore {
 
     async referencedObjectBytes(runtime: CaptureRuntime): Promise<number> {
         assertCaptureActive(runtime.deadline, runtime.signal);
-        const refs = await this.git.run(["for-each-ref", "--format=%(objectname)", "refs/crest"], {
-            gitDir: this.storeRoot,
-            timeoutMs: remainingTimeout(runtime.deadline),
-            maxStdoutBytes: QuotaMaxRefOutputBytes,
-            signal: runtime.signal,
-        });
-        const roots = splitLines(refs.stdout);
+        const refs = await this.git.run(
+            ["for-each-ref", "--format=%(objectname)", "refs/crest", "refs/crest-objects"],
+            {
+                gitDir: this.storeRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                maxStdoutBytes: QuotaMaxRefOutputBytes,
+                signal: runtime.signal,
+            }
+        );
+        const roots = [...new Set(splitLines(refs.stdout))];
         if (roots.length > QuotaMaxRefCount) {
             throw new Error("Snapshot reference count exceeds its quota traversal limit");
         }

@@ -273,6 +273,72 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         await expect(fixture.store.readBlob(ref.scopeManifest)).resolves.toBeInstanceOf(Buffer);
         await expect(fixture.store.verifyOwnedSnapshot(ref)).resolves.toBeUndefined();
     });
+
+    it("publishes the object anchor and manifest association in one ref transaction", async () => {
+        const fixture = await makeFixture();
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const commit = await appendMutation(fixture, captured.tree);
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const ref = await fixture.store.publishCommitSnapshot({ commit, ...captured });
+
+        const transactions = run.mock.calls.filter(
+            ([args]) =>
+                Array.isArray(args) &&
+                args[0] === "update-ref" &&
+                args[1] === "--no-deref" &&
+                args[2] === "--stdin"
+        );
+        expect(transactions).toHaveLength(1);
+        const options = transactions[0]?.[1];
+        expect(options).toMatchObject({ stdin: expect.any(Buffer) });
+        expect((options as { stdin: Buffer }).stdin.toString("utf8")).toBe(
+            [
+                "start",
+                `update ${fixture.store.snapshotObjectRefName(commit)} ${commit} ${"0".repeat(commit.length)}`,
+                `update ${fixture.store.ownerRefName(commit)} ${ref.scopeManifest} ${"0".repeat(ref.scopeManifest.length)}`,
+                "prepare",
+                "commit",
+                "",
+            ].join("\n")
+        );
+    });
+
+    it("leaves both snapshot refs unpublished when their publication transaction fails", async () => {
+        const fixture = await makeFixture();
+        const captured = await fixture.store.captureFullReconcile({ profile: "terminal" });
+        const commit = await appendMutation(fixture, captured.tree);
+        const objectRef = fixture.store.snapshotObjectRefName(commit);
+        const ownerRef = fixture.store.ownerRefName(commit);
+        const originalRun = fixture.store.git.run.bind(fixture.store.git);
+        const run = vi.spyOn(fixture.store.git, "run").mockImplementation(async (args, options) => {
+            const isAtomicPublication =
+                args[0] === "update-ref" && args[1] === "--no-deref" && args[2] === "--stdin";
+            const isLegacySecondWrite = args[0] === "update-ref" && args[2] === ownerRef;
+            if (isAtomicPublication || isLegacySecondWrite) {
+                throw new Error("injected snapshot ref publication failure");
+            }
+            return await originalRun(args, options);
+        });
+
+        await expect(fixture.store.publishCommitSnapshot({ commit, ...captured })).rejects.toThrow(/injected/i);
+        run.mockRestore();
+
+        await expect(readRef(fixture, objectRef)).resolves.toBeUndefined();
+        await expect(readRef(fixture, ownerRef)).resolves.toBeUndefined();
+    });
+
+    it("counts objects reachable only from snapshot object anchors toward referenced quota", async () => {
+        const fixture = await makeFixture();
+        const bytes = Buffer.from("object-anchor-only");
+        const oid = await writeBlob(fixture, bytes);
+        await fixture.git.run(["update-ref", `refs/crest-objects/snapshots/${"a".repeat(40)}`, oid], {
+            gitDir: fixture.store.storeRoot,
+            timeoutMs: 5_000,
+        });
+
+        await expect(fixture.store.getQuotaStatus()).resolves.toMatchObject({ referencedBytes: bytes.length });
+    });
 });
 
 describe("private V3 bare-store bootstrap safety", () => {
@@ -428,6 +494,18 @@ async function writeBlob(fixture: Awaited<ReturnType<typeof makeFixture>>, bytes
         timeoutMs: 5_000,
     });
     return result.stdout.toString("ascii").trim();
+}
+
+async function readRef(
+    fixture: Awaited<ReturnType<typeof makeFixture>>,
+    refName: string
+): Promise<string | undefined> {
+    const result = await fixture.git.run(["for-each-ref", "--format=%(objectname)", refName], {
+        gitDir: fixture.store.storeRoot,
+        timeoutMs: 5_000,
+    });
+    const oid = result.stdout.toString("ascii").trim();
+    return oid || undefined;
 }
 
 async function writeRawTree(fixture: Awaited<ReturnType<typeof makeFixture>>, bytes: Buffer): Promise<string> {
