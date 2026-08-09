@@ -42,6 +42,20 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         expect(await fixture.store.mutationLog.readHead()).toBeUndefined();
     });
 
+    it("reads one hundred candidate node kinds with a fixed Git-call bound", async () => {
+        const { fixture, after, paths } = await makeHundredChangedCandidates();
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const kinds = await fixture.store.readNodeKinds(after.ref, paths);
+
+        expect([...kinds.values()]).toEqual(Array.from({ length: 100 }, () => "leaf"));
+        expect(run).toHaveBeenCalledTimes(5);
+        expect(run.mock.calls.slice(-2).map(([args]) => args.slice(0, 2))).toEqual([
+            ["cat-file", "tree"],
+            ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        ]);
+    });
+
     it("publishes only a compact V3 manifest and preserves exact raw bytes", async () => {
         const fixture = await makeFixture();
         const binary = Buffer.from([0, 255, 13, 10, 128]);
@@ -302,10 +316,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
 
         const transactions = run.mock.calls.filter(
             ([args]) =>
-                Array.isArray(args) &&
-                args[0] === "update-ref" &&
-                args[1] === "--no-deref" &&
-                args[2] === "--stdin"
+                Array.isArray(args) && args[0] === "update-ref" && args[1] === "--no-deref" && args[2] === "--stdin"
         );
         expect(transactions).toHaveLength(1);
         const options = transactions[0]?.[1];
@@ -330,8 +341,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         const ownerRef = fixture.store.ownerRefName(commit);
         const originalRun = fixture.store.git.run.bind(fixture.store.git);
         const run = vi.spyOn(fixture.store.git, "run").mockImplementation(async (args, options) => {
-            const isAtomicPublication =
-                args[0] === "update-ref" && args[1] === "--no-deref" && args[2] === "--stdin";
+            const isAtomicPublication = args[0] === "update-ref" && args[1] === "--no-deref" && args[2] === "--stdin";
             const isLegacySecondWrite = args[0] === "update-ref" && args[2] === ownerRef;
             if (isAtomicPublication || isLegacySecondWrite) {
                 throw new Error("injected snapshot ref publication failure");
@@ -485,6 +495,22 @@ async function makeFixture() {
     return { root, workspace, store, dataRoot: join(root, "data"), identity, git, processOwner };
 }
 
+async function makeHundredChangedCandidates() {
+    const fixture = await makeFixture();
+    const paths = Array.from({ length: 100 }, (_, index) => `candidate-${index}`);
+    await Promise.all(paths.map((path) => writeFile(join(fixture.workspace, path), "before")));
+    const before = await fixture.store.capture({ profile: "terminal" });
+    await Promise.all(paths.map((path) => writeFile(join(fixture.workspace, path), "after")));
+    const after = await fixture.store.capture({ profile: "terminal" });
+    const state = await fixture.store.readPathState(after.ref, paths[0]!);
+    if (state.state !== "file") throw new Error("expected a captured candidate file");
+    const candidates = paths.map((path) => ({
+        path,
+        state: { state: "file" as const, oid: state.oid, executable: false },
+    }));
+    return { fixture, before, after, paths, candidates };
+}
+
 async function appendMutation(
     fixture: Awaited<ReturnType<typeof makeFixture>>,
     tree: string,
@@ -514,10 +540,7 @@ async function writeBlob(fixture: Awaited<ReturnType<typeof makeFixture>>, bytes
     return result.stdout.toString("ascii").trim();
 }
 
-async function readRef(
-    fixture: Awaited<ReturnType<typeof makeFixture>>,
-    refName: string
-): Promise<string | undefined> {
+async function readRef(fixture: Awaited<ReturnType<typeof makeFixture>>, refName: string): Promise<string | undefined> {
     const result = await fixture.git.run(["for-each-ref", "--format=%(objectname)", refName], {
         gitDir: fixture.store.storeRoot,
         timeoutMs: 5_000,

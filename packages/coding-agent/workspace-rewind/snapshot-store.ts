@@ -89,6 +89,10 @@ export interface ReconciledWorkspaceState {
     coverage: WorkspaceSnapshotCoverage;
 }
 
+type WorkspaceTreePathEntry =
+    | { kind: "tree" }
+    | { kind: "leaf"; state: Extract<CapturedPathStateV1, { state: "file" | "symlink" }> };
+
 export interface WorkspaceSnapshotQuotaStatus {
     status: "ok" | "soft-quota-exceeded" | "referenced-over-quota";
     usedBytes: number;
@@ -562,10 +566,12 @@ export class WorkspaceSnapshotStore {
         try {
             if (signal?.aborted) throw signal.reason;
             const manifest = await this.#readStoredManifest(snapshot, signal);
+            const uniquePaths = [...new Set(paths)];
+            const entries = await this.#readWorkspacePathEntries(snapshot.tree, uniquePaths, signal);
             const kinds = new Map<string, "absent" | "leaf" | "tree">();
-            for (const path of paths) {
+            for (const path of uniquePaths) {
                 if (signal?.aborted) throw signal.reason;
-                const entry = await this.#readWorkspacePathEntry(snapshot.tree, path, signal);
+                const entry = entries.get(path);
                 if (!entry) await manifest.readCoveragePathState(path);
                 kinds.set(path, entry?.kind ?? "absent");
             }
@@ -574,6 +580,64 @@ export class WorkspaceSnapshotStore {
             if (signal?.aborted) throw signal.reason ?? cause;
             throw asCorruptSnapshot(cause);
         }
+    }
+
+    async #readWorkspacePathEntries(
+        tree: string,
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<ReadonlyMap<string, WorkspaceTreePathEntry>> {
+        const treeCache = new Map<string, Map<string, { mode: string; oid: string }>>();
+        const expectedObjectTypes = new Map<string, "blob" | "tree">();
+        const results = new Map<string, WorkspaceTreePathEntry>();
+        for (const path of paths) {
+            if (signal?.aborted) throw signal.reason;
+            const segments = path.split("/");
+            let treeOid = tree;
+            let entry: { mode: string; oid: string } | undefined;
+            for (let index = 0; index < segments.length; index++) {
+                let treeEntries = treeCache.get(treeOid);
+                if (!treeEntries) {
+                    const result = await this.git.run(["cat-file", "tree", treeOid], {
+                        gitDir: this.storeRoot,
+                        timeoutMs: StoreGitTimeoutMs,
+                        signal,
+                    });
+                    treeEntries = parseRawTreeEntries(result.stdout, treeOid.length / 2);
+                    treeCache.set(treeOid, treeEntries);
+                }
+                entry = treeEntries.get(segments[index]!);
+                if (!entry) break;
+                if (index < segments.length - 1) {
+                    if (entry.mode !== "40000") {
+                        entry = undefined;
+                        break;
+                    }
+                    treeOid = entry.oid;
+                }
+            }
+            if (!entry) continue;
+            const converted = workspaceTreePathEntry(entry);
+            const expectedType = converted.kind === "tree" ? "tree" : "blob";
+            const previousType = expectedObjectTypes.get(entry.oid);
+            if (previousType && previousType !== expectedType) {
+                throw new Error("Workspace tree object has conflicting types");
+            }
+            expectedObjectTypes.set(entry.oid, expectedType);
+            results.set(path, converted);
+        }
+        if (expectedObjectTypes.size > 0) {
+            const expected = [...expectedObjectTypes].map(([oid, type]) => ({ oid, type }));
+            const objectInfo = await this.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+                gitDir: this.storeRoot,
+                stdin: Buffer.from(`${expected.map((item) => item.oid).join("\n")}\n`),
+                timeoutMs: StoreGitTimeoutMs,
+                maxStdoutBytes: QuotaMaxObjectOutputBytes,
+                signal,
+            });
+            assertBatchObjectTypes(objectInfo.stdout, expected);
+        }
+        return results;
     }
 
     async #readPathStateFromManifest(
@@ -642,16 +706,7 @@ export class WorkspaceSnapshotStore {
     ): Promise<{ paths: string[]; eligibleEntryDelta: number }> {
         if (beforeTree === afterTree) return { paths: [], eligibleEntryDelta: 0 };
         const result = await this.git.run(
-            [
-                "diff-tree",
-                "--no-commit-id",
-                "--name-status",
-                "-r",
-                "-z",
-                "--no-renames",
-                beforeTree,
-                afterTree,
-            ],
+            ["diff-tree", "--no-commit-id", "--name-status", "-r", "-z", "--no-renames", beforeTree, afterTree],
             { gitDir: this.storeRoot, timeoutMs: StoreGitTimeoutMs }
         );
         return parseNulWorkspaceTreeDelta(result.stdout);
@@ -2743,6 +2798,19 @@ function assertBatchBlobObjects(value: Buffer, expectedObjectIds: string[]): voi
     }
 }
 
+function assertBatchObjectTypes(value: Buffer, expected: readonly Array<{ oid: string; type: "blob" | "tree" }>): void {
+    const lines = splitLines(value);
+    if (lines.length !== expected.length) {
+        throw new Error("Workspace tree object verification returned an invalid count");
+    }
+    for (let index = 0; index < lines.length; index++) {
+        const fields = lines[index]!.split(" ");
+        if (fields.length !== 2 || fields[0] !== expected[index]!.oid || fields[1] !== expected[index]!.type) {
+            throw new Error("Workspace tree object is missing or has an invalid type");
+        }
+    }
+}
+
 function parseSafeInteger(value: string, label: string): number {
     if (!/^(0|[1-9][0-9]*)$/.test(value)) {
         throw new Error(`Invalid ${label}`);
@@ -2795,6 +2863,20 @@ function parseRawTreeEntries(value: Buffer, hashBytes: number): Map<string, { mo
         offset = nul + 1 + hashBytes;
     }
     return entries;
+}
+
+function workspaceTreePathEntry(entry: { mode: string; oid: string }): WorkspaceTreePathEntry {
+    if (entry.mode === "40000") return { kind: "tree" };
+    if (entry.mode === "120000") {
+        return { kind: "leaf", state: { state: "symlink", oid: entry.oid } };
+    }
+    if (entry.mode !== "100644" && entry.mode !== "100755") {
+        throw new Error("Workspace tree path has an invalid mode");
+    }
+    return {
+        kind: "leaf",
+        state: { state: "file", oid: entry.oid, executable: entry.mode === "100755" },
+    };
 }
 
 function compareGitTreeBaseNames(left: Buffer, leftMode: string, right: Buffer, rightMode: string): number {
