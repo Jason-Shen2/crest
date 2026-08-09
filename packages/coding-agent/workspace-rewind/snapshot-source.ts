@@ -102,14 +102,19 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             await this.readCommitHead(head);
             return;
         }
+        const observingFreshBaseline = (await this.candidates?.startNonGitBaselineObservation()) ?? false;
         const captured = await this.fullReconcile({ profile: "terminal" });
+        let equivalentHead = true;
         try {
             await this.appendWorkspaceMutation({ captured, kind: "external" });
         } catch (error) {
             const concurrentHead = await this.store.mutationLog.readHead();
             if (!concurrentHead) throw error;
-            await this.readCommitHead(concurrentHead);
+            const concurrent = await this.readCommitHead(concurrentHead);
+            equivalentHead =
+                concurrent.ref.tree === captured.tree && (await this.hasEquivalentSemantics(concurrent.ref, captured));
         }
+        if (observingFreshBaseline && equivalentHead) this.candidates?.adoptNonGitBaseline();
     }
 
     async readHead(signal?: AbortSignal): Promise<WorkspaceCheckpointHead> {

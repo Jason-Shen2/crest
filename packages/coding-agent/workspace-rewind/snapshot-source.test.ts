@@ -303,6 +303,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const before = await source.readHead();
 
         await writeFile(join(workspaceRoot, "file.txt"), "after");
+        feed.record("file.txt");
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
@@ -384,6 +385,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
 
         await writeFile(join(workspaceRoot, "a.txt"), "a-after");
+        feed.record("a.txt");
         const after = await source.synchronizeExternal();
 
         await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
@@ -466,6 +468,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
 
         await writeFile(join(workspaceRoot, "a.txt"), "a-after");
+        feed.record("a.txt");
         await expect(source.synchronizeExternal()).rejects.toThrow(/changed during candidate capture/i);
         await expect(source.readHead()).resolves.toMatchObject({ ref: { id: before.ref.id } });
         await source.dispose?.();
@@ -697,6 +700,46 @@ describe("Workspace checkpoint snapshot source", () => {
         expect(current.ref.id).toBe(ExternalCommit);
         expect(current.coverage).toEqual(Coverage);
         expect(fixture.store.mutationLog.publishPrepared).toHaveBeenCalledOnce();
+    });
+
+    it("adopts a fresh candidate baseline after a CAS winner proves equivalent", async () => {
+        const fixture = makeStore();
+        const captured = snapshot("6".repeat(40), "7".repeat(40));
+        const winner = snapshot(TurnCommit, captured.tree);
+        const candidates = makeInitializationCandidates();
+        fixture.store.mutationLog.publishPrepared.mockImplementationOnce(async () => {
+            fixture.seed(winner);
+            throw new Error("Workspace mutation head moved");
+        });
+
+        await initializeWorkspaceCheckpointSnapshotSource({
+            store: fixture.store as never,
+            fullReconcile: vi.fn(async () => reconciledSnapshot(captured)),
+            candidates: candidates.value,
+        });
+
+        expect(candidates.startNonGitBaselineObservation).toHaveBeenCalledOnce();
+        expect(candidates.adoptNonGitBaseline).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a fresh candidate baseline cold when a CAS winner has different snapshot semantics", async () => {
+        const fixture = makeStore();
+        const captured = snapshot("6".repeat(40), "7".repeat(40));
+        const winner = snapshot(TurnCommit, "8".repeat(40));
+        const candidates = makeInitializationCandidates();
+        fixture.store.mutationLog.publishPrepared.mockImplementationOnce(async () => {
+            fixture.seed(winner);
+            throw new Error("Workspace mutation head moved");
+        });
+
+        await initializeWorkspaceCheckpointSnapshotSource({
+            store: fixture.store as never,
+            fullReconcile: vi.fn(async () => reconciledSnapshot(captured)),
+            candidates: candidates.value,
+        });
+
+        expect(candidates.startNonGitBaselineObservation).toHaveBeenCalledOnce();
+        expect(candidates.adoptNonGitBaseline).not.toHaveBeenCalled();
     });
 
     it("shares initialization while the winning authority is not published yet", async () => {
@@ -1000,3 +1043,16 @@ describe("Workspace checkpoint snapshot source", () => {
         ]);
     });
 });
+
+function makeInitializationCandidates() {
+    const startNonGitBaselineObservation = vi.fn(async () => true);
+    const adoptNonGitBaseline = vi.fn(() => true);
+    return {
+        adoptNonGitBaseline,
+        startNonGitBaselineObservation,
+        value: {
+            adoptNonGitBaseline,
+            startNonGitBaselineObservation,
+        } as never,
+    };
+}

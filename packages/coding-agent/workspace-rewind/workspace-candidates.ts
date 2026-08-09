@@ -81,6 +81,22 @@ export class WorkspaceCandidates {
         return this.observedGeneration;
     }
 
+    async startNonGitBaselineObservation(): Promise<boolean> {
+        this.nonGitBaseline = false;
+        try {
+            await this.feed.start();
+            return this.feed.isTrusted();
+        } catch {
+            return false;
+        }
+    }
+
+    adoptNonGitBaseline(): boolean {
+        if (!this.feed.isTrusted()) return false;
+        this.nonGitBaseline = true;
+        return true;
+    }
+
     async drainObserved(): Promise<WorkspaceChangeDrain> {
         const drained = await this.feed.drain();
         if (drained.status === "complete" && drained.changedPaths.length > 0) {

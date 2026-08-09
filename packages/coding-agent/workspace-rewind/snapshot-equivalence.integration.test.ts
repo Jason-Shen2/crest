@@ -6,11 +6,13 @@ import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
+import { WorkspaceCheckpointLimits } from "./snapshot-store";
 import type { CapturedPathStateV1 } from "./types";
 import { normalizeWorkspaceCandidateEntries, type WorkspaceCandidatePathEntry } from "./workspace-candidate-capture";
+import { WorkspaceCandidates } from "./workspace-candidates";
 import {
     ParcelWorkspaceChangeFeed,
     type WorkspaceChangeEvent,
@@ -18,6 +20,7 @@ import {
 } from "./workspace-change-feed";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
 import { runStablePathReader, type StablePathReaderEntryIdentity } from "./workspace-path-reader";
+import { discoverWorkspaceScope } from "./workspace-scope";
 import { WorkspaceTrackerRegistry } from "./workspace-tracker-registry";
 
 const CleanupRoots: string[] = [];
@@ -27,6 +30,65 @@ afterEach(async () => {
 });
 
 describe("V3 snapshot equivalence regressions", () => {
+    test("fresh non-Git initialization establishes a warm no-change baseline", async () => {
+        const fixture = await makeFreshNonGitFixture("fresh-non-git-no-change");
+        try {
+            const head = await fixture.lease.snapshotSource.synchronizeExternal();
+
+            expect(fixture.reconcileCalls()).toBe(0);
+            expect(head.coverage.newlyHashedBytes).toBe(0);
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
+
+    test("fresh non-Git initialization retains an event observed during full capture", async () => {
+        const fixture = await makeFreshNonGitFixture("fresh-non-git-observed", {
+            onStart: async ({ feed, workspace }) => {
+                await writeFile(join(workspace, "during-capture.txt"), "observed");
+                feed.record(["during-capture.txt"]);
+            },
+        });
+        try {
+            const readNodeKinds = vi.spyOn(fixture.lease.store, "readNodeKinds");
+            const head = await fixture.lease.snapshotSource.synchronizeExternal();
+
+            expect(fixture.reconcileCalls()).toBe(0);
+            expect(readNodeKinds).toHaveBeenCalledTimes(1);
+            expect(readNodeKinds.mock.calls[0]![1]).toEqual(["during-capture.txt"]);
+            const state = await fixture.lease.store.readPathState(head.ref, "during-capture.txt");
+            expect(state.state).toBe("file");
+            if (state.state !== "file") throw new Error("expected retained capture-period file");
+            expect(await fixture.lease.store.readBlob(state.oid)).toEqual(Buffer.from("observed"));
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
+
+    test("fresh non-Git initialization survives one feed start failure without trusting the baseline", async () => {
+        const fixture = await makeFreshNonGitFixture("fresh-non-git-start-failure", {
+            startFailure: new Error("watcher start failed"),
+        });
+        try {
+            await expect(fixture.lease.snapshotSource.synchronizeExternal()).resolves.toBeDefined();
+            expect(fixture.reconcileCalls()).toBe(1);
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
+
+    test("fresh non-Git initialization keeps a capture-time feed trust loss cold", async () => {
+        const fixture = await makeFreshNonGitFixture("fresh-non-git-trust-loss", {
+            loseTrustOnStart: true,
+        });
+        try {
+            await expect(fixture.lease.snapshotSource.synchronizeExternal()).resolves.toBeDefined();
+            expect(fixture.reconcileCalls()).toBe(1);
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
+
     test("matches an independent full projection for 50 deterministic 100-operation models", () => {
         for (let seed = 1; seed <= 50; seed++) {
             const random = makeRandom(seed);
@@ -150,6 +212,9 @@ describe("V3 snapshot equivalence regressions", () => {
 class DeterministicFeed {
     paths = new Set<string>();
     trusted = false;
+    onStart?: () => Promise<void>;
+    startFailure?: Error;
+    loseTrustOnStart = false;
 
     record(paths: readonly string[]): void {
         for (const path of paths) this.paths.add(path);
@@ -157,7 +222,17 @@ class DeterministicFeed {
 
     async start(): Promise<void> {
         this.paths.clear();
+        const startFailure = this.startFailure;
+        this.startFailure = undefined;
+        if (startFailure) throw startFailure;
         this.trusted = true;
+        const onStart = this.onStart;
+        this.onStart = undefined;
+        await onStart?.();
+        if (this.loseTrustOnStart) {
+            this.loseTrustOnStart = false;
+            this.trusted = false;
+        }
     }
 
     async drain() {
@@ -176,6 +251,53 @@ class DeterministicFeed {
     async dispose(): Promise<void> {
         this.trusted = false;
     }
+}
+
+async function makeFreshNonGitFixture(
+    label: string,
+    options: {
+        onStart?: (input: { feed: DeterministicFeed; workspace: string }) => Promise<void>;
+        startFailure?: Error;
+        loseTrustOnStart?: boolean;
+    } = {}
+) {
+    const root = await mkdtemp(join(tmpdir(), `crest-v3-equivalence-${label}-`));
+    CleanupRoots.push(root);
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await writeFile(join(workspace, "baseline.txt"), "baseline");
+    const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+    const feed = new DeterministicFeed();
+    if (options.onStart) feed.onStart = () => options.onStart!({ feed, workspace });
+    feed.startFailure = options.startFailure;
+    feed.loseTrustOnStart = options.loseTrustOnStart ?? false;
+    let reconcileCalls = 0;
+    const registry = new WorkspaceTrackerRegistry({
+        makeFeed: () => feed,
+        makeCandidates: ({ store, feed: sourceFeed, userGit }) =>
+            new WorkspaceCandidates({
+                workspaceRoot: store.identity.canonicalRoot,
+                feed: sourceFeed,
+                reconcile: async (signal) => {
+                    reconcileCalls++;
+                    const scope = await discoverWorkspaceScope({
+                        identity: store.identity,
+                        git: userGit,
+                        maxEntries: WorkspaceCheckpointLimits.maxEntries,
+                        maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+                        signal,
+                    });
+                    return scope.entries.flatMap((entry) => (entry.path ? [entry.path] : []));
+                },
+            }),
+    });
+    const lease = await registry.acquire({
+        dataRoot: join(root, "data"),
+        identity,
+        git: new WorkspaceGitRunner(),
+        processOwner: { pid: process.pid, processStartToken: label, nonce: "c".repeat(64) },
+    });
+    return { feed, lease, reconcileCalls: () => reconcileCalls, workspace };
 }
 
 async function makeRegistryFixture(label: string) {
