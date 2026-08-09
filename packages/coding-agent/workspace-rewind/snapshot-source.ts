@@ -17,7 +17,11 @@ import {
     WorkspaceCandidateCapture,
     type WorkspaceCandidateCaptureResult,
 } from "./workspace-candidate-capture";
-import { type WorkspaceCandidateBoundary, type WorkspaceCandidates } from "./workspace-candidates";
+import {
+    type GitWorkspaceCandidateBoundary,
+    type WorkspaceCandidateBoundary,
+    type WorkspaceCandidates,
+} from "./workspace-candidates";
 import { refreshWorkspaceScopeGitIndexEvidence, type WorkspaceScopeManifest } from "./workspace-scope";
 
 export interface WorkspaceCheckpointHead {
@@ -102,8 +106,10 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             await this.readCommitHead(head);
             return;
         }
-        const observingFreshBaseline = (await this.candidates?.startNonGitBaselineObservation()) ?? false;
-        const captured = await this.fullReconcile({ profile: "terminal" });
+        let captured = await this.captureInitialGitBaseline();
+        const observingFreshBaseline =
+            captured == null ? ((await this.candidates?.startNonGitBaselineObservation()) ?? false) : false;
+        captured ??= await this.fullReconcile({ profile: "terminal" });
         let equivalentHead = true;
         try {
             await this.appendWorkspaceMutation({ captured, kind: "external" });
@@ -115,6 +121,44 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                 concurrent.ref.tree === captured.tree && (await this.hasEquivalentSemantics(concurrent.ref, captured));
         }
         if (observingFreshBaseline && equivalentHead) this.candidates?.adoptNonGitBaseline();
+    }
+
+    async captureInitialGitBaseline(signal?: AbortSignal): Promise<CapturedWorkspaceState | undefined> {
+        if (!this.candidates?.userGit) return undefined;
+        const initialBoundary = await this.readCandidateBoundary(undefined, signal);
+        if (initialBoundary.kind !== "git") return undefined;
+        let boundary: GitWorkspaceCandidateBoundary = initialBoundary;
+        let paths: string[] = [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const discovered = await this.candidates.collect(boundary, signal);
+            if (discovered.status !== "complete") return undefined;
+            paths = mergeCandidatePaths(paths, discovered.paths);
+            const observationToken = this.candidates.observationToken();
+            const captured = await this.store.captureGitBaseline({
+                sourceRoot: this.store.identity.canonicalRoot,
+                sourceTree: boundary.sourceHeadTree,
+                sourceGit: this.candidates.userGit,
+                candidatePaths: paths,
+                signal,
+            });
+            if (!captured) return undefined;
+            const collectionBoundary = await this.readCandidateBoundary(undefined, signal);
+            const validation = await this.candidates.collect(collectionBoundary, signal);
+            const validationBoundary = await this.readCandidateBoundary(undefined, signal);
+            if (validation.status !== "complete") return undefined;
+            if (validationBoundary.kind !== "git") return undefined;
+            const nextPaths = mergeCandidatePaths(paths, validation.paths);
+            const changed =
+                !candidateBoundariesEqual(boundary, collectionBoundary) ||
+                !candidateBoundariesEqual(collectionBoundary, validationBoundary) ||
+                nextPaths.length !== paths.length ||
+                this.candidates.observationToken() !== observationToken;
+            if (!changed) return captured;
+            if (attempt === 1) throw new Error("Workspace changed during Git baseline capture");
+            boundary = validationBoundary;
+            paths = nextPaths;
+        }
+        throw new Error("Workspace changed during Git baseline capture");
     }
 
     async readHead(signal?: AbortSignal): Promise<WorkspaceCheckpointHead> {
@@ -381,7 +425,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         });
     }
 
-    async readCandidateBoundary(shadowTree: string, signal?: AbortSignal): Promise<WorkspaceCandidateBoundary> {
+    async readCandidateBoundary(shadowTree?: string, signal?: AbortSignal): Promise<WorkspaceCandidateBoundary> {
         const userGit = this.candidates!.userGit;
         if (!userGit) return { kind: "non-git" };
         let sourceHeadTree: string;
@@ -416,14 +460,16 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             signal?.throwIfAborted();
             return { kind: "non-git" };
         }
-        await this.importSourceTree(sourceHeadTree, signal);
+        if (shadowTree != null && shadowTree !== sourceHeadTree) {
+            await this.importSourceTree(sourceHeadTree, signal);
+        }
         return {
             kind: "git",
             repositoryRoot,
             workspacePrefix,
             shadowGitDir: this.store.storeRoot,
             sourceHeadTree,
-            shadowTree,
+            shadowTree: shadowTree ?? sourceHeadTree,
         };
     }
 

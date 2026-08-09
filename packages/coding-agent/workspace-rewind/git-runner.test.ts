@@ -520,6 +520,25 @@ describe.sequential("WorkspaceGitRunner", () => {
         ).rejects.toMatchObject({ code: "invalid_options" });
     });
 
+    test("supports only the NUL-delimited check-attr all form", async () => {
+        const repository = join(root, "attribute-repository");
+        await mkdir(repository);
+        const runner = new WorkspaceGitRunner();
+        await runner.run(["init"], { cwd: repository, timeoutMs: 5_000 });
+        await writeFile(join(repository, ".gitattributes"), "*.txt text eol=lf\n");
+
+        const result = await runner.run(["check-attr", "-z", "--stdin", "--all"], {
+            cwd: repository,
+            stdin: Buffer.from("file.txt\0plain.bin\0"),
+            timeoutMs: 5_000,
+        });
+
+        expect(result.stdout).toEqual(Buffer.from("file.txt\0text\0set\0file.txt\0eol\0lf\0"));
+        await expect(
+            runner.run(["check-attr", "--all", "file.txt"], { cwd: repository, timeoutMs: 5_000 })
+        ).rejects.toMatchObject({ code: "invalid_options" });
+    });
+
     test.each(["checkout-index", "reset", "clean"])(
         "rejects forbidden builtin %s before spawning",
         async (subcommand) => {

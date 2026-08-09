@@ -120,21 +120,25 @@ export class WorkspaceCandidates {
             if (!this.feed.isTrusted()) await this.feed.start();
             let watcherHints: string[] = [];
             for (let attempt = 0; attempt < 2; attempt++) {
+                const shadowDifferencePromise =
+                    boundary.sourceHeadTree === boundary.shadowTree
+                        ? Promise.resolve({ stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) })
+                        : this.shadowGit.run(
+                              [
+                                  "diff",
+                                  "--name-only",
+                                  "-z",
+                                  "--no-renames",
+                                  "--no-ext-diff",
+                                  boundary.sourceHeadTree,
+                                  boundary.shadowTree,
+                                  "--",
+                              ],
+                              { gitDir: boundary.shadowGitDir, timeoutMs: GitTimeoutMs, signal }
+                          );
                 const [status, shadowDifference] = await Promise.all([
                     readGitStatus(this.userGit, boundary, signal),
-                    this.shadowGit.run(
-                        [
-                            "diff",
-                            "--name-only",
-                            "-z",
-                            "--no-renames",
-                            "--no-ext-diff",
-                            boundary.sourceHeadTree,
-                            boundary.shadowTree,
-                            "--",
-                        ],
-                        { gitDir: boundary.shadowGitDir, timeoutMs: GitTimeoutMs, signal }
-                    ),
+                    shadowDifferencePromise,
                 ]);
                 const hints = await this.drainObserved();
                 signal?.throwIfAborted();

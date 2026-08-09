@@ -24,6 +24,7 @@ import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { SnapshotQuotaAccounting } from "./snapshot-quota-accounting";
 import {
     encodeCanonicalStoredJson as canonicalJson,
@@ -77,6 +78,7 @@ const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
 const CandidateLookupMaxPaths = 512;
 const CandidateLookupMaxArgumentBytes = 128 * 1024;
+const GitUnsafeAttributes = new Set(["text", "eol", "filter", "ident", "working-tree-encoding"]);
 
 export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
@@ -106,6 +108,14 @@ export interface WorkspaceSnapshotQuotaStatus {
     usedBytes: number;
     referencedBytes: number;
     softQuotaBytes: number;
+}
+
+export interface CaptureGitBaselineOptions {
+    sourceRoot: string;
+    sourceTree: string;
+    sourceGit: WorkspaceGitRunner;
+    candidatePaths: readonly string[];
+    signal?: AbortSignal;
 }
 
 export class WorkspaceSnapshotStoreError extends Error {
@@ -157,6 +167,17 @@ interface CapturedWorkspaceEntries {
 interface TreeLeaf {
     mode: "100644" | "100755" | "120000";
     oid: string;
+}
+
+interface GitBaselineTreeEntry {
+    path: string;
+    mode: "100644" | "100755" | "120000";
+    oid: string;
+}
+
+interface GitBaselineProjection {
+    captureEntries: WorkspaceScopeEntry[];
+    absentEntries: Array<{ path: string; pathBytes: Buffer; state: { state: "absent" } }>;
 }
 
 interface TreeNode {
@@ -325,6 +346,16 @@ export class WorkspaceSnapshotStore {
 
     captureFullReconcile(options: CaptureWorkspaceOptions): Promise<ReconciledWorkspaceState> {
         return this.withWorkspaceLock(() => this.#captureFullReconcileUnlocked(options));
+    }
+
+    captureGitBaseline(options: CaptureGitBaselineOptions): Promise<ReconciledWorkspaceState | undefined> {
+        const owned = {
+            ...options,
+            sourceRoot: `${options.sourceRoot}`,
+            sourceTree: `${options.sourceTree}`,
+            candidatePaths: options.candidatePaths.map((path) => `${path}`),
+        };
+        return this.withWorkspaceLock(() => this.#captureGitBaselineUnlocked(owned));
     }
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -500,6 +531,174 @@ export class WorkspaceSnapshotStore {
         } finally {
             clearTimeout(timer);
             options.signal?.removeEventListener("abort", onAbort);
+        }
+    }
+
+    async #captureGitBaselineUnlocked(
+        options: CaptureGitBaselineOptions
+    ): Promise<ReconciledWorkspaceState | undefined> {
+        validateGitBaselineOptions(options);
+        const timeoutMs = WorkspaceCheckpointLimits.terminalTimeoutMs;
+        const deadline = Date.now() + timeoutMs;
+        const controller = new AbortController();
+        const onAbort = () => controller.abort(options.signal?.reason);
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) onAbort();
+        const timer = setTimeout(() => controller.abort(new Error("capture deadline exceeded")), timeoutMs);
+        const runtime: CaptureRuntime = {
+            deadline,
+            signal: controller.signal,
+            objectIds: new Set(),
+        };
+        try {
+            if (options.sourceRoot !== this.identity.canonicalRoot) return undefined;
+            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            await assertNoShadowMutationFiles(this.storeRoot, runtime);
+            const quotaStatus = await this.getQuotaStatus(runtime);
+            if (quotaStatus.status !== "ok") {
+                throw new WorkspaceSnapshotStoreError("quota_exceeded", "Workspace checkpoint quota exceeded", {
+                    quotaStatus,
+                });
+            }
+            await assertFreeSpace(this.storeRoot, runtime);
+            const scope = await discoverWorkspaceScope({
+                identity: this.identity,
+                git: this.git,
+                maxEntries: WorkspaceCheckpointLimits.maxEntries,
+                maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+                signal: controller.signal,
+            });
+            const sourceEntries = await this.readGitBaselineEntries(
+                options.sourceRoot,
+                options.sourceTree,
+                options.sourceGit,
+                runtime
+            );
+            if (!sourceEntries) return undefined;
+            const attributePaths = await this.readGitBaselineAttributePaths(
+                options.sourceRoot,
+                sourceEntries,
+                options.sourceGit,
+                runtime
+            );
+            if (!attributePaths) return undefined;
+            const projection = planGitBaselineProjection(scope, sourceEntries, [
+                ...options.candidatePaths,
+                ...attributePaths,
+            ]);
+            if (!projection) return undefined;
+            const maxPackBytes = Math.max(1, quotaStatus.softQuotaBytes - quotaStatus.usedBytes);
+            try {
+                await options.sourceGit.importObjectClosure({
+                    sourceRoot: options.sourceRoot,
+                    sourceTree: options.sourceTree,
+                    destinationGitDir: this.storeRoot,
+                    maxPackBytes,
+                    timeoutMs: remainingTimeout(deadline),
+                    signal: controller.signal,
+                });
+            } catch (error) {
+                if (controller.signal.aborted) throw controller.signal.reason ?? error;
+                if (error instanceof WorkspaceGitRunnerError) return undefined;
+                throw error;
+            }
+            this.quotaAccounting.markNeedsReconcile();
+            const captured = await this.captureEntries(
+                { ...scope, entries: projection.captureEntries },
+                WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+                runtime
+            );
+            const mutations = [...captured.entries, ...projection.absentEntries];
+            const index = new ShadowWorkspaceIndex({
+                git: this.git,
+                gitDir: this.storeRoot,
+                indexFile: join(this.storeRoot, "journal", "workspace-cold-baseline.index"),
+            });
+            await index.load(options.sourceTree);
+            await index.apply(mutations);
+            const tree = await index.writeTree();
+            const validatedAttributePaths = await this.readGitBaselineAttributePaths(
+                options.sourceRoot,
+                sourceEntries,
+                options.sourceGit,
+                runtime
+            );
+            if (!validatedAttributePaths || !samePaths(attributePaths, validatedAttributePaths)) return undefined;
+            if (!(await verifyWorkspaceScopeDirectories(scope, controller.signal))) return undefined;
+            await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
+            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
+            SnapshotFingerprints.set(this, captured.fingerprints);
+            return {
+                tree,
+                scope: scope.manifest,
+                coverage: { ...scope.coverage, newlyHashedBytes: captured.newlyHashedBytes },
+            };
+        } catch (error) {
+            if (controller.signal.aborted && !options.signal?.aborted) {
+                throw new WorkspaceSnapshotStoreError("capture_timeout", "Workspace snapshot capture timed out", {
+                    cause: error,
+                });
+            }
+            throw error;
+        } finally {
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
+        }
+    }
+
+    async readGitBaselineEntries(
+        sourceRoot: string,
+        sourceTree: string,
+        sourceGit: WorkspaceGitRunner,
+        runtime: CaptureRuntime
+    ): Promise<GitBaselineTreeEntry[] | undefined> {
+        try {
+            const result = await sourceGit.run(["ls-tree", "-r", "-z", "--full-tree", sourceTree], {
+                cwd: sourceRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+            });
+            if (result.stderr.length !== 0) return undefined;
+            return parseGitBaselineTreeEntries(result.stdout);
+        } catch (error) {
+            if (runtime.signal.aborted) throw runtime.signal.reason ?? error;
+            return undefined;
+        }
+    }
+
+    async readGitBaselineAttributePaths(
+        sourceRoot: string,
+        sourceEntries: readonly GitBaselineTreeEntry[],
+        sourceGit: WorkspaceGitRunner,
+        runtime: CaptureRuntime
+    ): Promise<string[] | undefined> {
+        let autocrlf = "false";
+        try {
+            const configured = await sourceGit.run(["config", "--local", "--get-all", "core.autocrlf"], {
+                cwd: sourceRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+                maxStdoutBytes: 1024,
+            });
+            autocrlf = configured.stdout.toString("utf8").trim().toLowerCase();
+        } catch (error) {
+            if (runtime.signal.aborted) throw runtime.signal.reason ?? error;
+            if (!(error instanceof WorkspaceGitRunnerError) || error.code !== "nonzero_exit") return undefined;
+        }
+        if (autocrlf !== "false") return sourceEntries.map((entry) => entry.path);
+        if (sourceEntries.length === 0) return [];
+        try {
+            const attributes = await sourceGit.run(["check-attr", "-z", "--stdin", "--all"], {
+                cwd: sourceRoot,
+                stdin: Buffer.concat(sourceEntries.map((entry) => Buffer.from(`${entry.path}\0`))),
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+            });
+            if (attributes.stderr.length !== 0) return undefined;
+            return parseUnsafeGitAttributePaths(attributes.stdout, new Set(sourceEntries.map((entry) => entry.path)));
+        } catch (error) {
+            if (runtime.signal.aborted) throw runtime.signal.reason ?? error;
+            return undefined;
         }
     }
 
@@ -724,17 +923,7 @@ export class WorkspaceSnapshotStore {
         if (beforeTree === afterTree) return [];
         if (beforeTree.length !== afterTree.length) throw new Error("Workspace tree object formats do not match");
         const result = await this.git.run(
-            [
-                "diff-tree",
-                "--no-commit-id",
-                "--raw",
-                "-r",
-                "-z",
-                "--no-renames",
-                "--no-abbrev",
-                beforeTree,
-                afterTree,
-            ],
+            ["diff-tree", "--no-commit-id", "--raw", "-r", "-z", "--no-renames", "--no-abbrev", beforeTree, afterTree],
             { gitDir: this.storeRoot, timeoutMs: StoreGitTimeoutMs, maxStdoutBytes: QuotaMaxObjectOutputBytes }
         );
         const entries = parseNulWorkspaceRawTreeDelta(result.stdout, beforeTree.length);
@@ -2372,6 +2561,188 @@ function assertRuntimeActive(runtime?: CaptureRuntime): void {
     }
 }
 
+function validateGitBaselineOptions(options: CaptureGitBaselineOptions): void {
+    if (
+        !options ||
+        !isAbsolute(options.sourceRoot) ||
+        !(options.sourceGit instanceof WorkspaceGitRunner) ||
+        !Array.isArray(options.candidatePaths)
+    ) {
+        throw new Error("Invalid Git baseline options");
+    }
+    validateOid(options.sourceTree);
+    for (const path of options.candidatePaths) validateRelativePath(path);
+}
+
+function parseGitBaselineTreeEntries(value: Buffer): GitBaselineTreeEntry[] {
+    if (value.length === 0) return [];
+    if (value.at(-1) !== 0) throw new Error("Invalid Git baseline tree listing");
+    const entries: GitBaselineTreeEntry[] = [];
+    const seen = new Set<string>();
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        const record = value.subarray(start, index);
+        const tab = record.indexOf(0x09);
+        if (tab < 0) throw new Error("Invalid Git baseline tree entry");
+        const header = /^(\d{6}) blob ([0-9a-f]{40})$/.exec(record.subarray(0, tab).toString("ascii"));
+        if (!header) throw new Error("Invalid Git baseline tree entry");
+        const pathBytes = record.subarray(tab + 1);
+        const path = pathBytes.toString("utf8");
+        if (!Buffer.from(path).equals(pathBytes)) throw new Error("Git baseline path is not UTF-8");
+        validateRelativePath(path);
+        if (seen.has(path)) throw new Error("Duplicate Git baseline tree path");
+        seen.add(path);
+        entries.push({
+            path,
+            mode: header[1] as GitBaselineTreeEntry["mode"],
+            oid: header[2]!,
+        });
+        start = index + 1;
+    }
+    return entries;
+}
+
+function parseUnsafeGitAttributePaths(value: Buffer, expectedPaths: ReadonlySet<string>): string[] {
+    if (value.length === 0) return [];
+    if (value.at(-1) !== 0) throw new Error("Invalid Git attribute output");
+    const fields: Buffer[] = [];
+    let start = 0;
+    for (let index = 0; index < value.length; index++) {
+        if (value[index] !== 0) continue;
+        fields.push(value.subarray(start, index));
+        start = index + 1;
+    }
+    if (fields.length % 3 !== 0) throw new Error("Invalid Git attribute output");
+    const unsafe = new Set<string>();
+    for (let index = 0; index < fields.length; index += 3) {
+        const pathBytes = fields[index]!;
+        const path = pathBytes.toString("utf8");
+        if (!Buffer.from(path).equals(pathBytes) || !expectedPaths.has(path)) {
+            throw new Error("Invalid Git attribute path");
+        }
+        const attribute = fields[index + 1]!.toString("utf8");
+        const attributeValue = fields[index + 2]!.toString("utf8");
+        if (GitUnsafeAttributes.has(attribute) && attributeValue !== "unspecified" && attributeValue !== "unset") {
+            unsafe.add(path);
+        }
+    }
+    return [...unsafe].sort(comparePathBytes);
+}
+
+function planGitBaselineProjection(
+    scope: WorkspaceScope,
+    sourceEntries: readonly GitBaselineTreeEntry[],
+    candidatePaths: readonly string[]
+): GitBaselineProjection | undefined {
+    const source = new Map(sourceEntries.map((entry) => [entry.path, entry]));
+    if (source.size !== sourceEntries.length) return undefined;
+    if (sourceEntries.some((entry) => !["100644", "100755", "120000"].includes(entry.mode))) return undefined;
+    const sourcePaths = [...source.keys()].sort(comparePathBytes);
+    const sourcePathSet = new Set(sourcePaths);
+    const candidates = normalizePathRoots(candidatePaths);
+    const candidateSet = new Set(candidates);
+    const physical = new Map<string, WorkspaceScopeEntry>();
+    const exclusionByPath = new Map<string, WorkspaceScopeEntry>();
+    for (const entry of scope.entries) {
+        if (!entry.path) {
+            if (entry.kind !== "excluded") return undefined;
+            continue;
+        }
+        if (entry.kind === "excluded") {
+            exclusionByPath.set(entry.path, entry);
+            continue;
+        }
+        physical.set(entry.path, entry);
+    }
+    if (physical.size !== scope.coverage.eligibleEntryCount) return undefined;
+    const physicalPaths = [...physical.keys()].sort(comparePathBytes);
+    const exclusionPaths = normalizePathRoots([...exclusionByPath.keys()]);
+    const exclusionSet = new Set(exclusionPaths);
+    const capture = new Map<string, WorkspaceScopeEntry>();
+    for (const path of exclusionPaths) {
+        if (pathsOverlapIndex(sourcePaths, sourcePathSet, path) || pathsOverlapIndex(candidates, candidateSet, path)) {
+            capture.set(path, exclusionByPath.get(path)!);
+        }
+    }
+    for (const entry of physical.values()) {
+        const sourceEntry = source.get(entry.path!);
+        const expectedMode = entry.kind === "symlink" ? "120000" : entry.executable === true ? "100755" : "100644";
+        if (
+            !entry.tracked ||
+            !sourceEntry ||
+            sourceEntry.mode !== expectedMode ||
+            pathsOverlapIndex(candidates, candidateSet, entry.path!)
+        ) {
+            capture.set(entry.path!, entry);
+        }
+    }
+    const absentRoots = candidates.filter(
+        (candidate) => !hasPathAtOrBelow(physicalPaths, candidate) && hasPathAtOrBelow(sourcePaths, candidate)
+    );
+    const absentRootSet = new Set(absentRoots);
+    const absent = new Map<string, { path: string; pathBytes: Buffer; state: { state: "absent" } }>();
+    for (const path of absentRoots)
+        absent.set(path, { path, pathBytes: Buffer.from(path), state: { state: "absent" } });
+    for (const entry of sourceEntries) {
+        if (physical.has(entry.path)) continue;
+        if (hasCoveringPath(exclusionSet, entry.path)) continue;
+        if (hasCoveringPath(absentRootSet, entry.path)) continue;
+        absent.set(entry.path, {
+            path: entry.path,
+            pathBytes: Buffer.from(entry.path),
+            state: { state: "absent" },
+        });
+    }
+    return {
+        captureEntries: [...capture.values()].sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes)),
+        absentEntries: [...absent.values()].sort((left, right) => Buffer.compare(left.pathBytes, right.pathBytes)),
+    };
+}
+
+function normalizePathRoots(paths: readonly string[]): string[] {
+    const roots: string[] = [];
+    const rootSet = new Set<string>();
+    for (const path of [...new Set(paths)].sort(comparePathBytes)) {
+        if (hasCoveringPath(rootSet, path)) continue;
+        roots.push(path);
+        rootSet.add(path);
+    }
+    return roots;
+}
+
+function pathsOverlapIndex(sortedPaths: readonly string[], paths: ReadonlySet<string>, path: string): boolean {
+    return hasCoveringPath(paths, path) || hasPathAtOrBelow(sortedPaths, path);
+}
+
+function hasCoveringPath(paths: ReadonlySet<string>, path: string): boolean {
+    for (let current = path; ; ) {
+        if (paths.has(current)) return true;
+        const separator = current.lastIndexOf("/");
+        if (separator < 0) return false;
+        current = current.slice(0, separator);
+    }
+}
+
+function hasPathAtOrBelow(sortedPaths: readonly string[], root: string): boolean {
+    let low = 0;
+    let high = sortedPaths.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (comparePathBytes(sortedPaths[middle]!, root) < 0) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    const path = sortedPaths[low];
+    return path != null && (path === root || path.startsWith(`${root}/`));
+}
+
+function samePaths(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((path, index) => path === right[index]);
+}
+
 function validateCaptureOptions(options: CaptureWorkspaceOptions): void {
     if (!options || !["pre-turn", "terminal", "safety"].includes(options.profile)) {
         throw new Error("Invalid workspace capture profile");
@@ -2853,7 +3224,7 @@ function assertBatchBlobObjects(value: Buffer, expectedObjectIds: string[]): voi
     }
 }
 
-function assertBatchObjectTypes(value: Buffer, expected: readonly Array<{ oid: string; type: "blob" | "tree" }>): void {
+function assertBatchObjectTypes(value: Buffer, expected: ReadonlyArray<{ oid: string; type: "blob" | "tree" }>): void {
     const lines = splitLines(value);
     if (lines.length !== expected.length) {
         throw new Error("Workspace tree object verification returned an invalid count");
@@ -2994,8 +3365,10 @@ function parseNulLsTreeEntries(
         const [mode, type, oid] = header;
         validateOid(oid!);
         if (
-            !((mode === "040000" && type === "tree") ||
-                (["100644", "100755", "120000"].includes(mode!) && type === "blob"))
+            !(
+                (mode === "040000" && type === "tree") ||
+                (["100644", "100755", "120000"].includes(mode!) && type === "blob")
+            )
         ) {
             throw new Error("Git candidate tree entry has an invalid mode or type");
         }

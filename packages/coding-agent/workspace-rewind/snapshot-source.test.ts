@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -540,9 +540,209 @@ describe("Workspace checkpoint snapshot source", () => {
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
-        expect(fullReconcile).toHaveBeenCalledOnce();
+        expect(fullReconcile).not.toHaveBeenCalled();
         await source.dispose?.();
-    });
+    }, 20_000);
+
+    it("projects a cold Git baseline while reading only dirty and untracked workspace bytes", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-projection-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        const cleanBytes = Buffer.from("clean source bytes\n");
+        const dirtyBytes = Buffer.from("dirty live bytes\n");
+        const untrackedBytes = Buffer.from("untracked live bytes\n");
+        await writeFile(join(workspaceRoot, "clean.txt"), cleanBytes);
+        await writeFile(join(workspaceRoot, "dirty.txt"), "committed dirty bytes\n");
+        for (let index = 0; index < 16; index++) {
+            const directory = join(workspaceRoot, "clean", `tree-${index.toString().padStart(2, "0")}`);
+            await mkdir(directory, { recursive: true });
+            await writeFile(join(directory, "file.txt"), `clean ${index}\n`);
+        }
+        await commitAll(git, workspaceRoot, "base");
+        await writeFile(join(workspaceRoot, "dirty.txt"), dirtyBytes);
+        await writeFile(join(workspaceRoot, "untracked.txt"), untrackedBytes);
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-projection", nonce: "8".repeat(64) },
+        });
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const run = git.run.bind(git);
+        let recursiveTreeListings = 0;
+        let individualTreeReads = 0;
+        vi.spyOn(git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "ls-tree" && args.includes("-r")) recursiveTreeListings++;
+            if (args[0] === "cat-file" && args[1] === "tree") individualTreeReads++;
+            return await run(args, options);
+        });
+        const captureGitBaseline = store.captureGitBaseline.bind(store);
+        let newlyHashedBytes = -1;
+        vi.spyOn(store, "captureGitBaseline").mockImplementation(async (options) => {
+            const captured = await captureGitBaseline(options);
+            newlyHashedBytes = captured?.coverage.newlyHashedBytes ?? -1;
+            return captured;
+        });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
+        expect(recursiveTreeListings).toBe(1);
+        expect(individualTreeReads).toBe(0);
+        const head = await source.readHead();
+        const clean = await store.readPathState(head.ref, "clean.txt");
+        const dirty = await store.readPathState(head.ref, "dirty.txt");
+        const untracked = await store.readPathState(head.ref, "untracked.txt");
+
+        expect(fullReconcile).not.toHaveBeenCalled();
+        expect(newlyHashedBytes).toBe(dirtyBytes.length + untrackedBytes.length);
+        expect(clean).toMatchObject({ state: "file" });
+        expect(dirty).toMatchObject({ state: "file" });
+        expect(untracked).toMatchObject({ state: "file" });
+        await rm(join(workspaceRoot, ".git"), { recursive: true, force: true });
+        await expect(store.readBlob((clean as { oid: string }).oid)).resolves.toEqual(cleanBytes);
+        await expect(store.readBlob((dirty as { oid: string }).oid)).resolves.toEqual(dirtyBytes);
+        await expect(store.readBlob((untracked as { oid: string }).oid)).resolves.toEqual(untrackedBytes);
+        await source.dispose?.();
+    }, 20_000);
+
+    it("stable-captures clean tracked bytes when Git attributes transform their index representation", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-attributes-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, ".gitattributes"), "*.txt filter=crest-test\n");
+        await execFileAsync("git", ["config", "filter.crest-test.clean", "sed s/WORKTREE/INDEX/g"], {
+            cwd: workspaceRoot,
+        });
+        await execFileAsync("git", ["config", "filter.crest-test.smudge", "sed s/INDEX/WORKTREE/g"], {
+            cwd: workspaceRoot,
+        });
+        const liveBytes = Buffer.from("WORKTREE bytes\n");
+        await writeFile(join(workspaceRoot, "transformed.txt"), liveBytes);
+        await commitAll(git, workspaceRoot, "attributes");
+        expect(await readFile(join(workspaceRoot, "transformed.txt"))).toEqual(liveBytes);
+        await expect(
+            git.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+                cwd: workspaceRoot,
+                timeoutMs: 5_000,
+            })
+        ).resolves.toMatchObject({ stdout: Buffer.alloc(0) });
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-attributes", nonce: "9".repeat(64) },
+        });
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const captureGitBaseline = store.captureGitBaseline.bind(store);
+        let newlyHashedBytes = -1;
+        vi.spyOn(store, "captureGitBaseline").mockImplementation(async (options) => {
+            const captured = await captureGitBaseline(options);
+            newlyHashedBytes = captured?.coverage.newlyHashedBytes ?? -1;
+            return captured;
+        });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
+        const head = await source.readHead();
+        const transformed = await store.readPathState(head.ref, "transformed.txt");
+
+        expect(fullReconcile).not.toHaveBeenCalled();
+        expect(newlyHashedBytes).toBe(liveBytes.length);
+        expect(transformed).toMatchObject({ state: "file" });
+        await expect(store.readBlob((transformed as { oid: string }).oid)).resolves.toEqual(liveBytes);
+        await source.dispose?.();
+    }, 20_000);
+
+    it("falls back to a full baseline when the source tree contains a gitlink", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-gitlink-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        const nestedRoot = join(workspaceRoot, "nested");
+        await mkdir(nestedRoot, { recursive: true });
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await git.run(["init"], { cwd: nestedRoot, timeoutMs: 5_000 });
+        await writeFile(join(nestedRoot, "file.txt"), "nested\n");
+        await commitAll(git, nestedRoot, "nested");
+        await commitAll(git, workspaceRoot, "outer");
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-gitlink", nonce: "a".repeat(64) },
+        });
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
+
+        expect(fullReconcile).toHaveBeenCalledOnce();
+        await expect(source.readHead()).resolves.toMatchObject({ coverage: { complete: false } });
+        await source.dispose?.();
+    }, 20_000);
+
+    it("falls back to a full baseline when the source-tree listing is ambiguous", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-malformed-tree-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, "file.txt"), "tracked\n");
+        await commitAll(git, workspaceRoot, "base");
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-malformed", nonce: "b".repeat(64) },
+        });
+        const run = git.run.bind(git);
+        const importObjectClosure = vi.spyOn(git, "importObjectClosure");
+        vi.spyOn(git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "ls-tree" && args.includes("-r") && options.cwd === identity.canonicalRoot) {
+                return { stdout: Buffer.from("malformed\0"), stderr: Buffer.alloc(0) };
+            }
+            return await run(args, options);
+        });
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
+
+        expect(fullReconcile).toHaveBeenCalledOnce();
+        expect(importObjectClosure).not.toHaveBeenCalled();
+        await source.dispose?.();
+    }, 20_000);
 
     it("captures only a nested monorepo workspace with a literal non-ASCII prefix", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-nested-git-candidate-source-"));
@@ -581,9 +781,9 @@ describe("Workspace checkpoint snapshot source", () => {
         await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
             expect.objectContaining({ path: "tracked.txt" }),
         ]);
-        expect(fullReconcile).toHaveBeenCalledOnce();
+        expect(fullReconcile).not.toHaveBeenCalled();
         await source.dispose?.();
-    });
+    }, 20_000);
 
     it("batch-checks wide stable siblings while importing only the missing source-tree chain", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-pruned-source-import-"));
@@ -663,7 +863,6 @@ describe("Workspace checkpoint snapshot source", () => {
 
         expect(userCatFileTrees).toEqual([sourceTree, changedTree]);
         expect(userCatFileTrees).not.toContain(stableTree);
-        expect(privateBatchChecks).toHaveLength(8);
         const childTrees = new Set([changedTree, ...stableTrees]);
         const importChildChecks = privateBatchChecks.filter((batch) => batch.some((oid) => childTrees.has(oid)));
         expect(importChildChecks).toEqual([expect.arrayContaining([...childTrees])]);

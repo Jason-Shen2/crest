@@ -120,6 +120,7 @@ const ApprovedGitSubcommands = new Set([
     "gc",
     "reflog",
     "verify-pack",
+    "check-attr",
 ]);
 
 interface SecureGitPaths {
@@ -241,6 +242,7 @@ export class WorkspaceGitRunner {
         source.stdout.on("end", () => destination.stdin.end());
         const onAbort = () => terminate(makeError("aborted"));
         options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) onAbort();
         const timer = setTimeout(() => terminate(makeError("timeout")), remainingTimeout(deadline));
         source.stdin.on("error", (cause: NodeJS.ErrnoException) => {
             if (cause.code !== "EPIPE")
@@ -314,6 +316,7 @@ export class WorkspaceGitRunner {
     async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
         const limits = validateOptions(args, options);
         const checkIgnoreStdin = isCheckIgnoreStdin(args);
+        const checkAttrStdin = isCheckAttrStdin(args);
         if (options.signal?.aborted) {
             throw makeError("aborted");
         }
@@ -338,7 +341,7 @@ export class WorkspaceGitRunner {
         const env = makeIsolatedEnv(
             options.gitDir == null,
             securePaths.globalConfig,
-            !checkIgnoreStdin && options.pathspecMode !== "literal-magic",
+            !checkIgnoreStdin && !checkAttrStdin && options.pathspecMode !== "literal-magic",
             options.indexFile,
             args[0] === "commit-tree"
         );
@@ -476,6 +479,9 @@ function validateOptions(
     if (args[0] === "check-ignore" && !isCheckIgnoreStdin(args)) {
         throw makeError("invalid_options");
     }
+    if (args[0] === "check-attr" && !isCheckAttrStdin(args)) {
+        throw makeError("invalid_options");
+    }
     if (options == null || !isNonnegativeSafeInteger(options.timeoutMs) || options.timeoutMs > MaxTimeoutMs) {
         throw makeError("invalid_options");
     }
@@ -500,7 +506,7 @@ function validateOptions(
     if (options.pathspecMode != null && (options.pathspecMode !== "literal-magic" || args[0] !== "ls-tree")) {
         throw makeError("invalid_options");
     }
-    if (isCheckIgnoreStdin(args) && !isValidNulDelimitedPaths(options.stdin)) {
+    if ((isCheckIgnoreStdin(args) || isCheckAttrStdin(args)) && !isValidNulDelimitedPaths(options.stdin)) {
         throw makeError("invalid_options");
     }
     if (!isSafeApprovedInvocation(args, options)) {
@@ -641,6 +647,16 @@ function isValidLimit(value: number, hardCap: number): boolean {
 
 function isCheckIgnoreStdin(args: readonly string[]): boolean {
     return args.length === 3 && args[0] === "check-ignore" && args[1] === "-z" && args[2] === "--stdin";
+}
+
+function isCheckAttrStdin(args: readonly string[]): boolean {
+    return (
+        args.length === 4 &&
+        args[0] === "check-attr" &&
+        args[1] === "-z" &&
+        args[2] === "--stdin" &&
+        args[3] === "--all"
+    );
 }
 
 function isValidNulDelimitedPaths(value: Buffer | undefined): boolean {
