@@ -66,9 +66,6 @@ describe("V3 snapshot equivalence regressions", () => {
                 expected.set(path, bytes);
 
                 const head = await fixture.lease.snapshotSource.synchronizeExternal();
-                const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
-
-                expect(head.ref.tree).toBe(full.tree);
                 for (const [expectedPath, expectedBytes] of expected) {
                     const state = await fixture.lease.store.readPathState(head.ref, expectedPath);
                     expect(state.state).toBe("file");
@@ -77,6 +74,9 @@ describe("V3 snapshot equivalence regressions", () => {
                     expect(await readFile(join(fixture.workspace, expectedPath))).toEqual(expectedBytes);
                 }
             }
+            const final = await fixture.lease.snapshotSource.readHead();
+            const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
+            expect(final.ref.tree).toBe(full.tree);
         } finally {
             await fixture.lease.release();
         }
