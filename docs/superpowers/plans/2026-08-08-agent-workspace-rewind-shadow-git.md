@@ -540,6 +540,51 @@ Task 9 did not raise timeouts, report zero latency, or claim that pre-closeout b
 
 ### Task 10: Production-scale gates and documentation
 
+#### Task 10A: Git-native cold baseline before scale certification
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/git-runner.ts`
+- Test: `packages/coding-agent/workspace-rewind/git-runner.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-source.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-source.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/snapshot-store.ts`
+- Test: `packages/coding-agent/workspace-rewind/snapshot-store.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/shadow-workspace-index.ts`
+- Test: `packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts`
+- Regression: `packages/coding-agent/workspace-rewind/snapshot-equivalence.integration.test.ts`
+
+- [ ] **Step 1: RED for a bounded private Git object closure import**
+
+Require a SHA-1 source subtree pack to become independently readable from the private store. Prove abort,
+quota, missing partial-clone object, replace-object and nested-prefix boundaries fail closed without publishing
+a head or leaving a trusted temporary object source. A generic fetch, remote, durable cache or second state file
+is forbidden.
+
+- [ ] **Step 2: RED for Git-native cold projection**
+
+Require initialization with a clean Git Workspace to reuse source OIDs without stable-reading clean contents.
+Dirty/staged/deleted/untracked, CRLF/EOL, filter/ident/working-tree-encoding, executable, symlink and type ambiguity
+must capture the exact live bytes. Ignored, nested repository, hard-linked, special, sparse/absent and non-UTF-8
+coverage remains equivalent to an independent full reconcile.
+
+- [ ] **Step 3: Implement the minimum fast path**
+
+Reuse source-boundary resolution, metadata scope discovery, candidate capture, `ShadowWorkspaceIndex` and the
+existing publication CAS. Stream one bounded source subtree pack into the private store, overlay only unsafe or
+changed paths, and validate HEAD/index/status/feed/directory evidence before publication. Retry one merged race;
+continued mutation is unavailable. Non-Git, unborn HEAD, non-SHA-1 and ambiguous source authority retain the full
+reconcile fallback. Do not add a database, watcher WAL, persistent cursor, pack cache or recovery phase.
+
+- [ ] **Step 4: Focused correctness and performance GREEN**
+
+```bash
+npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts packages/coding-agent/workspace-rewind/snapshot-source.test.ts packages/coding-agent/workspace-rewind/snapshot-equivalence.integration.test.ts
+```
+
+Assert cold working-tree content reads are `O(uncertain + dirty + untracked)`, Git child count is bounded by fixed
+chunks rather than path count, the private baseline restores after the user object database is unavailable, and
+all failure paths preserve the existing fail-closed result.
+
 **Files:**
 - Modify: `scripts/benchmark-agent-rewind-snapshots.ts`
 - Modify: `scripts/benchmark-agent-rewind-snapshots.test.ts`

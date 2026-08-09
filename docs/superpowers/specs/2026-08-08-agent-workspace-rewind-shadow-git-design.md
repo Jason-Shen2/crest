@@ -124,6 +124,40 @@ tracked、deleted 和 untracked candidate。正常热路径只读取候选路径
 untracked 内容。具有非确定性 clean/smudge filter、特殊 attributes 或无法证明 round-trip
 的路径不能宣称 raw-byte 精确；这些路径必须额外捕获，或明确标为 unavailable。
 
+#### Git-native cold baseline
+
+首次没有 Shadow head 时，Git Workspace 不再默认把每个 clean tracked 文件从工作树复制、
+重新 hash 一遍。初始化固定执行以下最小流程：
+
+1. 解析 canonical repository root、Workspace prefix 和 `HEAD:<prefix>` tree；只接受当前
+   Shadow store 已支持的 SHA-1 object format。unborn HEAD、对象缺失、SHA-256 或边界无法
+   证明时回到现有 full reconcile；full reconcile 超过生产预算则明确 unavailable。
+2. 在读取 Workspace 状态前启动现有内存 change feed。继续使用 metadata scope discovery
+   建立 ignored、nested repository、hard-link、special entry、非 UTF-8、oversized、实际
+   sparse/缺失路径和 coverage 证据；它不读取 clean tracked 文件内容。
+3. safe clean tracked path 直接复用 source tree 的 mode 与 blob OID。Git status 中的 dirty、
+   staged、deleted、untracked path，以及 filter、ident、working-tree-encoding、index/worktree
+   EOL、mode 或 type 无法证明 raw-byte round-trip 的 path，继续走现有 stable path capture。
+4. source Workspace subtree 的 object closure 使用受限的本地
+   `pack-objects --stdout --revs` → private `index-pack --stdin` 流式导入。流量受剩余 quota 和
+   free-space 预算限制，禁止 replace object、lazy partial-clone fetch、hook 和网络；导入后由
+   private object database 重新验证 tree closure，checkpoint 不依赖用户仓库继续保留对象。
+5. private index 从 source tree 开始，删除物理缺失或 scope-excluded path，再叠加精确捕获的
+   path，生成最终 tree。发布前重新验证 HEAD、Git index、status/change-feed generation 与
+   directory evidence；变化时只合并重试一次，仍变化则 fail closed。
+
+这条 fast path 不增加 durable cursor、数据库、WAL、cache 或新的恢复协议。现有 Shadow Git
+commit/ref 仍是唯一持久事实源。`git fetch --depth=1` 不作为实现基础：它不能精确导入任意
+Workspace subtree，nested Workspace 会额外导入 sibling objects，并引入 shallow/local transport
+状态；显式 pack closure 的边界更小且可验证。
+
+首次 cold 的 raw-byte 保证存在一个不可消除的信任边界：没有此前可信 journal 时，若要求识别
+刻意保持 inode/size/timestamps 的对抗性篡改，就必须读取并 hash 全部文件。Git-native fast path
+明确接受 Git index/stat cache 对 safe clean tracked path 的判断；任何 checkout transform 或证据
+歧义都读取实际工作树 bytes。Non-Git cold 不具备 source object authority，仍使用现有全量稳定
+捕获。仅把全量 reader 并行化可以改善 fallback，但不会替代该算法，也不能消除
+`O(total raw bytes)` 的最坏成本。
+
 ### Non-Git Workspace
 
 首次使用必须建立一次完整 baseline，这是没有现有 index 时不可消除的成本。warm runtime
