@@ -62,6 +62,7 @@ export interface BenchmarkRow {
     shape: FixtureShape;
     outcome: BenchmarkOutcome;
     entryCount: number;
+    eligibleFileCount: number;
     dirtyPathCount: number;
     sessionCount: number;
     iterations: number;
@@ -76,6 +77,7 @@ export interface BenchmarkRow {
 
 export interface ColdBaselineProfile {
     entryCount: number;
+    eligibleFileCount: number;
     shape: FixtureShape;
     outcome: "pass" | "timeout" | "failed";
     reason?: string;
@@ -140,6 +142,7 @@ const DirtyPathCounts = [1, 10, 100] as const;
 const SessionCounts = [1, 2, 4] as const;
 const DefaultEntryCounts = [10_000, 50_000, 200_000];
 const DefaultIterations = 10;
+const FixtureRepositoryBoundaryCount = 1;
 const execFileAsync = promisify(execFile);
 
 const DefaultBenchmarkDependencies: BenchmarkDependencies = {
@@ -222,9 +225,11 @@ export async function profileAgentRewindColdBaseline(
     shape: FixtureShape
 ): Promise<ColdBaselineProfile> {
     validateEntryCount(entryCount);
+    const layout = planAgentRewindBenchmarkFixture(entryCount, shape);
     const root = await mkdtemp(join(tmpdir(), `crest-rewind-v3-profile-${shape}-${entryCount}-`));
     const profile: MutableColdBaselineProfile = {
         entryCount,
+        eligibleFileCount: layout.eligibleFileCount,
         shape,
         outcome: "failed",
         fixture: { createEntriesMs: 0, initializeGitMs: 0, identityMs: 0, totalMs: 0 },
@@ -739,6 +744,7 @@ function makeMeasuredRow(
         shape: fixture.shape,
         outcome,
         entryCount: fixture.entryCount,
+        eligibleFileCount: fixture.paths.length,
         dirtyPathCount: input.dirtyPathCount,
         sessionCount: input.sessionCount,
         iterations: input.iterations,
@@ -770,6 +776,7 @@ function unavailableRows(fixture: BenchmarkFixture, iterations: number, reason: 
         shape: fixture.shape,
         outcome: "unavailable",
         entryCount: fixture.entryCount,
+        eligibleFileCount: fixture.paths.length,
         dirtyPathCount,
         sessionCount,
         iterations,
@@ -791,12 +798,29 @@ function unavailableRows(fixture: BenchmarkFixture, iterations: number, reason: 
     ];
 }
 
+export function planAgentRewindBenchmarkFixture(entryCount: number, shape: FixtureShape) {
+    validateEntryCount(entryCount);
+    const preferredDirectoryCount = shape === "deep" ? Math.min(24, Math.max(1, Math.ceil(Math.log2(entryCount)))) : 0;
+    const directoryCount = Math.min(
+        preferredDirectoryCount,
+        Math.max(0, entryCount - FixtureRepositoryBoundaryCount - 1)
+    );
+    const eligibleFileCount = entryCount - FixtureRepositoryBoundaryCount - directoryCount;
+    return {
+        requestedEntryCount: entryCount,
+        repositoryBoundaryCount: FixtureRepositoryBoundaryCount,
+        directoryCount,
+        eligibleFileCount,
+        scannedEntryCount: FixtureRepositoryBoundaryCount + directoryCount + eligibleFileCount,
+    };
+}
+
 async function createFixtureEntries(workspaceRoot: string, entryCount: number, shape: FixtureShape): Promise<string[]> {
-    const directoryCount = shape === "deep" ? Math.min(24, Math.max(1, Math.ceil(Math.log2(entryCount)))) : 0;
+    const layout = planAgentRewindBenchmarkFixture(entryCount, shape);
+    const { directoryCount } = layout;
     const relativeRoot = Array.from({ length: directoryCount }, (_, index) => `d${index.toString(36)}`).join("/");
     if (relativeRoot) await mkdir(join(workspaceRoot, relativeRoot), { recursive: true });
-    const fileCount = entryCount - directoryCount;
-    const paths = Array.from({ length: fileCount }, (_, index) =>
+    const paths = Array.from({ length: layout.eligibleFileCount }, (_, index) =>
         relativeRoot ? `${relativeRoot}/f${index.toString(36)}` : `f${index.toString(36)}`
     );
     for (let offset = 0; offset < paths.length; offset += 256) {
@@ -1014,7 +1038,8 @@ function printRows(rows: readonly BenchmarkRow[]): void {
             scenario: row.scenario,
             shape: row.shape,
             outcome: row.outcome,
-            entries: row.entryCount,
+            requestedentries: row.entryCount,
+            eligiblefiles: row.eligibleFileCount,
             dirty: row.dirtyPathCount,
             sessions: row.sessionCount,
             candidates: row.candidateCount,

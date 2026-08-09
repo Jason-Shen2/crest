@@ -7,6 +7,7 @@ import {
     type BenchmarkRow,
     type BenchmarkScenario,
     cleanupBenchmarkFixture,
+    planAgentRewindBenchmarkFixture,
     profileAgentRewindColdBaseline,
     runAgentRewindSnapshotBenchmark,
     runAgentRewindSnapshotFixture,
@@ -28,6 +29,7 @@ function row(scenario: BenchmarkScenario, overrides: Partial<BenchmarkRow> = {})
         shape: "wide",
         outcome: "pass",
         entryCount: 10,
+        eligibleFileCount: 9,
         dirtyPathCount: 0,
         sessionCount: 1,
         iterations: 1,
@@ -42,6 +44,19 @@ function row(scenario: BenchmarkScenario, overrides: Partial<BenchmarkRow> = {})
 }
 
 describe("agent rewind V3 production benchmark contract", () => {
+    test.each([
+        ["deep", 18, 199_981],
+        ["wide", 0, 199_999],
+    ] as const)("reserves production scan-budget metadata for a 200k %s fixture", (shape, directories, files) => {
+        expect(planAgentRewindBenchmarkFixture(200_000, shape)).toEqual({
+            requestedEntryCount: 200_000,
+            repositoryBoundaryCount: 1,
+            directoryCount: directories,
+            eligibleFileCount: files,
+            scannedEntryCount: 200_000,
+        });
+    });
+
     test("emits the required production matrix and V3 measurements", async () => {
         const rows = await runAgentRewindSnapshotBenchmark({ entryCounts: [10], iterations: 2 }, () => undefined, {
             makeFixture: async (_entryCount, shape) => ({ root: shape, shape }),
@@ -75,6 +90,7 @@ describe("agent rewind V3 production benchmark contract", () => {
         expect(
             rows.every(
                 (item) =>
+                    Number.isSafeInteger(item.eligibleFileCount) &&
                     Number.isSafeInteger(item.candidateCount) &&
                     Number.isSafeInteger(item.bytesRead) &&
                     Number.isSafeInteger(item.commitsTraversed) &&
@@ -131,6 +147,7 @@ describe("agent rewind V3 production benchmark contract", () => {
 
         expect(profile).toMatchObject({
             entryCount: 12,
+            eligibleFileCount: 11,
             shape: "wide",
             outcome: "pass",
             fixture: {
