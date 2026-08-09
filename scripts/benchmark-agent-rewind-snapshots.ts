@@ -18,6 +18,7 @@ import {
 } from "../packages/coding-agent/workspace-rewind/git-runner";
 import { PendingWorkspaceRestoreStore } from "../packages/coding-agent/workspace-rewind/pending-restore-store";
 import type { RestorePlanV1 } from "../packages/coding-agent/workspace-rewind/restore-plan";
+import { initializeWorkspaceCheckpointSnapshotSource } from "../packages/coding-agent/workspace-rewind/snapshot-source";
 import {
     WorkspaceCheckpointLimits,
     WorkspaceSnapshotStore,
@@ -40,7 +41,7 @@ import {
     type WorkspaceTrackerLease,
 } from "../packages/coding-agent/workspace-rewind/workspace-tracker-registry";
 
-type FixtureShape = "deep" | "wide";
+export type FixtureShape = "deep" | "wide";
 export type BenchmarkScenario =
     | "cold"
     | "no-tool-fresh"
@@ -71,6 +72,36 @@ export interface BenchmarkRow {
     p50Ms: number | null;
     p95Ms: number | null;
     reason?: string;
+}
+
+export interface ColdBaselineProfile {
+    entryCount: number;
+    shape: FixtureShape;
+    outcome: "pass" | "timeout" | "failed";
+    reason?: string;
+    fixture: {
+        createEntriesMs: number;
+        initializeGitMs: number;
+        identityMs: number;
+        totalMs: number;
+    };
+    authority: {
+        storeOpenMs: number;
+        registryInitializeMs: number;
+        captureTotalMs: number | null;
+        scopeEnumeratedMs: number | null;
+        discoverScopeMs: number | null;
+        stableReaderAndHashMs: number | null;
+        treeMaterializeMs: number | null;
+        postCaptureInitializeMs: number | null;
+    };
+    scopeEntryCount: number | null;
+    gitCommands: Record<string, { calls: number; durationMs: number }>;
+}
+
+interface MutableColdBaselineProfile extends ColdBaselineProfile {
+    captureStartedAt?: number;
+    captureFinishedAt?: number;
 }
 
 export interface BenchmarkFixtureView {
@@ -184,6 +215,140 @@ export async function cleanupBenchmarkFixture(
     }
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Benchmark fixture cleanup failed");
+}
+
+export async function profileAgentRewindColdBaseline(
+    entryCount: number,
+    shape: FixtureShape
+): Promise<ColdBaselineProfile> {
+    validateEntryCount(entryCount);
+    const root = await mkdtemp(join(tmpdir(), `crest-rewind-v3-profile-${shape}-${entryCount}-`));
+    const profile: MutableColdBaselineProfile = {
+        entryCount,
+        shape,
+        outcome: "failed",
+        fixture: { createEntriesMs: 0, initializeGitMs: 0, identityMs: 0, totalMs: 0 },
+        authority: {
+            storeOpenMs: 0,
+            registryInitializeMs: 0,
+            captureTotalMs: null,
+            scopeEnumeratedMs: null,
+            discoverScopeMs: null,
+            stableReaderAndHashMs: null,
+            treeMaterializeMs: null,
+            postCaptureInitializeMs: null,
+        },
+        scopeEntryCount: null,
+        gitCommands: {},
+    };
+    const fixtureStarted = performance.now();
+    let lease: WorkspaceTrackerLease | undefined;
+    try {
+        const workspaceRoot = await realpath(await mkdir(join(root, "workspace"), { recursive: true }));
+        let started = performance.now();
+        await createFixtureEntries(workspaceRoot, entryCount, shape);
+        profile.fixture.createEntriesMs = elapsedMs(started);
+        started = performance.now();
+        await initializeGitFixture(workspaceRoot);
+        profile.fixture.initializeGitMs = elapsedMs(started);
+        started = performance.now();
+        const identity = await makeIdentity(workspaceRoot, `profile-${shape}-${entryCount}`);
+        profile.fixture.identityMs = elapsedMs(started);
+        profile.fixture.totalMs = elapsedMs(fixtureStarted);
+        const metrics = makeMetrics();
+        const git = new ObservedWorkspaceGitRunner(metrics, profile.gitCommands);
+        const feed = new DeterministicChangeFeed();
+        const registry = new WorkspaceTrackerRegistry({
+            openStore: async (input) => {
+                const openStarted = performance.now();
+                const store = await WorkspaceSnapshotStore.open(input);
+                profile.authority.storeOpenMs = elapsedMs(openStarted);
+                const captureEntries = store.captureEntries.bind(store);
+                store.captureEntries = async (...args: Parameters<typeof captureEntries>) => {
+                    const captureEntriesStarted = performance.now();
+                    if (profile.captureStartedAt != null) {
+                        profile.authority.discoverScopeMs = roundMs(captureEntriesStarted - profile.captureStartedAt);
+                    }
+                    try {
+                        return await captureEntries(...args);
+                    } finally {
+                        profile.authority.stableReaderAndHashMs = elapsedMs(captureEntriesStarted);
+                    }
+                };
+                const writeWorkspaceTree = store.writeWorkspaceTree.bind(store);
+                store.writeWorkspaceTree = async (...args: Parameters<typeof writeWorkspaceTree>) => {
+                    const treeStarted = performance.now();
+                    try {
+                        return await writeWorkspaceTree(...args);
+                    } finally {
+                        profile.authority.treeMaterializeMs = elapsedMs(treeStarted);
+                    }
+                };
+                return store;
+            },
+            makeFeed: () => feed,
+            makeCandidates: ({ store, userGit }) =>
+                new WorkspaceCandidates({
+                    workspaceRoot,
+                    feed,
+                    userGit,
+                    shadowGit: store.git,
+                }),
+            makeSnapshotSource: ({ store, candidates }) =>
+                initializeWorkspaceCheckpointSnapshotSource({
+                    store,
+                    candidates,
+                    fullReconcile: async (options) => {
+                        const captureStarted = performance.now();
+                        profile.captureStartedAt = captureStarted;
+                        try {
+                            return await store.captureFullReconcile({
+                                ...options,
+                                observer: {
+                                    scopeEnumerated: (count) => {
+                                        profile.scopeEntryCount = count;
+                                        profile.authority.scopeEnumeratedMs = elapsedMs(captureStarted);
+                                    },
+                                },
+                            });
+                        } finally {
+                            profile.captureFinishedAt = performance.now();
+                            profile.authority.captureTotalMs = roundMs(profile.captureFinishedAt - captureStarted);
+                        }
+                    },
+                }),
+        });
+        const registryStarted = performance.now();
+        try {
+            lease = await registry.acquire({
+                dataRoot: join(root, "data"),
+                identity,
+                git,
+                processOwner: {
+                    pid: process.pid,
+                    processStartToken: `profile-${shape}-${entryCount}`,
+                    nonce: "8".repeat(64),
+                },
+            });
+            profile.outcome = "pass";
+        } catch (error) {
+            profile.outcome =
+                error instanceof WorkspaceSnapshotStoreError && error.code === "capture_timeout" ? "timeout" : "failed";
+            profile.reason = failureMessage(error);
+        } finally {
+            const registryFinished = performance.now();
+            profile.authority.registryInitializeMs = roundMs(registryFinished - registryStarted);
+            if (profile.captureFinishedAt != null) {
+                profile.authority.postCaptureInitializeMs = roundMs(registryFinished - profile.captureFinishedAt);
+            }
+        }
+        delete profile.captureStartedAt;
+        delete profile.captureFinishedAt;
+        return profile;
+    } finally {
+        if (lease) await lease.release();
+        await rm(root, { recursive: true, force: true });
+    }
 }
 
 async function makeFixture(entryCount: number, shape: FixtureShape): Promise<BenchmarkFixture> {
@@ -709,14 +874,29 @@ function recordCoverage(
 }
 
 class ObservedWorkspaceGitRunner extends WorkspaceGitRunner {
-    constructor(readonly metrics: BenchmarkMetrics) {
+    constructor(
+        readonly metrics: BenchmarkMetrics,
+        readonly commandProfile?: Record<string, { calls: number; durationMs: number }>
+    ) {
         super();
     }
 
     override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
-        const result = await super.run(args, options);
-        if (args[0] === "cat-file" && args[1] === "commit") this.metrics.commitsTraversed++;
-        return result;
+        const started = performance.now();
+        try {
+            const result = await super.run(args, options);
+            if (args[0] === "cat-file" && args[1] === "commit") this.metrics.commitsTraversed++;
+            return result;
+        } finally {
+            if (this.commandProfile) {
+                const command = args[0] ?? "unknown";
+                const previous = this.commandProfile[command] ?? { calls: 0, durationMs: 0 };
+                this.commandProfile[command] = {
+                    calls: previous.calls + 1,
+                    durationMs: roundMs(previous.durationMs + performance.now() - started),
+                };
+            }
+        }
     }
 }
 
@@ -784,6 +964,14 @@ function percentile(values: readonly number[], quantile: number): number {
     const sorted = [...values].sort((left, right) => left - right);
     const index = Math.max(0, Math.ceil(sorted.length * quantile) - 1);
     return Number(sorted[index]!.toFixed(2));
+}
+
+function elapsedMs(started: number): number {
+    return roundMs(performance.now() - started);
+}
+
+function roundMs(value: number): number {
+    return Number(value.toFixed(2));
 }
 
 function failureMessage(error: unknown): string {

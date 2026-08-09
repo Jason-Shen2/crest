@@ -7,6 +7,7 @@ import {
     type BenchmarkRow,
     type BenchmarkScenario,
     cleanupBenchmarkFixture,
+    profileAgentRewindColdBaseline,
     runAgentRewindSnapshotBenchmark,
     runAgentRewindSnapshotFixture,
 } from "./benchmark-agent-rewind-snapshots";
@@ -123,6 +124,28 @@ describe("agent rewind V3 production benchmark contract", () => {
         expect(rows.filter((item) => item.scenario === "overlap").every((item) => item.commitsTraversed > 0)).toBe(
             true
         );
+    }, 60_000);
+
+    test("profiles cold fixture and authority stages without changing production limits", async () => {
+        const profile = await profileAgentRewindColdBaseline(12, "wide");
+
+        expect(profile).toMatchObject({
+            entryCount: 12,
+            shape: "wide",
+            outcome: "pass",
+            fixture: {
+                createEntriesMs: expect.any(Number),
+                initializeGitMs: expect.any(Number),
+            },
+            authority: {
+                registryInitializeMs: expect.any(Number),
+                captureTotalMs: expect.any(Number),
+                discoverScopeMs: expect.any(Number),
+                stableReaderAndHashMs: expect.any(Number),
+                treeMaterializeMs: expect.any(Number),
+            },
+        });
+        expect(profile.authority.captureTotalMs).toBeLessThanOrEqual(30_000 + 1_000);
     }, 30_000);
 
     test("reports observer failures only after fixture cleanup", async () => {
