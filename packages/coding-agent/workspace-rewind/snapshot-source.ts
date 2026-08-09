@@ -354,7 +354,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                 await index.load(base.tree);
                 await index.apply(staged.result.entries);
                 const tree = await index.writeTree();
-                const coverage = await this.store.computeCandidateSnapshotCoverage(base, staged.result.entries);
+                const coverage = await this.store.computeCandidateSnapshotCoverage(base, tree, staged.result.entries);
                 return {
                     tree,
                     scope,

@@ -47,7 +47,9 @@ test("executes a result-commit restore without any restore-time workspace captur
     const result = await execute(executor, fixture, fixture.plan);
 
     expect(capture).not.toHaveBeenCalled();
-    expect(coverage).toHaveBeenCalledWith(fixture.source, [{ path: "file.txt", state: fixture.target }]);
+    expect(coverage).toHaveBeenCalledWith(fixture.source, expect.stringMatching(/^[0-9a-f]{40}$/), [
+        { path: "file.txt", state: fixture.target },
+    ]);
     expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("planned\n");
     const head = await fixture.store.mutationLog.readHead();
     expect(head).toBeDefined();

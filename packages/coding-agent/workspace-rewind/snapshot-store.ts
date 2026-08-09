@@ -502,7 +502,7 @@ export class WorkspaceSnapshotStore {
         try {
             const beforeManifest = await this.#readStoredManifest(before);
             const afterManifest = await this.#readStoredManifest(after);
-            const paths = new Set(await this.#readTreeDeltaPaths(before.tree, after.tree));
+            const paths = new Set((await this.#readTreeDelta(before.tree, after.tree)).paths);
             await this.#collectManifestDiffPaths(beforeManifest, paths);
             await this.#collectManifestDiffPaths(afterManifest, paths);
             const changes: WorkspacePathChangeV1[] = [];
@@ -636,13 +636,25 @@ export class WorkspaceSnapshotStore {
         };
     }
 
-    async #readTreeDeltaPaths(beforeTree: string, afterTree: string): Promise<string[]> {
-        if (beforeTree === afterTree) return [];
+    async #readTreeDelta(
+        beforeTree: string,
+        afterTree: string
+    ): Promise<{ paths: string[]; eligibleEntryDelta: number }> {
+        if (beforeTree === afterTree) return { paths: [], eligibleEntryDelta: 0 };
         const result = await this.git.run(
-            ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", beforeTree, afterTree],
+            [
+                "diff-tree",
+                "--no-commit-id",
+                "--name-status",
+                "-r",
+                "-z",
+                "--no-renames",
+                beforeTree,
+                afterTree,
+            ],
             { gitDir: this.storeRoot, timeoutMs: StoreGitTimeoutMs }
         );
-        return parseNulWorkspacePaths(result.stdout);
+        return parseNulWorkspaceTreeDelta(result.stdout);
     }
 
     async #collectManifestDiffPaths(manifest: StoredManifestReader, paths: Set<string>): Promise<void> {
@@ -671,12 +683,14 @@ export class WorkspaceSnapshotStore {
 
     computeCandidateSnapshotCoverage(
         snapshot: WorkspaceSnapshotRefV1,
+        candidateTree: string,
         entries: WorkspaceCandidatePathEntry[]
     ): Promise<Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">> {
         const ownedEntries = normalizeWorkspaceCandidateEntries(entries);
         return this.withWorkspaceLock(async () => {
             const manifest = await this.#readStoredManifest(snapshot);
             const coverage = manifest.getCoverage();
+            const { eligibleEntryDelta } = await this.#readTreeDelta(snapshot.tree, candidateTree);
             const changes: WorkspacePathChangeV1[] = [];
             for (const entry of ownedEntries) {
                 changes.push({
@@ -685,7 +699,7 @@ export class WorkspaceSnapshotStore {
                     after: entry.state,
                 });
             }
-            return deriveCandidateCoverage(coverage, changes);
+            return deriveCandidateCoverage(coverage, changes, eligibleEntryDelta);
         });
     }
 
@@ -2301,9 +2315,12 @@ function cloneCommitSnapshotInput(input: {
 
 function deriveCandidateCoverage(
     base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
-    changes: readonly WorkspacePathChangeV1[]
+    changes: readonly WorkspacePathChangeV1[],
+    eligibleEntryDelta: number
 ): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
-    let eligibleEntryDelta = 0;
+    if (!Number.isSafeInteger(eligibleEntryDelta)) {
+        throw new Error("Candidate snapshot coverage is invalid");
+    }
     const pathExclusions = new Map<
         string,
         Extract<WorkspaceSnapshotCoverage["exclusions"][number], { path: string }>
@@ -2317,10 +2334,6 @@ function deriveCandidateCoverage(
         }
     }
     for (const change of changes) {
-        eligibleEntryDelta += Number(isEligiblePathState(change.after)) - Number(isEligiblePathState(change.before));
-        if (!Number.isSafeInteger(eligibleEntryDelta)) {
-            throw new Error("Candidate snapshot coverage is invalid");
-        }
         if (change.before.state === "excluded") pathExclusions.delete(change.path);
         if (change.after.state === "excluded") {
             pathExclusions.set(change.path, {
@@ -2365,10 +2378,6 @@ function withoutNewlyHashedBytes(
         eligibleEntryCount: coverage.eligibleEntryCount,
         exclusions: coverage.exclusions.map(cloneCoverageExclusion),
     };
-}
-
-function isEligiblePathState(state: CapturedPathStateV1): boolean {
-    return state.state === "file" || state.state === "symlink";
 }
 
 function toStoredCoverageExclusion(
@@ -2804,24 +2813,37 @@ function isGitDirectoryMode(mode: string): boolean {
     return (Number.parseInt(mode, 8) & 0o170000) === 0o040000;
 }
 
-function parseNulWorkspacePaths(value: Buffer): string[] {
-    if (value.length === 0) return [];
+function parseNulWorkspaceTreeDelta(value: Buffer): { paths: string[]; eligibleEntryDelta: number } {
+    if (value.length === 0) return { paths: [], eligibleEntryDelta: 0 };
     if (value.at(-1) !== 0) throw new Error("Invalid Git tree delta output");
     const paths: string[] = [];
     const seen = new Set<string>();
+    let eligibleEntryDelta = 0;
     let start = 0;
+    let status: string | undefined;
     for (let index = 0; index < value.length; index++) {
         if (value[index] !== 0) continue;
         const bytes = value.subarray(start, index);
+        if (status == null) {
+            status = bytes.toString("ascii");
+            if (!/^[ADMT]$/.test(status) || !Buffer.from(status, "ascii").equals(bytes)) {
+                throw new Error("Invalid Git tree delta status");
+            }
+            start = index + 1;
+            continue;
+        }
         const path = bytes.toString("utf8");
         if (!Buffer.from(path).equals(bytes)) throw new Error("Invalid UTF-8 Git tree delta path");
         validateRelativePath(path);
         if (seen.has(path)) throw new Error("Duplicate Git tree delta path");
         seen.add(path);
         paths.push(path);
+        eligibleEntryDelta += status === "A" ? 1 : status === "D" ? -1 : 0;
+        status = undefined;
         start = index + 1;
     }
-    return paths.sort(comparePathBytes);
+    if (status != null) throw new Error("Invalid Git tree delta output");
+    return { paths: paths.sort(comparePathBytes), eligibleEntryDelta };
 }
 
 function comparePathBytes(left: string, right: string): number {

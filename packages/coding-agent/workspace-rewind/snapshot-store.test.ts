@@ -93,6 +93,24 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         expect(await readFile(join(fixture.workspace, "plain.txt"))).toEqual(Buffer.from("after\r\n"));
     });
 
+    it("fails closed for malformed or unknown native tree-delta statuses", async () => {
+        const fixture = await makeFixture();
+        const before = await fixture.store.capture({ profile: "terminal" });
+        await writeFile(join(fixture.workspace, "plain.txt"), "after");
+        const after = await fixture.store.capture({ profile: "terminal" });
+        const originalRun = fixture.store.git.run.bind(fixture.store.git);
+        let injected = Buffer.alloc(0);
+        vi.spyOn(fixture.store.git, "run").mockImplementation(async (args, options) => {
+            if (args[0] === "diff-tree") return { stdout: injected, stderr: Buffer.alloc(0) };
+            return await originalRun(args, options);
+        });
+
+        for (const output of [Buffer.from("Q\0plain.txt\0"), Buffer.from("A\0plain.txt")]) {
+            injected = output;
+            await expect(fixture.store.diff(before.ref, after.ref)).rejects.toThrow(/tree delta|status/i);
+        }
+    });
+
     it("keeps trusted hot paths candidate-bound and recursively audits a cold V3 ref only once", async () => {
         const fixture = await makeFixture();
         for (let index = 0; index < 2; index++) {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { renameSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,8 +10,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceCheckpointLimits } from "./snapshot-store";
-import type { CapturedPathStateV1 } from "./types";
-import { normalizeWorkspaceCandidateEntries, type WorkspaceCandidatePathEntry } from "./workspace-candidate-capture";
 import { WorkspaceCandidates } from "./workspace-candidates";
 import {
     ParcelWorkspaceChangeFeed,
@@ -89,60 +87,125 @@ describe("V3 snapshot equivalence regressions", () => {
         }
     }, 30_000);
 
-    test("matches an independent full projection for 50 deterministic 100-operation models", () => {
-        for (let seed = 1; seed <= 50; seed++) {
-            const random = makeRandom(seed);
-            const candidateProjection = new Map<string, CapturedPathStateV1>();
-            const fullProjection = new Map<string, CapturedPathStateV1>();
-            for (let operation = 0; operation < 100; operation++) {
-                const path = `dir-${Math.floor(random() * 8)}/file-${Math.floor(random() * 16)}.bin`;
-                const state = makeState(seed, operation, random);
-                const duplicate = makeState(seed, operation + 10_000, random);
-                const entries = normalizeWorkspaceCandidateEntries([
-                    { path, state: duplicate },
-                    { path: `stable-${operation % 3}.txt`, state: { state: "absent" } },
-                    { path, state },
-                ]);
-                applyCandidateProjection(candidateProjection, entries);
-                applyFullProjection(fullProjection, path, state);
-                fullProjection.delete(`stable-${operation % 3}.txt`);
-
-                expect(sortedProjection(candidateProjection), `seed ${seed}, operation ${operation}`).toEqual(
-                    sortedProjection(fullProjection)
-                );
-            }
-        }
-    });
-
-    test("commits six model checkpoints through registry snapshotSource and native V3 full reconcile", async () => {
-        const fixture = await makeRegistryFixture("native-equivalence");
+    test("matches native full reconciliation after every non-Git filesystem operation", async () => {
+        const fixture = await makeRegistryFixture("native-non-git-equivalence", {
+            setup: async (workspace) => {
+                await writeFile(join(workspace, "file-to-directory"), "file");
+            },
+        });
         try {
-            await fixture.lease.snapshotSource.synchronizeExternal();
-            const expected = new Map<string, Buffer>();
-            for (let operation = 0; operation < 6; operation++) {
-                const path = `model/file-${operation % 3}.txt`;
-                const bytes = Buffer.from(`operation-${operation}\0${operation % 3}`);
-                await mkdir(join(fixture.workspace, "model"), { recursive: true });
-                await writeFile(join(fixture.workspace, path), bytes);
-                fixture.feed.record([path]);
-                expected.set(path, bytes);
-
-                const head = await fixture.lease.snapshotSource.synchronizeExternal();
-                for (const [expectedPath, expectedBytes] of expected) {
-                    const state = await fixture.lease.store.readPathState(head.ref, expectedPath);
-                    expect(state.state).toBe("file");
-                    if (state.state !== "file") throw new Error("expected V3 file state");
-                    expect(await fixture.lease.store.readBlob(state.oid)).toEqual(expectedBytes);
-                    expect(await readFile(join(fixture.workspace, expectedPath))).toEqual(expectedBytes);
-                }
+            const operations: readonly NativeOperation[] = [
+                {
+                    name: "create file",
+                    paths: ["alpha.txt"],
+                    expectedChanges: ["alpha.txt"],
+                    mutate: () => writeFile(join(fixture.workspace, "alpha.txt"), "alpha"),
+                },
+                {
+                    name: "same-size rewrite",
+                    paths: ["alpha.txt"],
+                    expectedChanges: ["alpha.txt"],
+                    mutate: () => writeFile(join(fixture.workspace, "alpha.txt"), "bravo"),
+                },
+                {
+                    name: "chmod executable",
+                    paths: ["alpha.txt"],
+                    expectedChanges: ["alpha.txt"],
+                    mutate: () => chmod(join(fixture.workspace, "alpha.txt"), 0o755),
+                },
+                {
+                    name: "create symlink",
+                    paths: ["alpha-link"],
+                    expectedChanges: ["alpha-link"],
+                    mutate: () => symlink("alpha.txt", join(fixture.workspace, "alpha-link")),
+                },
+                {
+                    name: "delete file",
+                    paths: ["alpha.txt"],
+                    expectedChanges: ["alpha.txt"],
+                    mutate: () => rm(join(fixture.workspace, "alpha.txt")),
+                },
+                {
+                    name: "replace file with directory",
+                    paths: ["file-to-directory"],
+                    expectedChanges: ["file-to-directory", "file-to-directory/child.txt"],
+                    mutate: async () => {
+                        await rm(join(fixture.workspace, "file-to-directory"));
+                        await mkdir(join(fixture.workspace, "file-to-directory"));
+                        await writeFile(join(fixture.workspace, "file-to-directory", "child.txt"), "child");
+                    },
+                },
+                {
+                    name: "rename directory",
+                    paths: ["file-to-directory", "renamed-directory"],
+                    expectedChanges: ["file-to-directory/child.txt", "renamed-directory/child.txt"],
+                    mutate: () =>
+                        rename(
+                            join(fixture.workspace, "file-to-directory"),
+                            join(fixture.workspace, "renamed-directory")
+                        ),
+                },
+                {
+                    name: "replace directory with file",
+                    paths: ["renamed-directory"],
+                    expectedChanges: ["renamed-directory", "renamed-directory/child.txt"],
+                    mutate: async () => {
+                        await rm(join(fixture.workspace, "renamed-directory"), { recursive: true });
+                        await writeFile(join(fixture.workspace, "renamed-directory"), "file again");
+                    },
+                },
+            ];
+            for (const operation of operations) {
+                await operation.mutate();
+                fixture.feed.record(operation.paths);
+                await expectCandidateMatchesFullReconcile(fixture, operation.name, operation.expectedChanges);
             }
-            const final = await fixture.lease.snapshotSource.readHead();
-            const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
-            expect(final.ref.tree).toBe(full.tree);
         } finally {
             await fixture.lease.release();
         }
-    }, 30_000);
+    }, 60_000);
+
+    test("matches native full reconciliation after every Git scope operation", async () => {
+        const fixture = await makeRegistryFixture("native-git-equivalence", { git: true });
+        try {
+            const operations: readonly NativeOperation[] = [
+                {
+                    name: "create untracked Git file",
+                    paths: ["git-file.txt"],
+                    expectedChanges: ["git-file.txt"],
+                    mutate: () => writeFile(join(fixture.workspace, "git-file.txt"), "git file"),
+                },
+                {
+                    name: "change gitignore scope",
+                    paths: [".gitignore", "ignored/new.txt"],
+                    expectedChanges: [".gitignore", "ignored"],
+                    mutate: async () => {
+                        await writeFile(join(fixture.workspace, ".gitignore"), "ignored/\n");
+                        await mkdir(join(fixture.workspace, "ignored"));
+                        await writeFile(join(fixture.workspace, "ignored", "new.txt"), "ignored");
+                    },
+                },
+                {
+                    name: "introduce nested repository boundary",
+                    paths: ["vendor/module/.git/HEAD", "vendor/module/child.txt"],
+                    expectedChanges: ["vendor/module"],
+                    mutate: async () => {
+                        const nested = join(fixture.workspace, "vendor", "module");
+                        await mkdir(nested, { recursive: true });
+                        await fixture.git.run(["init"], { cwd: nested, timeoutMs: 5_000 });
+                        await writeFile(join(nested, "child.txt"), "nested");
+                    },
+                },
+            ];
+            for (const operation of operations) {
+                await operation.mutate();
+                fixture.feed.record(operation.paths);
+                await expectCandidateMatchesFullReconcile(fixture, operation.name, operation.expectedChanges);
+            }
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 60_000);
 
     test("turns a real change-feed callback error into unavailable", async () => {
         let callback!: (error: Error | null, events: WorkspaceChangeEvent[]) => unknown;
@@ -300,62 +363,56 @@ async function makeFreshNonGitFixture(
     return { feed, lease, reconcileCalls: () => reconcileCalls, workspace };
 }
 
-async function makeRegistryFixture(label: string) {
+interface NativeOperation {
+    name: string;
+    paths: readonly string[];
+    expectedChanges: readonly string[];
+    mutate(): Promise<unknown>;
+}
+
+async function makeRegistryFixture(
+    label: string,
+    options: { git?: boolean; setup?: (workspace: string) => Promise<void> } = {}
+) {
     const root = await mkdtemp(join(tmpdir(), `crest-v3-equivalence-${label}-`));
     CleanupRoots.push(root);
     const workspace = join(root, "workspace");
     await mkdir(workspace);
     await writeFile(join(workspace, "baseline.txt"), "baseline");
+    const git = new WorkspaceGitRunner();
+    if (options.git) await git.run(["init"], { cwd: workspace, timeoutMs: 5_000 });
+    await options.setup?.(workspace);
     const identity = await resolveCanonicalWorkspaceIdentity(workspace);
     const feed = new DeterministicFeed();
     const registry = new WorkspaceTrackerRegistry({ makeFeed: () => feed });
     const lease = await registry.acquire({
         dataRoot: join(root, "data"),
         identity,
-        git: new WorkspaceGitRunner(),
+        git,
         processOwner: { pid: process.pid, processStartToken: label, nonce: "a".repeat(64) },
     });
-    return { feed, lease, workspace };
+    return { feed, git, lease, workspace };
 }
 
-function applyCandidateProjection(
-    projection: Map<string, CapturedPathStateV1>,
-    entries: readonly WorkspaceCandidatePathEntry[]
-): void {
-    for (const entry of entries) {
-        if (entry.state.state === "absent") projection.delete(entry.path);
-        else projection.set(entry.path, structuredClone(entry.state));
-    }
-}
+async function expectCandidateMatchesFullReconcile(
+    fixture: Awaited<ReturnType<typeof makeRegistryFixture>>,
+    operation: string,
+    expectedChanges: readonly string[]
+): Promise<void> {
+    const previous = await fixture.lease.snapshotSource.readHead();
+    const candidate = await fixture.lease.snapshotSource.synchronizeExternal();
+    const full = await fixture.lease.store.captureFullReconcile({ profile: "terminal" });
+    const metadata = await fixture.lease.store.readSnapshotMetadata(candidate.ref);
+    const changes = await fixture.lease.store.diff(previous.ref, candidate.ref);
+    const { newlyHashedBytes: _newlyHashedBytes, ...fullCoverage } = full.coverage;
 
-function applyFullProjection(
-    projection: Map<string, CapturedPathStateV1>,
-    path: string,
-    state: CapturedPathStateV1
-): void {
-    if (state.state === "absent") projection.delete(path);
-    else projection.set(path, structuredClone(state));
-}
-
-function sortedProjection(projection: Map<string, CapturedPathStateV1>) {
-    return [...projection.entries()].sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
-}
-
-function makeState(seed: number, operation: number, random: () => number): CapturedPathStateV1 {
-    const kind = Math.floor(random() * 4);
-    const oid = ((seed * 10_000 + operation) >>> 0).toString(16).padStart(40, "0");
-    if (kind === 0) return { state: "absent" };
-    if (kind === 1) return { state: "excluded", reason: "ignored" };
-    if (kind === 2) return { state: "symlink", oid };
-    return { state: "file", oid, executable: random() > 0.5 };
-}
-
-function makeRandom(seed: number): () => number {
-    let state = seed >>> 0;
-    return () => {
-        state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
-        return state / 0x1_0000_0000;
-    };
+    expect(candidate.ref.tree, `${operation}: tree`).toBe(full.tree);
+    expect(metadata.scope, `${operation}: scope`).toEqual(full.scope);
+    expect(metadata.coverage, `${operation}: coverage`).toEqual(fullCoverage);
+    expect(
+        changes.map((change) => change.path),
+        `${operation}: diff paths`
+    ).toEqual(expectedChanges);
 }
 
 async function waitForPath(path: string): Promise<void> {

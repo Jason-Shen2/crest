@@ -237,6 +237,7 @@ export class WorkspaceRestoreExecutor {
                 this.store.readSnapshotMetadata(input.source),
                 this.store.computeCandidateSnapshotCoverage(
                     input.source,
+                    tree,
                     paths.map((path) => ({ path: path.path, state: path.target }))
                 ),
             ]);
