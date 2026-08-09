@@ -313,6 +313,27 @@ export async function classifyIncrementalWorkspacePaths(input: {
     }
 }
 
+export async function refreshWorkspaceScopeGitIndexEvidence(input: {
+    identity: CanonicalWorkspaceIdentity;
+    git: WorkspaceGitRunner;
+    scope: WorkspaceScopeManifest;
+    signal?: AbortSignal;
+}): Promise<WorkspaceScopeManifest> {
+    if (!input.scope.gitIndex) return input.scope;
+    const indexPath = await resolveGitPath(
+        input.git,
+        input.identity.canonicalRoot,
+        ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        input.signal
+    );
+    return {
+        ...input.scope,
+        ignoreInputs: input.scope.ignoreInputs.map((item) => ({ ...item })),
+        nestedRepositoryBoundaries: input.scope.nestedRepositoryBoundaries.map((item) => ({ ...item })),
+        gitIndex: await captureGitIndexEvidence(indexPath, input.signal),
+    };
+}
+
 function normalizeIncrementalPaths(paths: readonly string[]): string[] {
     const values = [...new Set(paths)];
     for (const path of values) {

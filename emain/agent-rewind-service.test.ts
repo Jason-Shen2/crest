@@ -310,6 +310,19 @@ describe("AgentRewindService", () => {
         expect(release).toHaveBeenCalledOnce();
     });
 
+    it("releases the shared Workspace resource after immutable reads", async () => {
+        const release = vi.fn(async () => {});
+        const value = harness({ release });
+
+        await value.service.getTurnChangeSummary({
+            sessionMetadata: Metadata,
+            expectedSemanticLeafId: "checkpoint-1",
+            turnId: "turn-1",
+        });
+
+        expect(release).toHaveBeenCalledOnce();
+    });
+
     it("lists transaction-safe points from the authoritative raw leaf under the short lock order", async () => {
         const value = harness();
 

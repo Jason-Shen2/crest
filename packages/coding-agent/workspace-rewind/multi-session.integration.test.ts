@@ -214,10 +214,12 @@ describe("workspace rewind across sessions", () => {
 
         try {
             expect(leaseB.tracker).toBe(leaseA.tracker);
-            const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
-                store: leaseA.store,
-                legacyCapture: leaseA.tracker,
-            });
+            expect(leaseB.store).toBe(leaseA.store);
+            expect(leaseB.mutationLog).toBe(leaseA.mutationLog);
+            expect(leaseB.candidates).toBe(leaseA.candidates);
+            expect(leaseB.writerLeases).toBe(leaseA.writerLeases);
+            expect(leaseB.snapshotSource).toBe(leaseA.snapshotSource);
+            const snapshotSource = leaseA.snapshotSource;
             managerA = registerWorkspaceCheckpointManager({
                 harness: harnessA.harness,
                 session: value.sessions.a,
@@ -229,6 +231,7 @@ describe("workspace rewind across sessions", () => {
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
                 onCheckpointCommitted: async () => undefined,
+                dependencies: { writerLeases: leaseA.writerLeases },
             });
             managerB = registerWorkspaceCheckpointManager({
                 harness: harnessB.harness,
@@ -241,6 +244,7 @@ describe("workspace rewind across sessions", () => {
                 hasRunningHostedCommands: () => false,
                 processOwner: value.store.processOwner,
                 onCheckpointCommitted: async () => undefined,
+                dependencies: { writerLeases: leaseB.writerLeases },
             });
 
             await harnessA.emit({
@@ -291,7 +295,7 @@ describe("workspace rewind across sessions", () => {
             const checkpointBItem = findAvailableCheckpoint(await value.sessions.b.getEntries(), "session-b");
 
             expect(openStore).toHaveBeenCalledTimes(1);
-            expect(fullReconcile).toHaveBeenCalledTimes(1);
+            expect(fullReconcile).not.toHaveBeenCalled();
             expect(checkpointAItem.checkpoint.originSessionId).toBe("session-a");
             expect(checkpointBItem.checkpoint.originSessionId).toBe("session-b");
             expect(checkpointAItem.checkpoint.after).toEqual(checkpointBItem.checkpoint.after);

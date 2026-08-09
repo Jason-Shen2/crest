@@ -397,15 +397,19 @@ export class AgentRewindService {
     ): Promise<T> {
         return this.registry.withSessionAccess(sessionMetadata.path, async () => {
             const resolved = await this.resolveWorkspace({ mode: "read", sessionMetadata });
-            const session = await this.openSession(sessionMetadata);
             try {
-                return await operation({
-                    session,
-                    workspace: resolved.workspace,
-                    engine: resolved.engine,
-                });
+                const session = await this.openSession(sessionMetadata);
+                try {
+                    return await operation({
+                        session,
+                        workspace: resolved.workspace,
+                        engine: resolved.engine,
+                    });
+                } finally {
+                    session.close();
+                }
             } finally {
-                session.close();
+                await resolved.release?.();
             }
         });
     }

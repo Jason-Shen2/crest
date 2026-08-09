@@ -3,13 +3,21 @@
 
 import { resolve } from "node:path";
 
-import { WorkspaceSnapshotStore } from "./snapshot-store";
+import { initializeWorkspaceCheckpointSnapshotSource, type WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
+import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-store";
+import { WorkspaceCandidates } from "./workspace-candidates";
 import { ParcelWorkspaceChangeFeed, type WorkspaceChangeFeed } from "./workspace-change-feed";
+import { discoverWorkspaceScope } from "./workspace-scope";
 import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
+import { WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
 export interface WorkspaceTrackerLease {
     store: WorkspaceSnapshotStore;
+    mutationLog: WorkspaceSnapshotStore["mutationLog"];
     tracker: WorkspaceSnapshotTracker;
+    candidates: WorkspaceCandidates;
+    writerLeases: WorkspaceWriterLeaseRegistry;
+    snapshotSource: WorkspaceCheckpointSnapshotSource;
     release(): Promise<void>;
 }
 
@@ -19,11 +27,26 @@ export interface WorkspaceTrackerRegistryDependencies {
     openStore: typeof WorkspaceSnapshotStore.open;
     makeFeed(input: { workspaceRoot: string; storeRoot: string }): WorkspaceChangeFeed;
     makeTracker(input: { store: WorkspaceSnapshotStore; feed: WorkspaceChangeFeed }): WorkspaceSnapshotTracker;
+    makeCandidates(input: {
+        store: WorkspaceSnapshotStore;
+        feed: WorkspaceChangeFeed;
+        userGit: WorkspaceTrackerAcquireInput["git"];
+    }): WorkspaceCandidates;
+    makeWriterLeases(): WorkspaceWriterLeaseRegistry;
+    makeSnapshotSource(input: {
+        store: WorkspaceSnapshotStore;
+        tracker: WorkspaceSnapshotTracker;
+        candidates: WorkspaceCandidates;
+    }): Promise<WorkspaceCheckpointSnapshotSource>;
 }
 
 interface WorkspaceTrackerRegistryResource {
     store: WorkspaceSnapshotStore;
+    mutationLog: WorkspaceSnapshotStore["mutationLog"];
     tracker: WorkspaceSnapshotTracker;
+    candidates: WorkspaceCandidates;
+    writerLeases: WorkspaceWriterLeaseRegistry;
+    snapshotSource: WorkspaceCheckpointSnapshotSource;
 }
 
 interface WorkspaceTrackerRegistryEntry {
@@ -43,6 +66,26 @@ const DefaultDependencies: WorkspaceTrackerRegistryDependencies = {
     openStore: WorkspaceSnapshotStore.open,
     makeFeed: (input) => new ParcelWorkspaceChangeFeed(input),
     makeTracker: (input) => new WorkspaceSnapshotTracker(input),
+    makeCandidates: ({ store, feed, userGit }) =>
+        new WorkspaceCandidates({
+            workspaceRoot: store.identity.canonicalRoot,
+            feed,
+            userGit,
+            shadowGit: store.git,
+            reconcile: async (signal) => {
+                const scope = await discoverWorkspaceScope({
+                    identity: store.identity,
+                    git: userGit,
+                    maxEntries: WorkspaceCheckpointLimits.maxEntries,
+                    maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+                    signal,
+                });
+                return scope.entries.flatMap((entry) => (entry.path ? [entry.path] : []));
+            },
+        }),
+    makeWriterLeases: () => new WorkspaceWriterLeaseRegistry(),
+    makeSnapshotSource: ({ store, tracker, candidates }) =>
+        initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture: tracker, candidates }),
 };
 
 export class WorkspaceTrackerRegistry {
@@ -112,16 +155,27 @@ export class WorkspaceTrackerRegistry {
                 workspaceRoot: store.identity.canonicalRoot,
                 storeRoot: store.storeRoot,
             });
+            let tracker: WorkspaceSnapshotTracker | undefined;
             try {
-                const tracker = this.dependencies.makeTracker({ store, feed });
-                return { store, tracker };
+                tracker = this.dependencies.makeTracker({ store, feed });
+                const candidates = this.dependencies.makeCandidates({ store, feed, userGit: input.git });
+                const writerLeases = this.dependencies.makeWriterLeases();
+                const snapshotSource = await this.dependencies.makeSnapshotSource({ store, tracker, candidates });
+                return {
+                    store,
+                    mutationLog: store.mutationLog,
+                    tracker,
+                    candidates,
+                    writerLeases,
+                    snapshotSource,
+                };
             } catch (error) {
                 try {
-                    await feed.dispose();
+                    await (tracker ? tracker.dispose() : feed.dispose());
                 } catch (cleanupError) {
                     throw new AggregateError(
                         [error, cleanupError],
-                        "Workspace tracker initialization and feed cleanup failed"
+                        "Workspace resource initialization and hint cleanup failed"
                     );
                 }
                 throw error;
@@ -133,7 +187,25 @@ export class WorkspaceTrackerRegistry {
     disposeEntry(key: string, entry: WorkspaceTrackerRegistryEntry): Promise<void> {
         if (entry.disposal) return entry.disposal;
         const disposal = entry.initialization
-            .then((resource) => resource.tracker.dispose())
+            .then(async (resource) => {
+                const failures: unknown[] = [];
+                if (resource.snapshotSource.dispose) {
+                    try {
+                        await resource.snapshotSource.dispose();
+                    } catch (error) {
+                        failures.push(error);
+                    }
+                }
+                try {
+                    await resource.tracker.dispose();
+                } catch (error) {
+                    failures.push(error);
+                }
+                if (failures.length === 1) throw failures[0];
+                if (failures.length > 1) {
+                    throw new AggregateError(failures, "Workspace in-memory resource disposal failed");
+                }
+            })
             .then(() => {
                 if (this.entries.get(key) === entry) this.entries.delete(key);
             });

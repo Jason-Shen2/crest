@@ -1237,7 +1237,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 const second = checkpoints.find((checkpoint) => checkpoint.turnId === secondTurnId)!;
                 const third = checkpoints.find((checkpoint) => checkpoint.turnId === thirdTurnId)!;
 
-                expect(fullReconcile).toHaveBeenCalledTimes(1);
+                expect(fullReconcile).not.toHaveBeenCalled();
                 expect(first.before).toEqual(first.after);
                 expect(second).toMatchObject({ before: first.after, after: first.after, changes: [] });
                 expect(third.before).toEqual(first.after);

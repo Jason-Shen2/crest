@@ -55,7 +55,7 @@ describe("agent rewind feature", () => {
         expect(acquireTracker).not.toHaveBeenCalled();
     });
 
-    it("acquires a tracker lease only for a live Agent runtime", async () => {
+    it("acquires the exact shared Workspace resource only for a live Agent runtime", async () => {
         const owner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
         await getAgentRewindProcessOwner(async () => owner);
         const identity = {
@@ -67,10 +67,25 @@ describe("agent rewind feature", () => {
         };
         const store = { identity };
         const tracker = {};
+        const mutationLog = {};
+        const candidates = {};
+        const writerLeases = {};
+        const snapshotSource = {};
         const release = vi.fn(async () => undefined);
         const resolveIdentity = vi.fn(async () => identity);
         const openStore = vi.fn();
-        const acquireTracker = vi.fn(async () => ({ store, tracker, release }) as never);
+        const acquireTracker = vi.fn(
+            async () =>
+                ({
+                    store,
+                    tracker,
+                    mutationLog,
+                    candidates,
+                    writerLeases,
+                    snapshotSource,
+                    release,
+                }) as never
+        );
 
         const result = await acquireAgentRewindFeature({
             workspaceRoot: "/workspace",
@@ -78,7 +93,17 @@ describe("agent rewind feature", () => {
             dependencies: { resolveIdentity, openStore, acquireTracker },
         });
 
-        expect(result).toEqual({ state: "enabled", processOwner: owner, store, tracker, release });
+        expect(result).toEqual({
+            state: "enabled",
+            processOwner: owner,
+            store,
+            tracker,
+            mutationLog,
+            candidates,
+            writerLeases,
+            snapshotSource,
+            release,
+        });
         expect(openStore).not.toHaveBeenCalled();
         expect(acquireTracker).toHaveBeenCalledWith(
             expect.objectContaining({ dataRoot: "/data", identity, processOwner: owner })

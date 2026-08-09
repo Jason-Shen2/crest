@@ -1,16 +1,31 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { WorkspaceGitRunner } from "./git-runner";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { initializeWorkspaceCheckpointSnapshotSource, type WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
+import { WorkspaceSnapshotStore } from "./snapshot-store";
 import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
+import { WorkspaceCandidates } from "./workspace-candidates";
+import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
+import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 
 const WorkspaceIdentity = "a".repeat(64);
 const WorkspaceIncarnation = "b".repeat(64);
 const BaseCommit = "1".repeat(40);
 const ExternalCommit = "2".repeat(40);
 const TurnCommit = "3".repeat(40);
+const TemporaryRoots: string[] = [];
+
+afterEach(async () => {
+    await Promise.all(TemporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 function snapshot(id: string, tree = "4".repeat(40)): WorkspaceSnapshotRefV1 {
     return {
@@ -133,7 +148,162 @@ function makeStore() {
     };
 }
 
+class TestCandidateFeed implements WorkspaceChangeFeed {
+    trusted = false;
+
+    async start(): Promise<void> {
+        this.trusted = true;
+    }
+
+    async drain(): Promise<WorkspaceChangeDrain> {
+        return { status: "complete", changedPaths: [] };
+    }
+
+    isTrusted(): boolean {
+        return this.trusted;
+    }
+
+    async dispose(): Promise<void> {
+        this.trusted = false;
+    }
+}
+
+async function testIdentity(root: string): Promise<CanonicalWorkspaceIdentity> {
+    const canonicalRoot = await realpath(root);
+    const paths: string[] = [];
+    for (let current = canonicalRoot; ; current = dirname(current)) {
+        paths.push(current);
+        if (dirname(current) === current) break;
+    }
+    const ancestorIdentityChain = await Promise.all(
+        paths.reverse().map(async (absolutePath) => {
+            const state = await lstat(absolutePath, { bigint: true });
+            return {
+                absolutePath,
+                dev: state.dev.toString(),
+                ino: state.ino.toString(),
+                birthtimeNs: state.birthtimeNs.toString(),
+            };
+        })
+    );
+    return {
+        canonicalRoot,
+        workspaceIdentity: "d".repeat(64),
+        workspaceIncarnation: "e".repeat(64),
+        storeKey: "candidate-source",
+        ancestorIdentityChain,
+    };
+}
+
+async function publishUserCommit(
+    git: WorkspaceGitRunner,
+    workspaceRoot: string,
+    bytes: Buffer,
+    parent?: string
+): Promise<string> {
+    const gitDir = join(workspaceRoot, ".git");
+    const blob = parseTestOid(
+        (
+            await git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+                gitDir,
+                stdin: bytes,
+                timeoutMs: 5_000,
+            })
+        ).stdout
+    );
+    const index = new ShadowWorkspaceIndex({ git, gitDir, indexFile: join(gitDir, "index") });
+    await index.load();
+    await index.apply([{ path: "file.txt", state: { state: "file", oid: blob, executable: false } }]);
+    const tree = await index.writeTree();
+    const commit = parseTestOid(
+        (
+            await git.run(["commit-tree", tree, ...(parent ? ["-p", parent] : [])], {
+                gitDir,
+                stdin: Buffer.from("test\n"),
+                timeoutMs: 5_000,
+            })
+        ).stdout
+    );
+    await git.run(["update-ref", "HEAD", commit, parent ?? "0".repeat(40)], { gitDir, timeoutMs: 5_000 });
+    return commit;
+}
+
+function parseTestOid(output: Buffer): string {
+    const oid = output.toString("ascii").trim();
+    if (!/^[0-9a-f]{40}$/.test(oid)) throw new Error("invalid test oid");
+    return oid;
+}
+
 describe("Workspace checkpoint snapshot source", () => {
+    it("uses candidate-only capture after the one-time non-Git baseline", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-source-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "file.txt"), "before");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-source", nonce: "f".repeat(64) },
+        });
+        const legacyCapture = {
+            capture: vi.fn((options) => store.capture(options)),
+        };
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot,
+            feed,
+            reconcile: async () => ["file.txt"],
+        });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture,
+            candidates,
+        } as never);
+        const before = await source.readHead();
+
+        await writeFile(join(workspaceRoot, "file.txt"), "after");
+        const after = await source.synchronizeExternal();
+
+        expect(after.ref.tree).not.toBe(before.ref.tree);
+        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        await source.dispose?.();
+    });
+
+    it("discovers a clean Git HEAD switch from the imported source tree", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-candidate-source-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, "file.txt"), "before");
+        const firstCommit = await publishUserCommit(git, workspaceRoot, Buffer.from("before"));
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-candidate-source", nonce: "a".repeat(64) },
+        });
+        const legacyCapture = { capture: vi.fn((options) => store.capture(options)) };
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, userGit: git, shadowGit: git });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture, candidates });
+        const before = await source.readHead();
+
+        await publishUserCommit(git, workspaceRoot, Buffer.from("after"), firstCommit);
+        await writeFile(join(workspaceRoot, "file.txt"), "after");
+        const after = await source.synchronizeExternal();
+
+        expect(after.ref.tree).not.toBe(before.ref.tree);
+        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        await source.dispose?.();
+    });
+
     it("bootstraps a fresh authority as an external mutation before serving no-tool turns", async () => {
         const fixture = makeStore();
         const captured = snapshot("6".repeat(40), "7".repeat(40));

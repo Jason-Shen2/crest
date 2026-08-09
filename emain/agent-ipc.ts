@@ -47,7 +47,6 @@ import * as path from "node:path";
 
 import { convertToLlm } from "@crest/agent/harness/messages";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
-import { withSessionIdMutationFence } from "@crest/agent/harness/session/session-id-mutation-fence";
 import type {
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
@@ -166,17 +165,18 @@ import {
     reconcileSnapshotRefsLocked,
 } from "@crest/coding-agent/workspace-rewind/snapshot-retention";
 import {
-    initializeWorkspaceCheckpointSnapshotSource,
-    type WorkspaceCheckpointSnapshotSource,
-} from "@crest/coding-agent/workspace-rewind/snapshot-source";
-import {
     resolveCanonicalWorkspaceIdentity,
     type CanonicalWorkspaceIdentity,
 } from "@crest/coding-agent/workspace-rewind/workspace-identity";
 import { WorkspaceRecovery } from "@crest/coding-agent/workspace-rewind/workspace-recovery";
 import { makeAgentEventPayload, makeAgentSubscriptionKey } from "./agent-event-routing";
 import { _resetAgentObservabilityForTests, attachAgentObservability } from "./agent-observability-ipc";
-import { acquireAgentRewindFeature, openAgentRewindFeature, type AgentRewindFeature } from "./agent-rewind-feature";
+import {
+    acquireAgentRewindFeature,
+    openAgentRewindFeature,
+    type AgentRewindFeature,
+    type LiveAgentRewindFeature,
+} from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
 import { AgentSessionStateBroadcaster } from "./agent-session-state-broadcaster";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
@@ -1097,13 +1097,7 @@ async function createAgentRuntimeFromSession(
     let checkpointManager: WorkspaceCheckpointManager | undefined;
     let runtime: AgentSessionRuntime | undefined;
     try {
-        const checkpointSnapshotSource =
-            rewindFeature.state === "enabled"
-                ? await initializeWorkspaceCheckpointSnapshotSource({
-                      store: rewindFeature.store,
-                      legacyCapture: rewindFeature.tracker,
-                  })
-                : undefined;
+        const checkpointSnapshotSource = rewindFeature.state === "enabled" ? rewindFeature.snapshotSource : undefined;
         const registeredCheckpointManager =
             rewindFeature.state === "enabled"
                 ? registerWorkspaceCheckpointManager({
@@ -1119,6 +1113,7 @@ async function createAgentRuntimeFromSession(
                       onCheckpointCommitted: async () => {
                           await owner?.refreshFromPersistedBranch();
                       },
+                      dependencies: { writerLeases: rewindFeature.writerLeases },
                   })
                 : makeDisabledWorkspaceCheckpointManager();
         const ownedCheckpointManager =
@@ -3352,36 +3347,17 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         resolveWorkspace: async (input) => {
             const { sessionMetadata } = input;
             const { getWaveDataDir } = await import("./emain-platform");
-            let feature: Extract<AgentRewindFeature, { state: "enabled" }>;
-            let snapshotSource: WorkspaceCheckpointSnapshotSource | undefined;
-            let release: (() => Promise<void>) | undefined;
-            if (input.mode === "mutation") {
-                const liveFeature = await acquireAgentRewindFeature({
-                    workspaceRoot: sessionMetadata.cwd,
-                    dataRoot: getWaveDataDir(),
-                });
-                if (liveFeature.state !== "enabled") {
-                    throw new Error(liveFeature.message);
-                }
-                feature = liveFeature;
-                snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
-                    store: liveFeature.store,
-                    legacyCapture: liveFeature.tracker,
-                });
-                release = liveFeature.release;
-            } else {
-                const readFeature = await openAgentRewindFeature({
-                    workspaceRoot: sessionMetadata.cwd,
-                    dataRoot: getWaveDataDir(),
-                });
-                if (readFeature.state !== "enabled") {
-                    throw new Error(readFeature.message);
-                }
-                feature = readFeature;
+            const feature: LiveAgentRewindFeature = await acquireAgentRewindFeature({
+                workspaceRoot: sessionMetadata.cwd,
+                dataRoot: getWaveDataDir(),
+            });
+            if (feature.state !== "enabled") {
+                throw new Error(feature.message);
             }
             const engine = new WorkspaceRewindEngine({
                 store: feature.store,
-                ...(snapshotSource ? { snapshotSource } : {}),
+                snapshotSource: feature.snapshotSource,
+                writerLeases: feature.writerLeases,
                 locateSession: async (sessionId, sessionPath) => {
                     if (sessionId !== sessionMetadata.id || sessionPath !== sessionMetadata.path) return undefined;
                     return {
@@ -3422,7 +3398,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 workspace: feature.store.identity,
                 store: feature.store,
                 engine,
-                ...(release ? { release } : {}),
+                release: feature.release,
             };
         },
         broadcaster: sessionStateBroadcaster,

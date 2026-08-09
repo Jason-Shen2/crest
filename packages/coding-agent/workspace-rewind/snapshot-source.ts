@@ -1,9 +1,15 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { CaptureWorkspaceOptions, WorkspaceSnapshotStore } from "./snapshot-store";
+import { join } from "node:path";
+
+import { IncrementalPathCapture, materializeIncrementalCapturedBatch } from "./incremental-path-capture";
+import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
+import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
 import { encodeCanonicalStoredJson } from "./stored-manifest";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
+import { type WorkspaceCandidateBoundary, type WorkspaceCandidates } from "./workspace-candidates";
+import { refreshWorkspaceScopeGitIndexEvidence, type WorkspaceScopeManifest } from "./workspace-scope";
 
 export interface WorkspaceCheckpointHead {
     ref: WorkspaceSnapshotRefV1;
@@ -25,6 +31,7 @@ export interface WorkspaceCheckpointSnapshotSource {
         turnId: string;
         signal?: AbortSignal;
     }): Promise<WorkspaceOwnedTurnCapture>;
+    dispose?(): Promise<void>;
 }
 
 export interface LegacyWorkspaceSnapshotCapture {
@@ -36,8 +43,13 @@ const WorkspaceSourceInitializations = new Map<string, Promise<void>>();
 export async function initializeWorkspaceCheckpointSnapshotSource(input: {
     store: WorkspaceSnapshotStore;
     legacyCapture: LegacyWorkspaceSnapshotCapture;
+    candidates?: WorkspaceCandidates;
 }): Promise<WorkspaceCheckpointSnapshotSource> {
-    const source = new CommitBackedWorkspaceCheckpointSnapshotSource(input.store, input.legacyCapture);
+    const source = new CommitBackedWorkspaceCheckpointSnapshotSource(
+        input.store,
+        input.legacyCapture,
+        input.candidates
+    );
     const key = `${input.store.storeRoot}:${input.store.identity.workspaceIdentity}:${input.store.identity.workspaceIncarnation}`;
     let initialization = WorkspaceSourceInitializations.get(key);
     if (!initialization) {
@@ -63,10 +75,19 @@ export async function initializeWorkspaceCheckpointSnapshotSource(input: {
 class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpointSnapshotSource {
     readonly store: WorkspaceSnapshotStore;
     readonly legacyCapture: LegacyWorkspaceSnapshotCapture;
+    readonly candidates?: WorkspaceCandidates;
+    captureQueue: Promise<void> = Promise.resolve();
+    importedSourceHeadTree?: string;
+    disposed = false;
 
-    constructor(store: WorkspaceSnapshotStore, legacyCapture: LegacyWorkspaceSnapshotCapture) {
+    constructor(
+        store: WorkspaceSnapshotStore,
+        legacyCapture: LegacyWorkspaceSnapshotCapture,
+        candidates?: WorkspaceCandidates
+    ) {
         this.store = store;
         this.legacyCapture = legacyCapture;
+        this.candidates = candidates;
     }
 
     async initialize(): Promise<void> {
@@ -95,12 +116,12 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
 
     async synchronizeExternal(signal?: AbortSignal): Promise<WorkspaceCheckpointHead> {
         const base = await this.readHead(signal);
-        const captured = await this.legacyCapture.capture({ profile: "terminal", ...(signal ? { signal } : {}) });
+        const captured = await this.captureWorkspace(base.ref, signal);
         signal?.throwIfAborted();
-        if (captured.ref.tree === base.ref.tree && (await this.hasEquivalentSemantics(base.ref, captured.ref))) {
+        if (captured.tree === base.ref.tree && (await this.hasEquivalentSemantics(base.ref, captured))) {
             return { ref: base.ref, coverage: cloneCoverage(captured.coverage) };
         }
-        return await this.appendCapturedMutation({
+        return await this.appendWorkspaceMutation({
             expectedHead: base.ref.id,
             captured,
             kind: "external",
@@ -119,15 +140,12 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         if (current.ref.id !== input.base.id) {
             throw new Error("Workspace mutation head moved outside the active writer lease");
         }
-        const captured = await this.legacyCapture.capture({
-            profile: "terminal",
-            ...(input.signal ? { signal: input.signal } : {}),
-        });
+        const captured = await this.captureWorkspace(input.base, input.signal);
         input.signal?.throwIfAborted();
-        if (captured.ref.tree === input.base.tree && (await this.hasEquivalentSemantics(input.base, captured.ref))) {
+        if (captured.tree === input.base.tree && (await this.hasEquivalentSemantics(input.base, captured))) {
             return { after: input.base, coverage: cloneCoverage(captured.coverage), changes: [] };
         }
-        const after = await this.appendCapturedMutation({
+        const after = await this.appendWorkspaceMutation({
             expectedHead: input.base.id,
             captured,
             kind: "agent-turn",
@@ -147,12 +165,11 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         };
     }
 
-    async hasEquivalentSemantics(left: WorkspaceSnapshotRefV1, right: WorkspaceSnapshotRefV1): Promise<boolean> {
-        const [leftMetadata, rightMetadata] = await Promise.all([
-            this.store.readSnapshotMetadata(left),
-            this.store.readSnapshotMetadata(right),
-        ]);
-        return encodeCanonicalStoredJson(leftMetadata).equals(encodeCanonicalStoredJson(rightMetadata));
+    async hasEquivalentSemantics(left: WorkspaceSnapshotRefV1, right: CapturedWorkspaceState): Promise<boolean> {
+        const leftMetadata = await this.store.readSnapshotMetadata(left);
+        return encodeCanonicalStoredJson(leftMetadata).equals(
+            encodeCanonicalStoredJson({ scope: right.scope, coverage: withoutNewlyHashedBytes(right.coverage) })
+        );
     }
 
     async appendCapturedMutation(input: {
@@ -163,9 +180,26 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         turnId?: string;
     }): Promise<WorkspaceCheckpointHead> {
         const metadata = await this.store.readSnapshotMetadata(input.captured.ref);
+        return await this.appendWorkspaceMutation({
+            ...input,
+            captured: {
+                tree: input.captured.ref.tree,
+                scope: metadata.scope,
+                coverage: cloneCoverage(input.captured.coverage),
+            },
+        });
+    }
+
+    async appendWorkspaceMutation(input: {
+        expectedHead?: string;
+        captured: CapturedWorkspaceState;
+        kind: "external" | "agent-turn";
+        sessionId?: string;
+        turnId?: string;
+    }): Promise<WorkspaceCheckpointHead> {
         const prepared = await this.store.mutationLog.prepare({
             ...(input.expectedHead ? { expectedHead: input.expectedHead } : {}),
-            tree: input.captured.ref.tree,
+            tree: input.captured.tree,
             metadata: {
                 schemaversion: 1,
                 workspaceidentity: this.store.identity.workspaceIdentity,
@@ -177,12 +211,188 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         });
         const ref = await this.store.publishCommitSnapshot({
             commit: prepared.commit,
-            scope: metadata.scope,
-            coverage: metadata.coverage,
+            scope: input.captured.scope,
+            coverage: withoutNewlyHashedBytes(input.captured.coverage),
         });
         await this.store.mutationLog.publishPrepared(prepared);
         return { ref, coverage: cloneCoverage(input.captured.coverage) };
     }
+
+    captureWorkspace(base: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<CapturedWorkspaceState> {
+        if (this.disposed) return Promise.reject(new Error("Workspace checkpoint snapshot source is disposed"));
+        const operation = this.captureQueue.then(() => this.captureWorkspaceActive(base, signal));
+        this.captureQueue = operation.then(
+            () => undefined,
+            () => undefined
+        );
+        return operation;
+    }
+
+    async captureWorkspaceActive(base: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<CapturedWorkspaceState> {
+        if (!this.candidates) return await this.captureLegacy(signal);
+        const metadata = await this.store.readSnapshotMetadata(base);
+        const boundary = await this.readCandidateBoundary(base.tree, signal);
+        const discovered = await this.candidates.collect(boundary, signal);
+        if (discovered.status !== "complete") {
+            throw new Error(`Workspace candidate discovery unavailable: ${discovered.reason}`);
+        }
+        const captured = await this.captureCandidatePaths(base, metadata.scope, discovered.paths, signal);
+        if (captured) return captured;
+        if (boundary.kind === "git") {
+            const refreshedScope = await refreshWorkspaceScopeGitIndexEvidence({
+                identity: this.store.identity,
+                git: this.store.git,
+                scope: metadata.scope,
+                signal,
+            });
+            const retried = await this.captureCandidatePaths(base, refreshedScope, discovered.paths, signal);
+            if (retried) return retried;
+        }
+        return await this.captureLegacy(signal);
+    }
+
+    async captureCandidatePaths(
+        base: WorkspaceSnapshotRefV1,
+        scope: WorkspaceScopeManifest,
+        paths: readonly string[],
+        signal?: AbortSignal
+    ): Promise<CapturedWorkspaceState | undefined> {
+        const capture = new IncrementalPathCapture({
+            identity: this.store.identity,
+            git: this.store.git,
+            storeRoot: this.store.storeRoot,
+            scope,
+            maxEntries: WorkspaceCheckpointLimits.maxEntries,
+            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
+            maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+            timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+            base: {
+                readNodeKind: (path, captureSignal) => this.store.readNodeKind(base, path, captureSignal),
+                readNodeKinds: (paths, captureSignal) => this.store.readNodeKinds(base, paths, captureSignal),
+            },
+        });
+        try {
+            const captured = await capture.capture(paths, signal);
+            if (captured.status === "reconcile") return undefined;
+            return await capture.consumeCaptured(captured, async (batch) => {
+                await materializeIncrementalCapturedBatch(batch, {
+                    storeRoot: this.store.storeRoot,
+                    writeBlob: (bytes) => this.writeCandidateBlob(bytes, signal),
+                });
+                const index = new ShadowWorkspaceIndex({
+                    git: this.store.git,
+                    gitDir: this.store.storeRoot,
+                    indexFile: join(this.store.storeRoot, "journal", "workspace-candidate.index"),
+                });
+                await index.load(base.tree);
+                await index.apply(captured.mutations);
+                const tree = await index.writeTree();
+                const coverage = await this.store.computeIncrementalSnapshotCoverage(base, captured.mutations);
+                return {
+                    tree,
+                    scope,
+                    coverage: { ...coverage, newlyHashedBytes: captured.newlyHashedBytes },
+                };
+            });
+        } finally {
+            await capture.dispose();
+        }
+    }
+
+    async captureLegacy(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
+        const captured = await this.legacyCapture.capture({
+            profile: "terminal",
+            ...(signal ? { signal } : {}),
+        });
+        const metadata = await this.store.readSnapshotMetadata(captured.ref);
+        return {
+            tree: captured.ref.tree,
+            scope: metadata.scope,
+            coverage: cloneCoverage(captured.coverage),
+        };
+    }
+
+    async readCandidateBoundary(shadowTree: string, signal?: AbortSignal): Promise<WorkspaceCandidateBoundary> {
+        const userGit = this.candidates!.userGit;
+        if (!userGit) return { kind: "non-git" };
+        let sourceHeadTree: string;
+        try {
+            const inside = await userGit.run(["rev-parse", "--is-inside-work-tree"], {
+                cwd: this.store.identity.canonicalRoot,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+            });
+            if (!inside.stdout.equals(Buffer.from("true\n")) || inside.stderr.length !== 0) {
+                return { kind: "non-git" };
+            }
+            const head = await userGit.run(["rev-parse", "HEAD^{tree}"], {
+                cwd: this.store.identity.canonicalRoot,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+                maxStdoutBytes: 128,
+            });
+            sourceHeadTree = parseOid(head.stdout);
+        } catch {
+            signal?.throwIfAborted();
+            return { kind: "non-git" };
+        }
+        await this.importSourceTree(sourceHeadTree, signal);
+        return {
+            kind: "git",
+            shadowGitDir: this.store.storeRoot,
+            sourceHeadTree,
+            shadowTree,
+        };
+    }
+
+    async importSourceTree(sourceHeadTree: string, signal?: AbortSignal): Promise<void> {
+        if (this.importedSourceHeadTree === sourceHeadTree) return;
+        const visited = new Set<string>();
+        const copy = async (tree: string): Promise<void> => {
+            if (visited.has(tree)) return;
+            visited.add(tree);
+            const raw = await this.candidates!.userGit!.run(["cat-file", "tree", tree], {
+                cwd: this.store.identity.canonicalRoot,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+            });
+            for (const child of readSubtreeOids(raw.stdout)) await copy(child);
+            const imported = await this.store.git.run(["hash-object", "-t", "tree", "-w", "--stdin", "--literally"], {
+                gitDir: this.store.storeRoot,
+                stdin: raw.stdout,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+                maxStdoutBytes: 128,
+            });
+            if (parseOid(imported.stdout) !== tree) {
+                throw new Error("Imported source tree changed object identity");
+            }
+        };
+        await copy(sourceHeadTree);
+        this.importedSourceHeadTree = sourceHeadTree;
+    }
+
+    async writeCandidateBlob(bytes: Buffer, signal?: AbortSignal): Promise<string> {
+        const result = await this.store.git.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+            gitDir: this.store.storeRoot,
+            stdin: bytes,
+            timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+            signal,
+            maxStdoutBytes: 128,
+        });
+        return parseOid(result.stdout);
+    }
+
+    async dispose(): Promise<void> {
+        this.disposed = true;
+        await this.captureQueue;
+    }
+}
+
+interface CapturedWorkspaceState {
+    tree: string;
+    scope: WorkspaceScopeManifest;
+    coverage: WorkspaceSnapshotCoverage;
 }
 
 function cloneCoverage(coverage: WorkspaceSnapshotCoverage): WorkspaceSnapshotCoverage {
@@ -192,6 +402,41 @@ function cloneCoverage(coverage: WorkspaceSnapshotCoverage): WorkspaceSnapshotCo
         newlyHashedBytes: coverage.newlyHashedBytes,
         exclusions: coverage.exclusions.map((exclusion) => ({ ...exclusion })),
     };
+}
+
+function withoutNewlyHashedBytes(
+    coverage: WorkspaceSnapshotCoverage
+): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    return {
+        complete: coverage.complete,
+        eligibleEntryCount: coverage.eligibleEntryCount,
+        exclusions: coverage.exclusions.map((exclusion) => ({ ...exclusion })),
+    };
+}
+
+function parseOid(output: Buffer): string {
+    const match = /^([0-9a-f]{40})\n$/.exec(output.toString("ascii"));
+    if (!match) throw new Error("Git returned an invalid object id");
+    return match[1]!;
+}
+
+function readSubtreeOids(raw: Buffer): string[] {
+    const output: string[] = [];
+    let offset = 0;
+    while (offset < raw.length) {
+        const space = raw.indexOf(0x20, offset);
+        const nul = raw.indexOf(0, space + 1);
+        if (space <= offset || nul < 0 || nul + 21 > raw.length) {
+            throw new Error("Git returned an invalid raw tree");
+        }
+        const mode = raw.subarray(offset, space).toString("ascii");
+        if (!/^(?:40000|100644|100755|120000|160000)$/.test(mode)) {
+            throw new Error("Git returned an unsupported raw tree mode");
+        }
+        if (mode === "40000") output.push(raw.subarray(nul + 1, nul + 21).toString("hex"));
+        offset = nul + 21;
+    }
+    return output;
 }
 
 function assertNonEmpty(label: string, value: string): void {

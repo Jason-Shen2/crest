@@ -125,6 +125,7 @@ import {
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
 import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspace-rewind/checkpoint-manager";
+import { initializeWorkspaceCheckpointSnapshotSource } from "@crest/coding-agent/workspace-rewind/snapshot-source";
 import { AgentRuntimeClient } from "../frontend/app/agent/agent-runtime-client";
 import type { PiAgentEvent } from "../frontend/app/store/use-pi-chat";
 import {
@@ -1039,7 +1040,7 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
-    it("uses the live tracker for checkpoints and releases its lease after manager disposal exactly once", async () => {
+    it("uses the exact shared snapshot source and writer leases for checkpoints", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-rewind-live-tracker");
         const order: string[] = [];
         const processOwner = { pid: 42, processStartToken: "start-a", nonce: "nonce-a" };
@@ -1051,15 +1052,22 @@ describe("agent-ipc command helpers", () => {
             },
         };
         const tracker = { capture: vi.fn(), diff: vi.fn() };
+        const snapshotSource = { readHead: vi.fn() };
+        const writerLeases = { acquire: vi.fn() };
         const release = vi.fn(async () => {
             order.push("release");
         });
         vi.mocked(acquireAgentRewindFeature).mockClear();
+        vi.mocked(initializeWorkspaceCheckpointSnapshotSource).mockClear();
         vi.mocked(acquireAgentRewindFeature).mockResolvedValueOnce({
             state: "enabled",
             processOwner,
             store,
             tracker,
+            mutationLog: {},
+            candidates: {},
+            writerLeases,
+            snapshotSource,
             release,
         } as never);
         const managerDispose = vi.fn(async () => {
@@ -1093,8 +1101,13 @@ describe("agent-ipc command helpers", () => {
             );
 
             expect(acquireAgentRewindFeature).toHaveBeenCalledOnce();
+            expect(initializeWorkspaceCheckpointSnapshotSource).not.toHaveBeenCalled();
             expect(registerWorkspaceCheckpointManager).toHaveBeenCalledWith(
-                expect.objectContaining({ store, snapshotSource: tracker })
+                expect.objectContaining({
+                    store,
+                    snapshotSource,
+                    dependencies: expect.objectContaining({ writerLeases }),
+                })
             );
             await _resetAgentIpcForTests();
             await _resetAgentIpcForTests();

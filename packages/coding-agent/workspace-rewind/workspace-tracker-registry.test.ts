@@ -40,6 +40,14 @@ function deferred<T>() {
     return { promise, resolve, reject };
 }
 
+function makeSharedResourceDependencies() {
+    return {
+        makeCandidates: vi.fn(() => ({}) as never),
+        makeWriterLeases: vi.fn(() => ({}) as never),
+        makeSnapshotSource: vi.fn(async () => ({}) as never),
+    };
+}
+
 function makeRegistry() {
     const stores = new Map<string, { identity: CanonicalWorkspaceIdentity; storeRoot: string }>();
     const openStore = vi.fn(async (input: { identity: CanonicalWorkspaceIdentity }) => {
@@ -57,7 +65,12 @@ function makeRegistry() {
         trackers.push(tracker);
         return tracker as never;
     });
-    const registry = new WorkspaceTrackerRegistry({ openStore: openStore as never, makeFeed, makeTracker });
+    const registry = new WorkspaceTrackerRegistry({
+        ...makeSharedResourceDependencies(),
+        openStore: openStore as never,
+        makeFeed,
+        makeTracker,
+    });
     return { registry, openStore, makeFeed, makeTracker, trackers, stores };
 }
 
@@ -105,12 +118,96 @@ const BindingMismatchCases: BindingMismatchCase[] = [
 ];
 
 describe("WorkspaceTrackerRegistry", () => {
+    it("shares the exact canonical Workspace resource and isolates every incarnation", async () => {
+        const store = {
+            identity: identity(),
+            storeRoot: "/data/workspace/repo.git",
+            mutationLog: {},
+        };
+        const tracker = { dispose: vi.fn(async () => undefined) };
+        const makeCandidates = vi.fn(() => ({}));
+        const makeWriterLeases = vi.fn(() => ({}));
+        const makeSnapshotSource = vi.fn(async () => ({ dispose: vi.fn(async () => undefined) }));
+        const registry = new WorkspaceTrackerRegistry({
+            openStore: vi.fn(async (input) => ({
+                ...store,
+                identity: input.identity,
+                mutationLog: {},
+            })) as never,
+            makeFeed: vi.fn(() => ({}) as never),
+            makeTracker: vi.fn(() => tracker as never),
+            makeCandidates,
+            makeWriterLeases,
+            makeSnapshotSource,
+        } as never);
+
+        const [first, second] = await Promise.all([
+            registry.acquire(acquireInput(identity())),
+            registry.acquire(acquireInput(identity())),
+        ]);
+        const isolated = await registry.acquire(
+            acquireInput(identity({ workspaceIncarnation: "e".repeat(64), storeKey: "other-incarnation" }))
+        );
+
+        expect(second.store).toBe(first.store);
+        expect(second.mutationLog).toBe(first.store.mutationLog);
+        expect(second.mutationLog).toBe(first.mutationLog);
+        expect(second.candidates).toBe(first.candidates);
+        expect(second.writerLeases).toBe(first.writerLeases);
+        expect(second.snapshotSource).toBe(first.snapshotSource);
+        expect(isolated.store).not.toBe(first.store);
+        expect(isolated.mutationLog).not.toBe(first.mutationLog);
+        expect(isolated.candidates).not.toBe(first.candidates);
+        expect(isolated.writerLeases).not.toBe(first.writerLeases);
+        expect(isolated.snapshotSource).not.toBe(first.snapshotSource);
+        expect(makeCandidates).toHaveBeenCalledTimes(2);
+        expect(makeWriterLeases).toHaveBeenCalledTimes(2);
+        expect(makeSnapshotSource).toHaveBeenCalledTimes(2);
+
+        await Promise.all([first.release(), second.release(), isolated.release()]);
+    });
+
+    it("last idempotent release disposes capture hints without disposing durable Workspace state", async () => {
+        const mutationLog = { dispose: vi.fn(async () => undefined) };
+        const store = {
+            identity: identity(),
+            storeRoot: "/data/workspace/repo.git",
+            mutationLog,
+            dispose: vi.fn(async () => undefined),
+        };
+        const tracker = { dispose: vi.fn(async () => undefined) };
+        const snapshotSource = { dispose: vi.fn(async () => undefined) };
+        const registry = new WorkspaceTrackerRegistry({
+            openStore: vi.fn(async () => store) as never,
+            makeFeed: vi.fn(() => ({}) as never),
+            makeTracker: vi.fn(() => tracker as never),
+            makeCandidates: vi.fn(() => ({})),
+            makeWriterLeases: vi.fn(() => ({})),
+            makeSnapshotSource: vi.fn(async () => snapshotSource),
+        } as never);
+
+        const first = await registry.acquire(acquireInput(identity()));
+        const second = await registry.acquire(acquireInput(identity()));
+        await first.release();
+        expect(snapshotSource.dispose).not.toHaveBeenCalled();
+        expect(tracker.dispose).not.toHaveBeenCalled();
+
+        await second.release();
+        await second.release();
+
+        expect(snapshotSource.dispose).toHaveBeenCalledOnce();
+        expect(tracker.dispose).toHaveBeenCalledOnce();
+        expect(store.dispose).not.toHaveBeenCalled();
+        expect(mutationLog.dispose).not.toHaveBeenCalled();
+    });
+
     it("shares one initialization promise, store, and tracker until the last idempotent release", async () => {
         const opened = deferred<never>();
         const openStore = vi.fn(() => opened.promise);
         const feed = {};
         const tracker = { dispose: vi.fn(async () => undefined) };
         const registry = new WorkspaceTrackerRegistry({
+            ...makeSharedResourceDependencies(),
             openStore,
             makeFeed: vi.fn(() => feed as never),
             makeTracker: vi.fn(() => tracker as never),
@@ -143,6 +240,7 @@ describe("WorkspaceTrackerRegistry", () => {
         const store = { identity: workspace, storeRoot: "/data/workspace/repo.git" };
         const dispose = vi.fn().mockRejectedValueOnce(new Error("dispose failed")).mockResolvedValueOnce(undefined);
         const registry = new WorkspaceTrackerRegistry({
+            ...makeSharedResourceDependencies(),
             openStore: vi.fn(async () => store as never),
             makeFeed: vi.fn(() => ({}) as never),
             makeTracker: vi.fn(() => ({ dispose }) as never),
@@ -166,6 +264,7 @@ describe("WorkspaceTrackerRegistry", () => {
             .mockReturnValueOnce(firstTracker as never)
             .mockReturnValueOnce(secondTracker as never);
         const registry = new WorkspaceTrackerRegistry({
+            ...makeSharedResourceDependencies(),
             openStore: vi.fn(async () => store as never),
             makeFeed: vi.fn(() => ({}) as never),
             makeTracker,
@@ -247,6 +346,7 @@ describe("WorkspaceTrackerRegistry", () => {
             .mockResolvedValueOnce(store as never);
         const tracker = { dispose: vi.fn(async () => undefined) };
         const registry = new WorkspaceTrackerRegistry({
+            ...makeSharedResourceDependencies(),
             openStore,
             makeFeed: vi.fn(() => ({}) as never),
             makeTracker: vi.fn(() => tracker as never),
@@ -272,6 +372,7 @@ describe("WorkspaceTrackerRegistry", () => {
             })
             .mockReturnValueOnce(tracker as never);
         const registry = new WorkspaceTrackerRegistry({
+            ...makeSharedResourceDependencies(),
             openStore: vi.fn(async () => store as never),
             makeFeed: vi.fn(() => feed as never),
             makeTracker,
