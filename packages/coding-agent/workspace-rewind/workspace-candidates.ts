@@ -53,6 +53,7 @@ export class WorkspaceCandidates {
     queue: Promise<void> = Promise.resolve();
     gitBaseline = false;
     nonGitBaseline = false;
+    observedGeneration = 0;
 
     constructor(options: WorkspaceCandidatesOptions) {
         if (!isAbsolute(options.workspaceRoot) || normalize(options.workspaceRoot) !== options.workspaceRoot) {
@@ -72,6 +73,18 @@ export class WorkspaceCandidates {
             () => undefined
         );
         return operation;
+    }
+
+    observationToken(): number {
+        return this.observedGeneration;
+    }
+
+    async drainObserved(): Promise<WorkspaceChangeDrain> {
+        const drained = await this.feed.drain();
+        if (drained.status === "complete" && drained.changedPaths.length > 0) {
+            this.observedGeneration++;
+        }
+        return drained;
     }
 
     async collectActive(boundary: WorkspaceCandidateBoundary, signal?: AbortSignal): Promise<WorkspaceCandidateRead> {
@@ -105,7 +118,7 @@ export class WorkspaceCandidates {
                         { gitDir: boundary.shadowGitDir, timeoutMs: GitTimeoutMs, signal }
                     ),
                 ]);
-                const hints = await this.feed.drain();
+                const hints = await this.drainObserved();
                 signal?.throwIfAborted();
                 if (hints.status === "unavailable") return hints;
                 if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
@@ -122,7 +135,7 @@ export class WorkspaceCandidates {
                     watcherPaths,
                     signal
                 );
-                const validation = await this.feed.drain();
+                const validation = await this.drainObserved();
                 signal?.throwIfAborted();
                 if (validation.status === "unavailable") return validation;
                 if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
@@ -145,7 +158,7 @@ export class WorkspaceCandidates {
     async collectNonGit(signal?: AbortSignal): Promise<WorkspaceCandidateRead> {
         const reconcile = !this.nonGitBaseline || !this.feed.isTrusted();
         if (!reconcile) {
-            const hints = await this.feed.drain();
+            const hints = await this.drainObserved();
             if (hints.status === "unavailable") return hints;
             if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
             return { status: "complete", paths: canonicalPaths(hints.changedPaths), reconciled: false };
@@ -155,7 +168,7 @@ export class WorkspaceCandidates {
         try {
             await this.feed.start();
             const baseline = await this.reconcile(signal);
-            const hints = await this.feed.drain();
+            const hints = await this.drainObserved();
             if (hints.status === "unavailable") return hints;
             if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
             const paths = canonicalPaths([...baseline, ...hints.changedPaths]);

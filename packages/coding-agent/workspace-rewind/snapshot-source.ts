@@ -266,6 +266,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         let candidateBoundary = await this.readCandidateBoundary(base.tree, signal);
         let captureScope = scope;
         for (let attempt = 0; attempt < 2; attempt++) {
+            const observationToken = this.candidates!.observationToken();
             const staged = await this.stageCandidatePaths(base, captureScope, capturePaths, signal);
             if (!staged) {
                 if (attempt === 1) throw new Error("Workspace changed during candidate capture");
@@ -291,7 +292,8 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                 !candidateBoundariesEqual(candidateBoundary, collectionBoundary) ||
                 !candidateBoundariesEqual(collectionBoundary, validationBoundary);
             const pathsChanged = nextPaths.length !== capturePaths.length;
-            if (boundaryChanged || pathsChanged) {
+            const observationsChanged = this.candidates!.observationToken() !== observationToken;
+            if (boundaryChanged || pathsChanged || observationsChanged) {
                 await this.discardCandidateCapture(staged);
                 if (attempt === 1) throw new Error("Workspace changed during candidate capture");
                 capturePaths = nextPaths;

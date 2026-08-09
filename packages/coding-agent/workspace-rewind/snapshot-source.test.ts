@@ -152,6 +152,8 @@ function makeStore() {
 class TestCandidateFeed implements WorkspaceChangeFeed {
     trusted = false;
     changedPaths: string[] = [];
+    drainCalls = 0;
+    beforeDrain?: (call: number) => Promise<void>;
 
     record(path: string): void {
         this.changedPaths.push(path);
@@ -162,6 +164,8 @@ class TestCandidateFeed implements WorkspaceChangeFeed {
     }
 
     async drain(): Promise<WorkspaceChangeDrain> {
+        this.drainCalls++;
+        await this.beforeDrain?.(this.drainCalls);
         const changedPaths = this.changedPaths;
         this.changedPaths = [];
         return { status: "complete", changedPaths };
@@ -366,6 +370,43 @@ describe("Workspace checkpoint snapshot source", () => {
         await source.dispose?.();
     });
 
+    it("recaptures a same-path watcher observation and commits the latest stable bytes", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-same-path-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "a.txt"), "a-before");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-same-path", nonce: "4".repeat(64) },
+        });
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: { capture: (options) => store.capture(options) },
+            candidates,
+        });
+        feed.beforeDrain = async (call) => {
+            if (call === 2) {
+                await writeFile(join(workspaceRoot, "a.txt"), "a-v2");
+                feed.record("a.txt");
+            }
+        };
+
+        await writeFile(join(workspaceRoot, "a.txt"), "a-v1");
+        const after = await source.synchronizeExternal();
+        const state = await store.readPathState(after.ref, "a.txt");
+
+        expect(state).toMatchObject({ state: "file" });
+        await expect(store.readBlob((state as { oid: string }).oid)).resolves.toEqual(Buffer.from("a-v2"));
+        await source.dispose?.();
+    });
+
     it("fails closed when paths keep changing during the single candidate recapture", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-candidate-continuous-change-"));
         TemporaryRoots.push(root);
@@ -402,6 +443,40 @@ describe("Workspace checkpoint snapshot source", () => {
         });
 
         await writeFile(join(workspaceRoot, "a.txt"), "a-after");
+        await expect(source.synchronizeExternal()).rejects.toThrow(/changed during candidate capture/i);
+        await expect(source.readHead()).resolves.toMatchObject({ ref: { id: before.ref.id } });
+        await source.dispose?.();
+    });
+
+    it("fails closed when the same path changes again during the single recapture", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-candidate-same-path-continuous-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        await writeFile(join(workspaceRoot, "a.txt"), "a-before");
+        const git = new WorkspaceGitRunner();
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "candidate-same-path-loop", nonce: "5".repeat(64) },
+        });
+        const feed = new TestCandidateFeed();
+        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: { capture: (options) => store.capture(options) },
+            candidates,
+        });
+        const before = await source.readHead();
+        feed.beforeDrain = async (call) => {
+            if (call !== 2 && call !== 3) return;
+            await writeFile(join(workspaceRoot, "a.txt"), call === 2 ? "a-v2" : "a-v3");
+            feed.record("a.txt");
+        };
+
+        await writeFile(join(workspaceRoot, "a.txt"), "a-v1");
         await expect(source.synchronizeExternal()).rejects.toThrow(/changed during candidate capture/i);
         await expect(source.readHead()).resolves.toMatchObject({ ref: { id: before.ref.id } });
         await source.dispose?.();

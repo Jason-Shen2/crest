@@ -268,6 +268,7 @@ describe("WorkspaceCandidates Git discovery", () => {
             reconciled: false,
         });
         expect(ignoreCalls).toBe(2);
+        expect(racingCandidates.observationToken()).toBe(2);
     });
 
     test("fails closed when watcher events continue through the bounded post-processing retry", async () => {
@@ -290,6 +291,7 @@ describe("WorkspaceCandidates Git discovery", () => {
             reason: "watcher-error",
         });
         expect(ignoreCalls).toBe(2);
+        expect(racingCandidates.observationToken()).toBe(3);
     });
 });
 
@@ -334,6 +336,20 @@ describe("WorkspaceCandidates non-Git discovery", () => {
         expect(feed.startCalls).toBe(1);
     });
 
+    test("advances an in-memory observation token for repeated same-path watcher drains", async () => {
+        expect(candidates.observationToken()).toBe(0);
+        await candidates.collect({ kind: "non-git" });
+        expect(candidates.observationToken()).toBe(0);
+
+        feed.hint("a.txt");
+        await candidates.collect({ kind: "non-git" });
+        expect(candidates.observationToken()).toBe(1);
+
+        feed.hint("a.txt");
+        await candidates.collect({ kind: "non-git" });
+        expect(candidates.observationToken()).toBe(2);
+    });
+
     test("reconciles after watcher overflow instead of trusting incomplete hints", async () => {
         await candidates.collect({ kind: "non-git" });
         feed.loseTrust("overflow");
@@ -357,6 +373,7 @@ describe("WorkspaceCandidates non-Git discovery", () => {
             status: "unavailable",
             reason: "watcher-error",
         });
+        expect(candidates.observationToken()).toBe(1);
         expect(reconcile).toHaveBeenCalledTimes(1);
     });
 
