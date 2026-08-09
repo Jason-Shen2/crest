@@ -77,6 +77,51 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         expect(run.mock.calls.filter(([args]) => args[0] === "ls-tree")).toHaveLength(2);
     }, 30_000);
 
+    it("derives coverage for one hundred candidates with a fixed Git-call bound", async () => {
+        const { fixture, before, after, candidates } = await makeHundredChangedCandidates();
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const coverage = await fixture.store.computeCandidateSnapshotCoverage(before.ref, after.ref.tree, candidates);
+
+        expect(coverage).toEqual({
+            complete: after.coverage.complete,
+            eligibleEntryCount: after.coverage.eligibleEntryCount,
+            exclusions: after.coverage.exclusions,
+        });
+        expect(run).toHaveBeenCalledTimes(4);
+        expect(run).toHaveBeenCalledWith(
+            expect.arrayContaining(["diff-tree"]),
+            expect.objectContaining({ gitDir: fixture.store.storeRoot })
+        );
+    });
+
+    it("updates only candidate path exclusions when deriving coverage", async () => {
+        const fixture = await makeFixture();
+        await writeFile(join(fixture.workspace, ".gitignore"), "cache\ncache-keep\n");
+        await mkdir(join(fixture.workspace, "cache-keep"));
+        await writeFile(join(fixture.workspace, "cache-keep", "ignored.txt"), "ignored");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const base = await fixture.store.readSnapshotMetadata(captured.ref);
+
+        const cleared = await fixture.store.computeCandidateSnapshotCoverage(captured.ref, captured.ref.tree, [
+            { path: "cache", state: { state: "absent" } },
+        ]);
+        const restored = await fixture.store.computeCandidateSnapshotCoverage(captured.ref, captured.ref.tree, [
+            { path: "cache", state: { state: "excluded", reason: "untracked-too-large" } },
+        ]);
+
+        expect(base.coverage.exclusions).toEqual(
+            expect.arrayContaining([
+                { path: "cache", reason: "ignored" },
+                { path: "cache-keep", reason: "ignored" },
+            ])
+        );
+        expect(cleared.exclusions).not.toContainEqual(expect.objectContaining({ path: "cache" }));
+        expect(cleared.exclusions).toContainEqual({ path: "cache-keep", reason: "ignored" });
+        expect(restored.exclusions).toContainEqual({ path: "cache", reason: "untracked-too-large" });
+        expect(restored.exclusions).toContainEqual({ path: "cache-keep", reason: "ignored" });
+    });
+
     it("publishes only a compact V3 manifest and preserves exact raw bytes", async () => {
         const fixture = await makeFixture();
         const binary = Buffer.from([0, 255, 13, 10, 128]);

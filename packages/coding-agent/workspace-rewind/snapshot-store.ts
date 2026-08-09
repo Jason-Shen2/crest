@@ -745,15 +745,7 @@ export class WorkspaceSnapshotStore {
             const manifest = await this.#readStoredManifest(snapshot);
             const coverage = manifest.getCoverage();
             const { eligibleEntryDelta } = await this.#readTreeDelta(snapshot.tree, candidateTree);
-            const changes: WorkspacePathChangeV1[] = [];
-            for (const entry of ownedEntries) {
-                changes.push({
-                    path: entry.path,
-                    before: await this.#readPathStateFromManifest(snapshot, manifest, entry.path),
-                    after: entry.state,
-                });
-            }
-            return deriveCandidateCoverage(coverage, changes, eligibleEntryDelta);
+            return deriveCandidateCoverage(coverage, ownedEntries, eligibleEntryDelta);
         });
     }
 
@@ -2369,7 +2361,7 @@ function cloneCommitSnapshotInput(input: {
 
 function deriveCandidateCoverage(
     base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
-    changes: readonly WorkspacePathChangeV1[],
+    entries: readonly WorkspaceCandidatePathEntry[],
     eligibleEntryDelta: number
 ): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
     if (!Number.isSafeInteger(eligibleEntryDelta)) {
@@ -2387,12 +2379,12 @@ function deriveCandidateCoverage(
             nonPathExclusions.push(cloneCoverageExclusion(exclusion));
         }
     }
-    for (const change of changes) {
-        if (change.before.state === "excluded") pathExclusions.delete(change.path);
-        if (change.after.state === "excluded") {
-            pathExclusions.set(change.path, {
-                path: change.path,
-                reason: change.after.reason,
+    for (const entry of entries) {
+        pathExclusions.delete(entry.path);
+        if (entry.state.state === "excluded") {
+            pathExclusions.set(entry.path, {
+                path: entry.path,
+                reason: entry.state.reason,
             });
         }
     }
