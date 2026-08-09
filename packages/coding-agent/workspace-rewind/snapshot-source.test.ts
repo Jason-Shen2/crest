@@ -17,7 +17,6 @@ import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types"
 import { WorkspaceCandidates } from "./workspace-candidates";
 import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
-import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 
 const WorkspaceIdentity = "a".repeat(64);
 const WorkspaceIncarnation = "b".repeat(64);
@@ -47,6 +46,21 @@ const Coverage: WorkspaceSnapshotCoverage = {
     newlyHashedBytes: 0,
     exclusions: [],
 };
+
+const DefaultScope = {
+    schemaVersion: 1 as const,
+    policy: {
+        maxEntries: 200_000,
+        maxUntrackedBytes: 2 * 1024 ** 2,
+        gitGlobalExcludes: "disabled-by-isolated-runner" as const,
+    },
+    ignoreInputs: [],
+    nestedRepositoryBoundaries: [],
+};
+
+function reconciledSnapshot(ref: WorkspaceSnapshotRefV1, coverage = Coverage) {
+    return { tree: ref.tree, scope: structuredClone(DefaultScope), coverage: structuredClone(coverage) };
+}
 
 function makeStore() {
     const refs = new Map<string, WorkspaceSnapshotRefV1>();
@@ -274,9 +288,7 @@ describe("Workspace checkpoint snapshot source", () => {
             git,
             processOwner: { pid: process.pid, processStartToken: "candidate-source", nonce: "f".repeat(64) },
         });
-        const legacyCapture = {
-            capture: vi.fn((options) => store.capture(options)),
-        };
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
         const feed = new TestCandidateFeed();
         const candidates = new WorkspaceCandidates({
             workspaceRoot,
@@ -285,7 +297,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture,
+            fullReconcile,
             candidates,
         } as never);
         const before = await source.readHead();
@@ -294,7 +306,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         await source.dispose?.();
     });
 
@@ -314,7 +326,6 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const fullReconcile = vi.spyOn(store, "captureFullReconcile");
         const feed = new TestCandidateFeed();
-        const tracker = new WorkspaceSnapshotTracker({ store, feed });
         const candidates = new WorkspaceCandidates({
             workspaceRoot,
             feed,
@@ -322,7 +333,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: tracker,
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         const before = await source.readHead();
@@ -335,7 +346,6 @@ describe("Workspace checkpoint snapshot source", () => {
         expect(after.coverage.eligibleEntryCount).toBe(1);
         expect(fullReconcile).toHaveBeenCalledTimes(2);
         await source.dispose?.();
-        await tracker.dispose();
     });
 
     it("recaptures the union when a new path changes during candidate capture", async () => {
@@ -357,7 +367,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: { capture: (options) => store.capture(options) },
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         const before = await source.readHead();
@@ -401,7 +411,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: { capture: (options) => store.capture(options) },
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         feed.beforeDrain = async (call) => {
@@ -440,7 +450,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: { capture: (options) => store.capture(options) },
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         const before = await source.readHead();
@@ -479,7 +489,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: { capture: (options) => store.capture(options) },
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         const before = await source.readHead();
@@ -511,7 +521,7 @@ describe("Workspace checkpoint snapshot source", () => {
             git,
             processOwner: { pid: process.pid, processStartToken: "git-candidate-source", nonce: "a".repeat(64) },
         });
-        const legacyCapture = { capture: vi.fn((options) => store.capture(options)) };
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
         const feed = new TestCandidateFeed();
         const candidates = new WorkspaceCandidates({
             workspaceRoot: identity.canonicalRoot,
@@ -519,7 +529,7 @@ describe("Workspace checkpoint snapshot source", () => {
             userGit: git,
             shadowGit: git,
         });
-        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture, candidates });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
         const before = await source.readHead();
 
         await publishUserCommit(git, workspaceRoot, Buffer.from("after"), firstCommit);
@@ -527,7 +537,7 @@ describe("Workspace checkpoint snapshot source", () => {
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         await source.dispose?.();
     });
 
@@ -550,14 +560,14 @@ describe("Workspace checkpoint snapshot source", () => {
             git,
             processOwner: { pid: process.pid, processStartToken: "nested-git-source", nonce: "6".repeat(64) },
         });
-        const legacyCapture = { capture: vi.fn((options) => store.capture(options)) };
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
         const candidates = new WorkspaceCandidates({
             workspaceRoot: identity.canonicalRoot,
             feed: new TestCandidateFeed(),
             userGit: git,
             shadowGit: git,
         });
-        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture, candidates });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
         const before = await source.readHead();
 
         await writeFile(join(workspaceRoot, "tracked.txt"), "committed after\n");
@@ -568,7 +578,7 @@ describe("Workspace checkpoint snapshot source", () => {
         await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
             expect.objectContaining({ path: "tracked.txt" }),
         ]);
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         await source.dispose?.();
     });
 
@@ -612,7 +622,7 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
-            legacyCapture: { capture: (options) => store.capture(options) },
+            fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "after\n");
@@ -666,17 +676,15 @@ describe("Workspace checkpoint snapshot source", () => {
     it("bootstraps a fresh authority as an external mutation before serving no-tool turns", async () => {
         const fixture = makeStore();
         const captured = snapshot("6".repeat(40), "7".repeat(40));
-        const legacyCapture = {
-            capture: vi.fn(async () => ({ ref: captured, coverage: Coverage })),
-        };
+        const fullReconcile = vi.fn(async () => reconciledSnapshot(captured));
 
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
         const current = await source.readHead();
 
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         expect(fixture.store.mutationLog.prepare).toHaveBeenCalledWith({
             tree: captured.tree,
             metadata: {
@@ -709,24 +717,22 @@ describe("Workspace checkpoint snapshot source", () => {
             await publicationReleased;
             return await publishCommitSnapshot(input);
         });
-        const legacyCapture = {
-            capture: vi
-                .fn()
-                .mockResolvedValueOnce({ ref: winnerCapture, coverage: Coverage })
-                .mockResolvedValueOnce({ ref: staleLoserCapture, coverage: Coverage }),
-        };
+        const fullReconcile = vi
+            .fn()
+            .mockResolvedValueOnce(reconciledSnapshot(winnerCapture))
+            .mockResolvedValueOnce(reconciledSnapshot(staleLoserCapture));
 
         const sourceAPromise = initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
         await publicationStarted;
         const sourceBPromise = initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
         expect(fixture.store.mutationLog.readHead).toHaveBeenCalledOnce();
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         releasePublication();
         const [sourceA, sourceB] = await Promise.all([sourceAPromise, sourceBPromise]);
 
@@ -734,7 +740,7 @@ describe("Workspace checkpoint snapshot source", () => {
             expect.objectContaining({ ref: expect.objectContaining({ id: ExternalCommit }) }),
             expect.objectContaining({ ref: expect.objectContaining({ id: ExternalCommit }) }),
         ]);
-        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledOnce();
         expect(fixture.store.mutationLog.prepare).toHaveBeenCalledOnce();
         expect(fixture.store.mutationLog.publishPrepared).toHaveBeenCalledOnce();
     });
@@ -742,19 +748,17 @@ describe("Workspace checkpoint snapshot source", () => {
     it("opens an existing commit-backed head without scanning the Workspace", async () => {
         const fixture = makeStore();
         fixture.seed(snapshot(BaseCommit));
-        const legacyCapture = {
-            capture: vi.fn(async () => {
-                throw new Error("must not capture");
-            }),
-        };
+        const fullReconcile = vi.fn(async () => {
+            throw new Error("must not capture");
+        });
 
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
 
         await expect(source.readHead()).resolves.toMatchObject({ ref: { id: BaseCommit } });
-        expect(legacyCapture.capture).not.toHaveBeenCalled();
+        expect(fullReconcile).not.toHaveBeenCalled();
     });
 
     it("records pre-existing drift as external and only net turn changes as an owned commit", async () => {
@@ -762,15 +766,13 @@ describe("Workspace checkpoint snapshot source", () => {
         fixture.seed(snapshot(BaseCommit, "4".repeat(40)));
         const externalCapture = snapshot("6".repeat(40), "7".repeat(40));
         const turnCapture = snapshot("9".repeat(40), "8".repeat(40));
-        const legacyCapture = {
-            capture: vi
-                .fn()
-                .mockResolvedValueOnce({ ref: externalCapture, coverage: Coverage })
-                .mockResolvedValueOnce({ ref: turnCapture, coverage: Coverage }),
-        };
+        const fullReconcile = vi
+            .fn()
+            .mockResolvedValueOnce(reconciledSnapshot(externalCapture))
+            .mockResolvedValueOnce(reconciledSnapshot(turnCapture));
         const source: WorkspaceCheckpointSnapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
 
         const base = await source.synchronizeExternal();
@@ -798,12 +800,10 @@ describe("Workspace checkpoint snapshot source", () => {
         const fixture = makeStore();
         const base = snapshot(BaseCommit);
         fixture.seed(base);
-        const legacyCapture = {
-            capture: vi.fn(async () => ({ ref: snapshot("6".repeat(40), base.tree), coverage: Coverage })),
-        };
+        const fullReconcile = vi.fn(async () => reconciledSnapshot(snapshot("6".repeat(40), base.tree)));
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
 
         const result = await source.captureOwnedTurn({
@@ -829,7 +829,13 @@ describe("Workspace checkpoint snapshot source", () => {
                     maxUntrackedBytes: 2 * 1024 ** 2,
                     gitGlobalExcludes: "disabled-by-isolated-runner",
                 },
-                ignoreInputs: [".gitignore"],
+                ignoreInputs: [
+                    {
+                        source: "gitignore" as const,
+                        path: ".gitignore",
+                        contentHash: "a".repeat(64),
+                    },
+                ],
                 nestedRepositoryBoundaries: [],
             },
             coverage: {
@@ -838,20 +844,28 @@ describe("Workspace checkpoint snapshot source", () => {
                 exclusions: [{ path: "cache", reason: "ignored" }],
             },
         });
-        const legacyCapture = {
-            capture: vi.fn(async () => ({
-                ref: captured,
-                coverage: {
-                    complete: false,
-                    eligibleEntryCount: 2,
-                    newlyHashedBytes: 0,
-                    exclusions: [{ path: "cache", reason: "ignored" as const }],
-                },
-            })),
-        };
+        const fullReconcile = vi.fn(async () => ({
+            tree: captured.tree,
+            scope: {
+                ...structuredClone(DefaultScope),
+                ignoreInputs: [
+                    {
+                        source: "gitignore" as const,
+                        path: ".gitignore",
+                        contentHash: "a".repeat(64),
+                    },
+                ],
+            },
+            coverage: {
+                complete: false,
+                eligibleEntryCount: 2,
+                newlyHashedBytes: 0,
+                exclusions: [{ path: "cache", reason: "ignored" as const }],
+            },
+        }));
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
 
         const result = await source.captureOwnedTurn({
@@ -892,17 +906,15 @@ describe("Workspace checkpoint snapshot source", () => {
                 exclusions: [{ path: "different-scope", reason: "ignored" }],
             },
         });
-        const legacyCapture = {
-            capture: vi.fn(async () => ({ ref: captured, coverage: Coverage })),
-        };
+        const fullReconcile = vi.fn(async () => reconciledSnapshot(captured));
 
         await expect(
             initializeWorkspaceCheckpointSnapshotSource({
                 store: fixture.store as never,
-                legacyCapture,
+                fullReconcile,
             })
         ).rejects.toThrow(/missing commit snapshot/i);
-        expect(legacyCapture.capture).not.toHaveBeenCalled();
+        expect(fullReconcile).not.toHaveBeenCalled();
         expect(fixture.store.publishCommitSnapshot).not.toHaveBeenCalled();
     });
 
@@ -910,12 +922,10 @@ describe("Workspace checkpoint snapshot source", () => {
         const fixture = makeStore();
         fixture.seed(snapshot(BaseCommit, "4".repeat(40)));
         const captured = snapshot("6".repeat(40), "7".repeat(40));
-        const legacyCapture = {
-            capture: vi.fn(async () => ({ ref: captured, coverage: Coverage })),
-        };
+        const fullReconcile = vi.fn(async () => reconciledSnapshot(captured));
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture,
+            fullReconcile,
         });
         let markAssociationStarted!: () => void;
         const associationStarted = new Promise<void>((resolve) => {
@@ -965,13 +975,13 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const loserPromise = initializeWorkspaceCheckpointSnapshotSource({
             store: fixture.store as never,
-            legacyCapture: { capture: vi.fn(async () => ({ ref: loserCapture, coverage: Coverage })) },
+            fullReconcile: vi.fn(async () => reconciledSnapshot(loserCapture)),
         });
         await loserAssociationStarted;
         const winnerStore = { ...fixture.store, storeRoot: "other-process" };
         const winnerOutcome = await initializeWorkspaceCheckpointSnapshotSource({
             store: winnerStore as never,
-            legacyCapture: { capture: vi.fn(async () => ({ ref: winnerCapture, coverage: Coverage })) },
+            fullReconcile: vi.fn(async () => reconciledSnapshot(winnerCapture)),
         }).then(
             (source) => ({ source }),
             (error: unknown) => ({ error })

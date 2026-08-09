@@ -102,9 +102,7 @@ vi.mock("@crest/coding-agent/workspace-rewind/checkpoint-manager", () => ({
     registerWorkspaceCheckpointManager: vi.fn(),
 }));
 vi.mock("@crest/coding-agent/workspace-rewind/snapshot-source", () => ({
-    initializeWorkspaceCheckpointSnapshotSource: vi.fn(
-        async (input: { legacyCapture: unknown }) => input.legacyCapture
-    ),
+    initializeWorkspaceCheckpointSnapshotSource: vi.fn(async (input: { store: unknown }) => input.store),
 }));
 
 import { makeCommittedContextTransaction } from "@crest/agent/harness/session/context-transaction-fixture";

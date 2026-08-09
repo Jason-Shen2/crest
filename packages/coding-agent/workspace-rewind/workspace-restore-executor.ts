@@ -235,7 +235,7 @@ export class WorkspaceRestoreExecutor {
             });
             const [metadata, coverage] = await Promise.all([
                 this.store.readSnapshotMetadata(input.source),
-                this.store.computeIncrementalSnapshotCoverage(
+                this.store.computeCandidateSnapshotCoverage(
                     input.source,
                     paths.map((path) => ({ path: path.path, state: path.target }))
                 ),

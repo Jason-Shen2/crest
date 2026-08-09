@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { renameSync, watch, writeFileSync, type BigIntStats } from "node:fs";
+import { renameSync, writeFileSync, type BigIntStats } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,12 +9,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
-    IncrementalReaderConcurrency,
-    runAnchoredReader,
-    runAnchoredReaderBatch,
-    type AnchoredReaderEntryIdentity,
-    type AnchoredReaderIdentity,
-} from "./anchored-reader";
+    StablePathReaderConcurrency,
+    runStablePathReader,
+    runStablePathReaderBatch,
+    type StablePathReaderEntryIdentity,
+    type StablePathReaderIdentity,
+} from "./workspace-path-reader";
 
 const cleanupRoots: string[] = [];
 
@@ -24,14 +24,14 @@ afterEach(async () => {
     await Promise.all(cleanupRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-describe("anchored reader", () => {
+describe("stable path reader", () => {
     test("keeps observation hook failures outside the reader result", async () => {
         const entries = [makeBatchEntry("first/file.txt"), makeBatchEntry("second/file.txt")];
         let started = 0;
         let settled = 0;
 
         await expect(
-            runAnchoredReaderBatch(
+            runStablePathReaderBatch(
                 {
                     rootPath: "/unused",
                     entries,
@@ -79,7 +79,7 @@ describe("anchored reader", () => {
         };
 
         await expect(
-            runAnchoredReaderBatch(
+            runStablePathReaderBatch(
                 {
                     rootPath: "/unused",
                     entries: [makeBatchEntry("first/file.txt")],
@@ -100,7 +100,7 @@ describe("anchored reader", () => {
         const abortFailure = new Error("cancelled");
         controller.abort(abortFailure);
         await expect(
-            runAnchoredReaderBatch(
+            runStablePathReaderBatch(
                 {
                     rootPath: "/unused",
                     entries: [makeBatchEntry("first/file.txt")],
@@ -119,7 +119,7 @@ describe("anchored reader", () => {
     });
 
     test("uses a fixed batch concurrency and starts no workers for no entries", async () => {
-        expect(IncrementalReaderConcurrency).toBe(8);
+        expect(StablePathReaderConcurrency).toBe(8);
         let spawnCount = 0;
         vi.doMock("node:child_process", async (importOriginal) => {
             const actual = await importOriginal<typeof import("node:child_process")>();
@@ -132,10 +132,10 @@ describe("anchored reader", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
 
         await expect(
-            isolated.runAnchoredReaderBatch({
+            isolated.runStablePathReaderBatch({
                 rootPath: "/unused",
                 entries: [],
                 maxSingleFileBytes: 1,
@@ -188,9 +188,9 @@ describe("anchored reader", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
 
-        const result = await isolated.runAnchoredReaderBatch({
+        const result = await isolated.runStablePathReaderBatch({
             rootPath: root,
             entries,
             maxSingleFileBytes: 1024,
@@ -200,7 +200,7 @@ describe("anchored reader", () => {
         });
 
         expect(result).toHaveLength(9);
-        expect(peak).toBeLessThanOrEqual(IncrementalReaderConcurrency);
+        expect(peak).toBeLessThanOrEqual(StablePathReaderConcurrency);
         expect(peak).toBeGreaterThan(1);
     });
 
@@ -236,12 +236,12 @@ describe("anchored reader", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
         const failingIdentity = entryIdentity(failingEntry);
         failingIdentity.ino = (BigInt(failingIdentity.ino) + 1n).toString();
 
         await expect(
-            isolated.runAnchoredReaderBatch({
+            isolated.runStablePathReaderBatch({
                 rootPath: root,
                 entries: [
                     {
@@ -302,9 +302,9 @@ describe("anchored reader", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
         const controller = new AbortController();
-        const pending = isolated.runAnchoredReaderBatch({
+        const pending = isolated.runStablePathReaderBatch({
             rootPath: root,
             entries: [
                 {
@@ -341,7 +341,7 @@ describe("anchored reader", () => {
         const root = await mkdtemp(join(tmpdir(), "crest-anchored-shared-deadline-"));
         cleanupRoots.push(root);
         const entries = [];
-        for (let index = 0; index < IncrementalReaderConcurrency + 1; index++) {
+        for (let index = 0; index < StablePathReaderConcurrency + 1; index++) {
             const parentPath = join(root, `parent-${index}`);
             const path = join(parentPath, "file.txt");
             await mkdir(parentPath);
@@ -385,10 +385,10 @@ process.stdin.on("end", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
 
         await expect(
-            isolated.runAnchoredReaderBatch({
+            isolated.runStablePathReaderBatch({
                 rootPath: root,
                 entries,
                 maxSingleFileBytes: 1024,
@@ -397,12 +397,12 @@ process.stdin.on("end", () => {
                 signal: new AbortController().signal,
             })
         ).rejects.toMatchObject({ code: "timeout" });
-        expect(spawned).toBe(IncrementalReaderConcurrency + 1);
+        expect(spawned).toBe(StablePathReaderConcurrency + 1);
     });
 
     test("rehashes a same-size rewrite when an otherwise identical fingerprint is inside the racy window", async () => {
         const fixture = await makeReaderFixture("racy.txt", "other");
-        const result = await runAnchoredReader({
+        const result = await runStablePathReader({
             ...fixture.input,
             entries: [
                 {
@@ -425,7 +425,7 @@ process.stdin.on("end", () => {
         ["filesystem timestamps", { mtimeNs: "0", ctimeNs: "0" }],
     ])("rehashes when the previous %s is unreliable", async (_label, overrides) => {
         const fixture = await makeReaderFixture("unreliable.txt", "same");
-        const result = await runAnchoredReader({
+        const result = await runStablePathReader({
             ...fixture.input,
             entries: [
                 {
@@ -461,9 +461,9 @@ process.stdin.on("end", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
 
-        await expect(isolated.runAnchoredReader(fixture.input)).rejects.toMatchObject({
+        await expect(isolated.runStablePathReader(fixture.input)).rejects.toMatchObject({
             code: "unstable_file",
         });
         expect(changed).toBe(true);
@@ -486,9 +486,9 @@ process.stdin.on("end", () => {
             };
         });
         vi.resetModules();
-        const isolated = await import("./anchored-reader");
+        const isolated = await import("./workspace-path-reader");
 
-        await expect(isolated.runAnchoredReader(fixture.input)).rejects.toMatchObject({
+        await expect(isolated.runStablePathReader(fixture.input)).rejects.toMatchObject({
             code: "unstable_file",
         });
         expect(vanished).toBe(true);
@@ -500,7 +500,7 @@ process.stdin.on("end", () => {
             const fixture = await makeReaderFixture("forbidden.txt", "before");
             await chmod(fixture.path, 0);
             const metadata = await lstat(fixture.path, { bigint: true });
-            const identity: AnchoredReaderEntryIdentity = {
+            const identity: StablePathReaderEntryIdentity = {
                 dev: metadata.dev.toString(),
                 ino: metadata.ino.toString(),
                 birthtimeNs: metadata.birthtimeNs.toString(),
@@ -513,7 +513,7 @@ process.stdin.on("end", () => {
             fixture.input.entries[0]!.identity = identity;
 
             try {
-                await expect(runAnchoredReader(fixture.input)).rejects.toMatchObject({
+                await expect(runStablePathReader(fixture.input)).rejects.toMatchObject({
                     code: "worker_failed",
                     message: expect.stringMatching(/EACCES|permission denied/i),
                 });
@@ -524,40 +524,39 @@ process.stdin.on("end", () => {
     );
 
     test("rejects an atomic pathname replacement after the regular file has been opened", async () => {
-        const fixture = await makeReaderFixture("target.bin", "x".repeat(64 * 1024 ** 2));
+        const fixture = await makeReaderFixture("target.bin", "x".repeat(1024 * 1024));
         const replacement = join(fixture.root, "replacement.bin");
+        const openedMarker = join(fixture.root, "reader-opened");
+        const releaseMarker = join(fixture.root, "reader-release");
         await writeFile(replacement, "new inode");
-        let replaced = false;
-        const watcher = watch(fixture.root, (_event, filename) => {
-            if (!replaced && String(filename) === "staging") {
-                replaced = true;
-                renameSync(replacement, fixture.path);
-            }
+        const pending = runStablePathReader({
+            ...fixture.input,
+            timeoutMs: 10_000,
+            testBarrier: { path: "target.bin", openedMarker, releaseMarker },
         });
         try {
-            await expect(runAnchoredReader({ ...fixture.input, timeoutMs: 10_000 })).rejects.toMatchObject({
-                code: "unstable_file",
-            });
+            await waitForPath(openedMarker);
+            renameSync(replacement, fixture.path);
         } finally {
-            watcher.close();
+            await writeFile(releaseMarker, "release");
         }
-        expect(replaced).toBe(true);
+        await expect(pending).rejects.toMatchObject({ code: "unstable_file" });
     }, 15_000);
 });
 
 async function makeReaderFixture(name: string, content: string) {
-    const root = await mkdtemp(join(tmpdir(), "crest-anchored-reader-test-"));
+    const root = await mkdtemp(join(tmpdir(), "crest-workspace-path-reader-test-"));
     cleanupRoots.push(root);
     const path = join(root, name);
     const stagingPath = join(root, "staging");
     await writeFile(path, content);
     const [parent, entry] = await Promise.all([lstat(root, { bigint: true }), lstat(path, { bigint: true })]);
-    const parentIdentity: AnchoredReaderIdentity = {
+    const parentIdentity: StablePathReaderIdentity = {
         dev: parent.dev.toString(),
         ino: parent.ino.toString(),
         birthtimeNs: parent.birthtimeNs.toString(),
     };
-    const identity: AnchoredReaderEntryIdentity = {
+    const identity: StablePathReaderEntryIdentity = {
         dev: entry.dev.toString(),
         ino: entry.ino.toString(),
         birthtimeNs: entry.birthtimeNs.toString(),
@@ -597,7 +596,7 @@ async function makeReaderFixture(name: string, content: string) {
     };
 }
 
-function identity(value: BigIntStats): AnchoredReaderIdentity {
+function identity(value: BigIntStats): StablePathReaderIdentity {
     return {
         dev: value.dev.toString(),
         ino: value.ino.toString(),
@@ -605,7 +604,7 @@ function identity(value: BigIntStats): AnchoredReaderIdentity {
     };
 }
 
-function entryIdentity(value: BigIntStats): AnchoredReaderEntryIdentity {
+function entryIdentity(value: BigIntStats): StablePathReaderEntryIdentity {
     return {
         ...identity(value),
         mode: value.mode.toString(),
@@ -634,4 +633,17 @@ function makeBatchEntry(path: string) {
             ctimeNs: "1",
         },
     };
+}
+
+async function waitForPath(path: string): Promise<void> {
+    for (let attempt = 0; attempt < 1_000; attempt++) {
+        try {
+            await lstat(path);
+            return;
+        } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    throw new Error("Stable path reader did not reach its test barrier");
 }

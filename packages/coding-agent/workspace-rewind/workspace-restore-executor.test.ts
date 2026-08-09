@@ -40,7 +40,7 @@ afterEach(async () => {
 test("executes a result-commit restore without any restore-time workspace capture", async () => {
     const fixture = await makeFixture();
     const capture = vi.spyOn(fixture.store, "capture");
-    const coverage = vi.spyOn(fixture.store, "computeIncrementalSnapshotCoverage");
+    const coverage = vi.spyOn(fixture.store, "computeCandidateSnapshotCoverage");
     const onCommitted = vi.fn(async () => {});
     const executor = makeExecutor(fixture, { onCommitted });
 

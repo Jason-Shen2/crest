@@ -527,7 +527,7 @@ async function makeFixture() {
     };
     const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
         store,
-        legacyCapture: store,
+        fullReconcile: (options) => store.captureFullReconcile(options),
     });
     const manager = registerWorkspaceCheckpointManager({
         harness: harness as never,
@@ -1653,7 +1653,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
 
         const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
             store: value.store,
-            legacyCapture: value.store,
+            fullReconcile: (options) => value.store.captureFullReconcile(options),
         });
         const pending = new PendingWorkspaceRestoreStore(value.store);
         const recovery = new WorkspaceRecovery({

@@ -97,7 +97,7 @@ async function makeFixture(
     });
     const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
         store,
-        legacyCapture: store,
+        fullReconcile: (options) => store.captureFullReconcile(options),
     });
     const engine = new WorkspaceRewindEngine({
         store,

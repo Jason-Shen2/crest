@@ -21,43 +21,19 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
-import {
-    AnchoredReaderError,
-    runAnchoredReader,
-    type AnchoredReaderEntry,
-    type AnchoredReaderEntryIdentity,
-} from "./anchored-reader";
 import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
-import {
-    materializeIncrementalCapturedBatch,
-    readIncrementalCapturedBatchSemantics,
-    type IncrementalCapturedBatch,
-} from "./incremental-path-capture";
-import {
-    applyIncrementalTrees,
-    normalizeIncrementalMutations,
-    type IncrementalPathMutation,
-    type IncrementalTreeEntry,
-    type IncrementalTreeObjectAccess,
-} from "./incremental-tree";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { decodePendingWorkspaceBoundaryV1, type PendingWorkspaceBoundaryV1 } from "./pending-boundary-store";
 import { readProcessStartToken, type ProcessOwnerIdentity } from "./process-owner";
-import {
-    SnapshotQuotaAccounting,
-    SnapshotQuotaExceededError,
-    type SnapshotQuotaReservation,
-} from "./snapshot-quota-accounting";
+import { SnapshotQuotaAccounting } from "./snapshot-quota-accounting";
 import {
     encodeCanonicalStoredJson as canonicalJson,
-    StoredManifestBlobBatchSize,
     StoredManifestReader,
     toStoredWorkspaceScope,
     validateWorkspaceRelativePath as validateRelativePath,
     type StoredManifestObjectReader,
-    type StoredScopeManifestV2,
-    type StoredScopeManifestV3,
+    type StoredScopeManifest,
 } from "./stored-manifest";
 import type {
     CapturedPathStateV1,
@@ -65,9 +41,16 @@ import type {
     WorkspaceSnapshotCoverage,
     WorkspaceSnapshotRefV1,
 } from "./types";
+import { normalizeWorkspaceCandidateEntries, type WorkspaceCandidatePathEntry } from "./workspace-candidate-capture";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceMutationLock } from "./workspace-lock";
 import { WorkspaceMutationLog } from "./workspace-mutation-log";
+import {
+    runStablePathReader,
+    StablePathReaderError,
+    type StablePathReaderEntry,
+    type StablePathReaderEntryIdentity,
+} from "./workspace-path-reader";
 import {
     discoverWorkspaceScope,
     verifyWorkspaceScopeDirectories,
@@ -94,18 +77,18 @@ const QuotaMaxRefCount = 200_000;
 const QuotaMaxObjectCount = 1_000_000;
 const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
-const IncrementalQuotaBaseMetadataBytes = 256 * 1024 ** 2;
-const IncrementalQuotaPerMutationBytes = 8 * 1024;
-const IncrementalQuotaPerPathByte = 4;
-const IncrementalQuotaMaxMetadataBytes = 1024 ** 3;
-const StoredPathStateMaxBytes = 4 * 1024;
-const StoredPathStateBatchOutputBytes = StoredManifestBlobBatchSize * (StoredPathStateMaxBytes + 128);
 
 export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
     requiredPaths?: readonly string[];
     signal?: AbortSignal;
     observer?: WorkspaceScopeObserver;
+}
+
+export interface ReconciledWorkspaceState {
+    tree: string;
+    scope: WorkspaceScopeManifest;
+    coverage: WorkspaceSnapshotCoverage;
 }
 
 export interface WorkspaceSnapshotQuotaStatus {
@@ -293,56 +276,45 @@ export class WorkspaceSnapshotStore {
         ref: WorkspaceSnapshotRefV1;
         coverage: WorkspaceSnapshotCoverage;
     }> {
-        return this.withWorkspaceLock(() => this.#captureUnlocked(options));
-    }
-
-    captureFullReconcile(options: CaptureWorkspaceOptions): Promise<{
-        ref: WorkspaceSnapshotRefV1;
-        coverage: WorkspaceSnapshotCoverage;
-    }> {
-        return this.withWorkspaceLock(() => this.#captureUnlocked(options));
-    }
-
-    async commitIncrementalSnapshot(input: {
-        base: WorkspaceSnapshotRefV1;
-        mutations: IncrementalPathMutation[];
-        scope: WorkspaceScopeManifest;
-        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-        newlyHashedBytes: number;
-        profile: CaptureWorkspaceOptions["profile"];
-    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
-        const ownedInput = cloneIncrementalCommitInput(input);
-        return this.withWorkspaceLock(() => this.#commitIncrementalSnapshot(ownedInput));
-    }
-
-    async commitCapturedIncrementalSnapshot(input: {
-        base: WorkspaceSnapshotRefV1;
-        mutations: IncrementalPathMutation[];
-        scope: WorkspaceScopeManifest;
-        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-        newlyHashedBytes: number;
-        profile: CaptureWorkspaceOptions["profile"];
-        batch: IncrementalCapturedBatch;
-    }): Promise<{ ref: WorkspaceSnapshotRefV1; coverage: WorkspaceSnapshotCoverage }> {
-        const batch = input.batch;
-        const ownedInput = cloneIncrementalCommitInput(input);
-        return this.withWorkspaceLock(() => {
-            const semantics = readIncrementalCapturedBatchSemantics(batch, this.storeRoot);
-            if (
-                ownedInput.newlyHashedBytes !== semantics.newlyHashedBytes ||
-                JSON.stringify(ownedInput.mutations) !== JSON.stringify(semantics.mutations)
-            ) {
-                throw new Error("Incremental captured batch semantics do not match commit input");
+        return this.withWorkspaceLock(async () => {
+            const captured = await this.#captureFullReconcileUnlocked(options);
+            const expectedHead = await this.mutationLog.readHead();
+            if (expectedHead) {
+                const current = await this.#readCommitSnapshotUnlocked(expectedHead);
+                const metadata = await this.#readStoredManifest(current);
+                if (
+                    current.tree === captured.tree &&
+                    canonicalJson({ scope: metadata.getScope(), coverage: metadata.getCoverage() }).equals(
+                        canonicalJson({
+                            scope: captured.scope,
+                            coverage: withoutNewlyHashedBytes(captured.coverage),
+                        })
+                    )
+                ) {
+                    return { ref: current, coverage: captured.coverage };
+                }
             }
-            return this.#commitIncrementalSnapshot(
-                { ...ownedInput, mutations: semantics.mutations, newlyHashedBytes: semantics.newlyHashedBytes },
-                (runtime) =>
-                    materializeIncrementalCapturedBatch(batch, {
-                        storeRoot: this.storeRoot,
-                        writeBlob: (bytes) => this.writeBlob(bytes, runtime),
-                    })
-            );
+            const prepared = await this.mutationLog.prepare({
+                ...(expectedHead ? { expectedHead } : {}),
+                tree: captured.tree,
+                metadata: {
+                    schemaversion: 1,
+                    workspaceidentity: this.identity.workspaceIdentity,
+                    workspaceincarnation: this.identity.workspaceIncarnation,
+                    kind: "external",
+                },
+            });
+            const ref = await this.#publishCommitSnapshotUnlocked({
+                commit: prepared.commit,
+                scope: captured.scope,
+                coverage: withoutNewlyHashedBytes(captured.coverage),
+            });
+            return { ref, coverage: captured.coverage };
         });
+    }
+
+    captureFullReconcile(options: CaptureWorkspaceOptions): Promise<ReconciledWorkspaceState> {
+        return this.withWorkspaceLock(() => this.#captureFullReconcileUnlocked(options));
     }
 
     withWorkspaceLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -370,7 +342,7 @@ export class WorkspaceSnapshotStore {
     }): Promise<WorkspaceSnapshotRefV1> {
         const mutation = await this.mutationLog.read(input.commit);
         const runtime = makeMaintenanceRuntime();
-        const storedManifest: StoredScopeManifestV3 = {
+        const storedManifest: StoredScopeManifest = {
             schemaversion: 3,
             workspaceidentity: this.identity.workspaceIdentity,
             workspaceincarnation: this.identity.workspaceIncarnation,
@@ -420,10 +392,7 @@ export class WorkspaceSnapshotStore {
         return ref;
     }
 
-    async #captureUnlocked(options: CaptureWorkspaceOptions): Promise<{
-        ref: WorkspaceSnapshotRefV1;
-        coverage: WorkspaceSnapshotCoverage;
-    }> {
+    async #captureFullReconcileUnlocked(options: CaptureWorkspaceOptions): Promise<ReconciledWorkspaceState> {
         validateCaptureOptions(options);
         const timeoutMs =
             options.profile === "pre-turn"
@@ -494,43 +463,13 @@ export class WorkspaceSnapshotStore {
                 );
             }
             const workspaceTree = await this.writeWorkspaceTree(captured.entries, runtime);
-            const stateTree = await this.writeStateTree(captured.entries, runtime);
-            const storedManifest: StoredScopeManifestV2 = {
-                schemaversion: 2,
-                workspaceidentity: this.identity.workspaceIdentity,
-                workspaceincarnation: this.identity.workspaceIncarnation,
-                scope: toStoredWorkspaceScope(scope.manifest),
-                coverage: {
-                    complete: scope.coverage.complete,
-                    eligibleentrycount: scope.coverage.eligibleEntryCount,
-                    exclusions: scope.coverage.exclusions.map(toStoredCoverageExclusion),
-                },
-                statetree: stateTree,
-            };
-            const manifestOid = await this.writeBlob(canonicalJson(storedManifest), runtime);
-            const descriptorOid = await this.writeDescriptor(workspaceTree, manifestOid, runtime, stateTree);
-            const ref: WorkspaceSnapshotRefV1 = {
-                id: descriptorOid,
-                workspaceIdentity: this.identity.workspaceIdentity,
-                workspaceIncarnation: this.identity.workspaceIncarnation,
-                tree: workspaceTree,
-                scopeManifest: manifestOid,
-            };
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
-            await this.ensureObjectsDurable([...runtime.objectIds], runtime);
-            await this.anchorSnapshot(ref, runtime);
-            const ownerRef = this.ownerRefName(descriptorOid);
-            try {
-                await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, ownerRef, runtime);
-            } catch (error) {
-                await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, ownerRef);
-                throw error;
-            }
+            await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             SnapshotFingerprints.set(this, captured.fingerprints);
-            markSnapshotTrusted(this, ref);
             return {
-                ref,
+                tree: workspaceTree,
+                scope: scope.manifest,
                 coverage: {
                     ...scope.coverage,
                     newlyHashedBytes,
@@ -554,171 +493,6 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    async #commitIncrementalSnapshot(
-        input: {
-            base: WorkspaceSnapshotRefV1;
-            mutations: IncrementalPathMutation[];
-            scope: WorkspaceScopeManifest;
-            coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-            newlyHashedBytes: number;
-            profile: CaptureWorkspaceOptions["profile"];
-        },
-        materialize?: (runtime: CaptureRuntime) => Promise<void>
-    ): Promise<{
-        ref: WorkspaceSnapshotRefV1;
-        coverage: WorkspaceSnapshotCoverage;
-    }> {
-        const timeoutMs =
-            input.profile === "pre-turn"
-                ? WorkspaceCheckpointLimits.preTurnTimeoutMs
-                : WorkspaceCheckpointLimits.terminalTimeoutMs;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(new Error("incremental commit deadline exceeded")), timeoutMs);
-        const runtime: CaptureRuntime = {
-            deadline: Date.now() + timeoutMs,
-            signal: controller.signal,
-            objectIds: new Set(),
-            newLooseObjectCandidates: new Set(),
-        };
-        let quotaReservation: SnapshotQuotaReservation | undefined;
-        try {
-            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
-            assertCaptureActive(runtime.deadline, runtime.signal);
-            await assertNoShadowMutationFiles(this.storeRoot, runtime);
-            this.assertSnapshotIdentity(input.base);
-            await this.verifyUntrustedSnapshot(input.base);
-            await this.#assertSnapshotOwnerRef(input.base);
-            const baseManifest = await this.#readStoredManifest(input.base);
-            if (baseManifest.manifest.schemaversion !== 2) {
-                throw new Error("Incremental snapshot commit requires a v2 base snapshot");
-            }
-            if (
-                !canonicalJson(toStoredWorkspaceScope(input.scope)).equals(canonicalJson(baseManifest.manifest.scope))
-            ) {
-                throw new Error("Incremental snapshot scope changed; a full capture is required");
-            }
-            quotaReservation = await this.quotaAccounting.reserve({
-                contentBytes: input.newlyHashedBytes,
-                metadataBytes: estimateIncrementalMetadataBytes(input),
-            });
-            await assertFreeSpace(this.storeRoot, runtime);
-            await materialize?.(runtime);
-            const trees = await applyIncrementalTrees({
-                baseWorkspaceTree: input.base.tree,
-                baseStateTree: baseManifest.manifest.statetree,
-                mutations: input.mutations,
-                objects: this.#incrementalTreeObjects(runtime),
-            });
-            for (const oid of trees.objectIds) runtime.objectIds.add(oid);
-            const resultSnapshot = { ...input.base, tree: trees.workspaceTree };
-            const resultManifest = baseManifest.withV2StateTree(resultSnapshot, trees.stateTree);
-            const expectedCoverage = deriveIncrementalCoverage(
-                baseManifest.getCoverage()!,
-                await baseManifest.diff(resultManifest)
-            );
-            if (!canonicalCoverage(expectedCoverage).equals(canonicalCoverage(input.coverage))) {
-                throw new Error("Incremental snapshot coverage does not match the resulting state tree");
-            }
-            const storedManifest: StoredScopeManifestV2 = {
-                schemaversion: 2,
-                workspaceidentity: this.identity.workspaceIdentity,
-                workspaceincarnation: this.identity.workspaceIncarnation,
-                scope: toStoredWorkspaceScope(input.scope),
-                coverage: {
-                    complete: expectedCoverage.complete,
-                    eligibleentrycount: expectedCoverage.eligibleEntryCount,
-                    exclusions: expectedCoverage.exclusions.map(toStoredCoverageExclusion),
-                },
-                statetree: trees.stateTree,
-            };
-            const manifestOid = await this.writeBlob(canonicalJson(storedManifest), runtime);
-            const descriptorOid = await this.writeDescriptor(
-                trees.workspaceTree,
-                manifestOid,
-                runtime,
-                trees.stateTree
-            );
-            const ref: WorkspaceSnapshotRefV1 = {
-                id: descriptorOid,
-                workspaceIdentity: this.identity.workspaceIdentity,
-                workspaceIncarnation: this.identity.workspaceIncarnation,
-                tree: trees.workspaceTree,
-                scopeManifest: manifestOid,
-            };
-            await StoredManifestReader.open({ snapshot: ref, objects: this.#storedManifestObjects() });
-            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
-            await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
-            await this.#settleIncrementalQuota(quotaReservation, runtime);
-            quotaReservation = undefined;
-            await this.#publishIncrementalOwnerRef(ref, runtime);
-            markSnapshotTrusted(this, ref);
-            return {
-                ref,
-                coverage: { ...expectedCoverage, newlyHashedBytes: input.newlyHashedBytes },
-            };
-        } catch (caught) {
-            let error = caught;
-            let settlementError: unknown;
-            if (quotaReservation) {
-                try {
-                    await this.#settleIncrementalQuota(quotaReservation, runtime);
-                } catch (quotaError) {
-                    settlementError = quotaError;
-                    error = new AggregateError([caught, quotaError], "Incremental snapshot quota settlement failed");
-                }
-            }
-            if (caught instanceof SnapshotQuotaExceededError) {
-                throw new WorkspaceSnapshotStoreError("quota_exceeded", caught.message, { cause: error });
-            }
-            if (isNoSpaceError(caught)) {
-                throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
-                    cause: error,
-                });
-            }
-            if (settlementError instanceof SnapshotQuotaExceededError) {
-                throw new WorkspaceSnapshotStoreError("quota_exceeded", settlementError.message, { cause: error });
-            }
-            if (isNoSpaceError(settlementError)) {
-                throw new WorkspaceSnapshotStoreError("enospc", "Insufficient space for workspace checkpoint", {
-                    cause: error,
-                });
-            }
-            if (error instanceof AggregateError) {
-                throw error;
-            }
-            if (controller.signal.aborted) {
-                throw new WorkspaceSnapshotStoreError(
-                    "capture_timeout",
-                    "Workspace incremental snapshot commit timed out",
-                    { cause: error }
-                );
-            }
-            if (error instanceof WorkspaceGitRunnerError && error.code === "timeout") {
-                throw new WorkspaceSnapshotStoreError(
-                    "capture_timeout",
-                    "Workspace incremental snapshot commit timed out",
-                    { cause: error }
-                );
-            }
-            throw error;
-        } finally {
-            clearTimeout(timer);
-        }
-    }
-
-    async #settleIncrementalQuota(reservation: SnapshotQuotaReservation, runtime: CaptureRuntime): Promise<void> {
-        try {
-            const actualNewLooseBytes = await measureNewLooseObjectBytes(
-                this.storeRoot,
-                runtime.newLooseObjectCandidates ?? new Set()
-            );
-            await reservation.commit({ actualNewLooseBytes });
-        } catch (error) {
-            await reservation.invalidate();
-            throw error;
-        }
-    }
-
     diff(before: WorkspaceSnapshotRefV1, after: WorkspaceSnapshotRefV1): Promise<WorkspacePathChangeV1[]> {
         return this.withWorkspaceLock(() => this.#diffUnlocked(before, after));
     }
@@ -730,9 +504,6 @@ export class WorkspaceSnapshotStore {
         try {
             const beforeManifest = await this.#readStoredManifest(before);
             const afterManifest = await this.#readStoredManifest(after);
-            if (beforeManifest.manifest.schemaversion !== 3 && afterManifest.manifest.schemaversion !== 3) {
-                return await beforeManifest.diff(afterManifest);
-            }
             const paths = new Set(await this.#readTreeDeltaPaths(before.tree, after.tree));
             await this.#collectManifestDiffPaths(beforeManifest, paths);
             await this.#collectManifestDiffPaths(afterManifest, paths);
@@ -772,7 +543,6 @@ export class WorkspaceSnapshotStore {
         try {
             if (signal?.aborted) throw signal.reason;
             const manifest = await this.#readStoredManifest(snapshot, signal);
-            if (manifest.manifest.schemaversion !== 3) return await manifest.readNodeKind(path);
             const entry = await this.#readWorkspacePathEntry(snapshot.tree, path, signal);
             if (!entry) {
                 await manifest.readCoveragePathState(path);
@@ -797,10 +567,6 @@ export class WorkspaceSnapshotStore {
             const kinds = new Map<string, "absent" | "leaf" | "tree">();
             for (const path of paths) {
                 if (signal?.aborted) throw signal.reason;
-                if (manifest.manifest.schemaversion !== 3) {
-                    kinds.set(path, await manifest.readNodeKind(path));
-                    continue;
-                }
                 const entry = await this.#readWorkspacePathEntry(snapshot.tree, path, signal);
                 if (!entry) await manifest.readCoveragePathState(path);
                 kinds.set(path, entry?.kind ?? "absent");
@@ -817,7 +583,6 @@ export class WorkspaceSnapshotStore {
         manifest: StoredManifestReader,
         path: string
     ): Promise<CapturedPathStateV1> {
-        if (manifest.manifest.schemaversion !== 3) return await manifest.readPathState(path);
         const entry = await this.#readWorkspacePathEntry(snapshot.tree, path);
         if (!entry || entry.kind === "tree") return await manifest.readCoveragePathState(path);
         return entry.state;
@@ -883,34 +648,9 @@ export class WorkspaceSnapshotStore {
     }
 
     async #collectManifestDiffPaths(manifest: StoredManifestReader, paths: Set<string>): Promise<void> {
-        if (manifest.manifest.schemaversion === 3) {
-            for (const exclusion of manifest.manifest.coverage.exclusions) {
-                if ("path" in exclusion) paths.add(exclusion.path);
-            }
-            return;
+        for (const exclusion of manifest.manifest.coverage.exclusions) {
+            if ("path" in exclusion) paths.add(exclusion.path);
         }
-        await manifest.collectExplicitPaths(paths);
-    }
-
-    readIncrementalSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
-        scope: WorkspaceScopeManifest;
-        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-    }> {
-        return this.withWorkspaceLock(async () => {
-            const manifest = await this.#readStoredManifest(snapshot);
-            const coverage = manifest.getCoverage();
-            if (manifest.manifest.schemaversion !== 2 || !coverage) {
-                throw new Error("Incremental snapshot metadata requires a v2 snapshot");
-            }
-            return {
-                scope: manifest.getScope(),
-                coverage: {
-                    complete: coverage.complete,
-                    eligibleEntryCount: coverage.eligibleEntryCount,
-                    exclusions: coverage.exclusions.map(cloneCoverageExclusion),
-                },
-            };
-        });
     }
 
     readSnapshotMetadata(snapshot: WorkspaceSnapshotRefV1): Promise<{
@@ -920,7 +660,6 @@ export class WorkspaceSnapshotStore {
         return this.withWorkspaceLock(async () => {
             const manifest = await this.#readStoredManifest(snapshot);
             const coverage = manifest.getCoverage();
-            if (!coverage) throw new Error("Workspace snapshot does not contain coverage metadata");
             return {
                 scope: manifest.getScope(),
                 coverage: {
@@ -932,39 +671,23 @@ export class WorkspaceSnapshotStore {
         });
     }
 
-    computeIncrementalSnapshotCoverage(
+    computeCandidateSnapshotCoverage(
         snapshot: WorkspaceSnapshotRefV1,
-        mutations: IncrementalPathMutation[]
+        entries: WorkspaceCandidatePathEntry[]
     ): Promise<Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">> {
-        const ownedMutations = normalizeIncrementalMutations(mutations);
+        const ownedEntries = normalizeWorkspaceCandidateEntries(entries);
         return this.withWorkspaceLock(async () => {
             const manifest = await this.#readStoredManifest(snapshot);
             const coverage = manifest.getCoverage();
-            if (manifest.manifest.schemaversion === 1 || !coverage) {
-                throw new Error("Incremental snapshot coverage requires a v2 or v3 snapshot");
-            }
             const changes: WorkspacePathChangeV1[] = [];
-            for (const mutation of ownedMutations) {
-                if (manifest.manifest.schemaversion === 2 && mutation.state.state === "absent") {
-                    const existingPaths = await manifest.collectExplicitPathsUnder(mutation.path);
-                    if (existingPaths.length > 0) {
-                        for (const path of existingPaths) {
-                            changes.push({
-                                path,
-                                before: await manifest.readPathState(path),
-                                after: { state: "absent" },
-                            });
-                        }
-                        continue;
-                    }
-                }
+            for (const entry of ownedEntries) {
                 changes.push({
-                    path: mutation.path,
-                    before: await this.#readPathStateFromManifest(snapshot, manifest, mutation.path),
-                    after: mutation.state,
+                    path: entry.path,
+                    before: await this.#readPathStateFromManifest(snapshot, manifest, entry.path),
+                    after: entry.state,
                 });
             }
-            return deriveIncrementalCoverage(coverage, changes);
+            return deriveCandidateCoverage(coverage, changes);
         });
     }
 
@@ -989,7 +712,7 @@ export class WorkspaceSnapshotStore {
     verifyOwnedSnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void> {
         return this.withWorkspaceLock(async () => {
             // A V3 ref created or fully audited in this process is immutable; repeated owner checks only need
-            // the association CAS authority. Legacy snapshots retain their existing full-verification behavior.
+            // the association CAS authority.
             if (isTrustedCommitSnapshot(this, snapshot)) {
                 this.assertSnapshotIdentity(snapshot);
                 await this.#assertSnapshotOwnerRef(snapshot, true);
@@ -1000,12 +723,8 @@ export class WorkspaceSnapshotStore {
         });
     }
 
-    async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1, trustedCommitSnapshot = false): Promise<void> {
-        let expected = snapshot.scopeManifest;
-        if (!trustedCommitSnapshot) {
-            const manifest = await this.#readStoredManifestBlob(snapshot);
-            expected = manifest.manifest.schemaversion === 3 ? snapshot.scopeManifest : snapshot.id;
-        }
+    async #assertSnapshotOwnerRef(snapshot: WorkspaceSnapshotRefV1, _trustedCommitSnapshot = false): Promise<void> {
+        const expected = snapshot.scopeManifest;
         const owner = await this.#readSnapshotAssociation(this.ownerRefName(snapshot.id));
         if (owner !== expected) {
             throw new Error("Workspace snapshot owner ref is missing or changed");
@@ -1029,39 +748,10 @@ export class WorkspaceSnapshotStore {
             this.assertSnapshotIdentity(snapshot);
             const manifest = await this.#readStoredManifest(snapshot);
             await this.verifyWorkspaceTree(snapshot, manifest);
-            markSnapshotTrusted(this, snapshot, manifest.manifest.schemaversion === 3);
+            markSnapshotTrusted(this, snapshot, true);
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
-    }
-
-    async #readSnapshotDescriptor(
-        snapshot: WorkspaceSnapshotRefV1,
-        signal?: AbortSignal
-    ): Promise<Map<string, { mode: string; oid: string }>> {
-        const descriptor = await this.git.run(["cat-file", "tree", snapshot.id], {
-            gitDir: this.storeRoot,
-            timeoutMs: StoreGitTimeoutMs,
-            signal,
-        });
-        const entries = parseRawTreeEntries(descriptor.stdout, snapshot.id.length / 2);
-        if (
-            (entries.size !== 2 && entries.size !== 3) ||
-            entries.get("workspace")?.oid !== snapshot.tree ||
-            entries.get("workspace")?.mode !== "40000"
-        ) {
-            throw new Error("Snapshot descriptor has an invalid workspace tree");
-        }
-        if (
-            entries.get("scope-manifest")?.oid !== snapshot.scopeManifest ||
-            entries.get("scope-manifest")?.mode !== "100644"
-        ) {
-            throw new Error("Snapshot descriptor has an invalid scope manifest");
-        }
-        if (entries.size === 3 && entries.get("state")?.mode !== "40000") {
-            throw new Error("Snapshot descriptor has an invalid state tree");
-        }
-        return entries;
     }
 
     anchorSnapshot(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
@@ -1070,13 +760,9 @@ export class WorkspaceSnapshotStore {
 
     async #anchorSnapshotUnlocked(ref: WorkspaceSnapshotRefV1, runtime = makeMaintenanceRuntime()): Promise<void> {
         this.assertSnapshotIdentity(ref);
-        await this.ensureObjectsDurable([ref.id, ref.tree, ref.scopeManifest], runtime);
-        const manifest = await this.#readStoredManifest(ref, runtime.signal);
-        await this.#publishSnapshotAssociation(
-            ref,
-            manifest.manifest.schemaversion === 3 ? ref.scopeManifest : ref.id,
-            runtime
-        );
+        await this.#ensureObjectsDurableUnlocked([ref.id, ref.tree, ref.scopeManifest], runtime);
+        await this.#readStoredManifest(ref, runtime.signal);
+        await this.#publishSnapshotAssociation(ref, ref.scopeManifest, runtime);
     }
 
     async #publishSnapshotAssociation(
@@ -1085,6 +771,19 @@ export class WorkspaceSnapshotStore {
         runtime: CaptureRuntime
     ): Promise<void> {
         const refName = this.ownerRefName(ref.id);
+        const objectRefName = this.snapshotObjectRefName(ref.id);
+        const previousObject = await this.#readSnapshotObjectAnchor(objectRefName, runtime);
+        if (previousObject != null && previousObject !== ref.id) {
+            throw new Error("Workspace snapshot object anchor conflicts with an existing value");
+        }
+        await this.git.run(
+            ["update-ref", "--no-deref", objectRefName, ref.id, previousObject ?? "0".repeat(ref.id.length)],
+            {
+                gitDir: this.storeRoot,
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+            }
+        );
         const previous = await this.#readSnapshotAssociation(refName, runtime);
         if (previous != null && previous !== target) {
             throw new Error("Workspace snapshot manifest association conflicts with an existing value");
@@ -1095,6 +794,18 @@ export class WorkspaceSnapshotStore {
             signal: runtime.signal,
         });
         await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, refName, runtime);
+    }
+
+    async #readSnapshotObjectAnchor(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
+        validateSnapshotObjectRefName(refName);
+        const result = await this.git.run(["for-each-ref", "--format=%(objectname)", "--count=2", refName], {
+            gitDir: this.storeRoot,
+            timeoutMs: remainingTimeout(runtime.deadline),
+            maxStdoutBytes: 256,
+            signal: runtime.signal,
+        });
+        if (result.stdout.length === 0) return undefined;
+        return parseOid(result.stdout);
     }
 
     async #readSnapshotAssociation(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
@@ -1188,6 +899,12 @@ export class WorkspaceSnapshotStore {
             }
             seen.add(ref.name);
             commands.push(`delete ${ref.name} ${ref.oid}`);
+            const snapshot = /^refs\/crest\/snapshots\/([0-9a-f]{40})$/.exec(ref.name);
+            if (snapshot) {
+                const anchorName = this.snapshotObjectRefName(snapshot[1]!);
+                const anchor = await this.#readSnapshotObjectAnchor(anchorName);
+                if (anchor) commands.push(`delete ${anchorName} ${anchor}`);
+            }
         }
         commands.push("prepare", "commit", "");
         await this.git.run(["update-ref", "--stdin"], {
@@ -1407,7 +1124,7 @@ export class WorkspaceSnapshotStore {
         await securePathWithHandle(stagingRoot, 0o700, "directory");
         try {
             for (const [parent, group] of groups) {
-                const captured = await this.captureAnchoredGroup(
+                const captured = await this.captureStablePathGroup(
                     parent,
                     group,
                     stagingRoot,
@@ -1435,7 +1152,7 @@ export class WorkspaceSnapshotStore {
         return { entries, fingerprints, newlyHashedBytes };
     }
 
-    async captureAnchoredGroup(
+    async captureStablePathGroup(
         parent: string,
         entries: WorkspaceScopeEntry[],
         stagingRoot: string,
@@ -1458,7 +1175,7 @@ export class WorkspaceSnapshotStore {
                 | undefined;
             let failure: unknown;
             try {
-                captured = await this.captureAnchoredGroupAttempt(
+                captured = await this.captureStablePathGroupAttempt(
                     parent,
                     currentEntries,
                     attemptRoot,
@@ -1473,8 +1190,8 @@ export class WorkspaceSnapshotStore {
             if (captured) {
                 return captured;
             }
-            if (failure instanceof AnchoredReaderError && failure.code === "unstable_file" && attempt === 0) {
-                currentEntries = await this.refreshAnchoredGroupEvidence(parent, currentEntries, runtime);
+            if (failure instanceof StablePathReaderError && failure.code === "unstable_file" && attempt === 0) {
+                currentEntries = await this.refreshStablePathGroupEvidence(parent, currentEntries, runtime);
                 continue;
             }
             throw asSnapshotCaptureError(failure);
@@ -1482,7 +1199,7 @@ export class WorkspaceSnapshotStore {
         throw new WorkspaceSnapshotStoreError("unstable_file", "Workspace group remained unstable after retry");
     }
 
-    async captureAnchoredGroupAttempt(
+    async captureStablePathGroupAttempt(
         parent: string,
         entries: WorkspaceScopeEntry[],
         stagingRoot: string,
@@ -1508,7 +1225,7 @@ export class WorkspaceSnapshotStore {
             throw new WorkspaceSnapshotStoreError("unstable_file", "Workspace scope identity evidence is missing");
         }
         const previous = SnapshotFingerprints.get(this)!;
-        const requests: AnchoredReaderEntry[] = entries.map((entry, index) => ({
+        const requests: StablePathReaderEntry[] = entries.map((entry, index) => ({
             path: entry.path!,
             name: basename(entry.path!),
             kind: entry.kind as "file" | "symlink",
@@ -1516,7 +1233,7 @@ export class WorkspaceSnapshotStore {
             stagingPath: join(stagingRoot, `${index}-${randomBytes(12).toString("hex")}`),
             ...(previous.has(entry.path!) ? { previous: serializeFingerprint(previous.get(entry.path!)!) } : {}),
         }));
-        const results = await runAnchoredReader({
+        const results = await runStablePathReader({
             parentPath: parent ? join(this.identity.canonicalRoot, ...parent.split("/")) : this.identity.canonicalRoot,
             parentIdentity: {
                 dev: parentIdentity.dev.toString(),
@@ -1560,7 +1277,7 @@ export class WorkspaceSnapshotStore {
         };
     }
 
-    async refreshAnchoredGroupEvidence(
+    async refreshStablePathGroupEvidence(
         parent: string,
         entries: WorkspaceScopeEntry[],
         runtime: CaptureRuntime
@@ -1726,153 +1443,13 @@ export class WorkspaceSnapshotStore {
         return oid;
     }
 
-    async writeDescriptor(
-        workspaceTree: string,
-        manifestOid: string,
-        runtime: CaptureRuntime,
-        stateTree?: string
-    ): Promise<string> {
-        const records: Array<{ name: string; mode: string; type: string; oid: string }> = [
-            { name: "scope-manifest", mode: "100644", type: "blob", oid: manifestOid },
-            { name: "workspace", mode: "040000", type: "tree", oid: workspaceTree },
-        ];
-        if (stateTree) {
-            records.push({ name: "state", mode: "040000", type: "tree", oid: stateTree });
-        }
-        const stdin = makeTreeInput(records);
-        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "tree", makeTreeObject(records), runtime);
-        const result = await this.git.run(["mktree", "-z"], {
-            gitDir: this.storeRoot,
-            stdin,
-            timeoutMs: remainingTimeout(runtime.deadline),
-            signal: runtime.signal,
-        });
-        const oid = parseOid(result.stdout);
-        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected snapshot descriptor");
-        runtime.objectIds.add(oid);
-        return oid;
-    }
-
-    #incrementalTreeObjects(runtime: CaptureRuntime): IncrementalTreeObjectAccess {
-        return {
-            readTree: async (oid) => {
-                validateOid(oid);
-                const result = await this.git.run(["cat-file", "tree", oid], {
-                    gitDir: this.storeRoot,
-                    timeoutMs: remainingTimeout(runtime.deadline),
-                    signal: runtime.signal,
-                });
-                return result.stdout;
-            },
-            readBlob: async (oid) => {
-                validateOid(oid);
-                const result = await this.git.run(["cat-file", "blob", oid], {
-                    gitDir: this.storeRoot,
-                    timeoutMs: remainingTimeout(runtime.deadline),
-                    signal: runtime.signal,
-                });
-                return result.stdout;
-            },
-            readObjectType: async (oid) => {
-                validateOid(oid);
-                const result = await this.git.run(["cat-file", "-t", oid], {
-                    gitDir: this.storeRoot,
-                    timeoutMs: remainingTimeout(runtime.deadline),
-                    maxStdoutBytes: 16,
-                    signal: runtime.signal,
-                });
-                const type = result.stdout.toString("ascii").trim();
-                if (type !== "blob" && type !== "tree") throw new Error("Invalid incremental Git object type");
-                return type;
-            },
-            writeBlob: (bytes) => this.writeBlob(bytes, runtime),
-            writeTree: (entries) => this.#writeIncrementalTree(entries, runtime),
-        };
-    }
-
-    async #writeIncrementalTree(entries: IncrementalTreeEntry[], runtime: CaptureRuntime): Promise<string> {
-        const stdin = makeTreeInput(entries);
-        const expectedOid = await prepareQuotaObjectWrite(this.storeRoot, "tree", makeTreeObject(entries), runtime);
-        const result = await this.git.run(["mktree", "-z"], {
-            gitDir: this.storeRoot,
-            stdin,
-            timeoutMs: remainingTimeout(runtime.deadline),
-            signal: runtime.signal,
-        });
-        const oid = parseOid(result.stdout);
-        if (expectedOid && oid !== expectedOid) throw new Error("Git wrote an unexpected incremental tree");
-        runtime.objectIds.add(oid);
-        return oid;
-    }
-
-    async #publishIncrementalOwnerRef(ref: WorkspaceSnapshotRefV1, runtime: CaptureRuntime): Promise<void> {
-        const refName = this.ownerRefName(ref.id);
-        const previous = await this.#readExactRef(refName, runtime);
-        if (previous && previous !== ref.id) {
-            throw new Error("Workspace snapshot owner ref changed before publication");
-        }
-        try {
-            await this.git.run(["update-ref", refName, ref.id, previous ?? "0".repeat(ref.id.length)], {
-                gitDir: this.storeRoot,
-                timeoutMs: remainingTimeout(runtime.deadline),
-                signal: runtime.signal,
-            });
-            await secureCaptureArtifacts(this.storeRoot, runtime.objectIds, refName, runtime);
-            await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), runtime.signal);
-        } catch (error) {
-            if (!previous) {
-                try {
-                    await this.git.run(["update-ref", "-d", refName, ref.id], {
-                        gitDir: this.storeRoot,
-                        timeoutMs: StoreGitTimeoutMs,
-                    });
-                } catch (cleanupError) {
-                    throw new AggregateError(
-                        [error, cleanupError],
-                        "Incremental snapshot publication failed and owner ref cleanup failed"
-                    );
-                }
-            }
-            throw error;
-        }
-    }
-
-    async #readExactRef(refName: string, runtime = makeMaintenanceRuntime()): Promise<string | undefined> {
-        validateCrestRefName(refName);
-        const owner = await this.git.run(["for-each-ref", "--format=%(objectname)", refName], {
-            gitDir: this.storeRoot,
-            timeoutMs: remainingTimeout(runtime.deadline),
-            maxStdoutBytes: 256,
-            signal: runtime.signal,
-        });
-        if (owner.stdout.length === 0) return undefined;
-        return parseOid(owner.stdout);
-    }
-
     async #readStoredManifest(snapshot: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<StoredManifestReader> {
         try {
             this.assertSnapshotIdentity(snapshot);
             const manifest = await this.#readStoredManifestBlob(snapshot, signal);
-            if (manifest.manifest.schemaversion === 3) {
-                const mutation = await this.mutationLog.read(snapshot.id);
-                if (mutation.tree !== snapshot.tree) {
-                    throw new Error("Commit-backed snapshot tree does not match its mutation commit");
-                }
-                return manifest;
-            }
-            const descriptor = await this.#readSnapshotDescriptor(snapshot, signal);
-            if (manifest.manifest.schemaversion === 1) {
-                if (descriptor.size !== 2 || descriptor.has("state")) {
-                    throw new Error("Snapshot v1 descriptor has unexpected entries");
-                }
-                return manifest;
-            }
-            if (
-                descriptor.size !== 3 ||
-                descriptor.get("state")?.mode !== "40000" ||
-                descriptor.get("state")?.oid !== manifest.manifest.statetree
-            ) {
-                throw new Error("Snapshot v2 descriptor has an invalid state tree");
+            const mutation = await this.mutationLog.read(snapshot.id);
+            if (mutation.tree !== snapshot.tree) {
+                throw new Error("Commit-backed snapshot tree does not match its mutation commit");
             }
             return manifest;
         } catch (cause) {
@@ -1895,25 +1472,12 @@ export class WorkspaceSnapshotStore {
         const treeOids = new Set<string>();
         await this.collectWorkspaceTreeStates(snapshot.tree, "", actual, leafOids, treeOids, runtime);
         const manifestVerification = await manifest.verify();
-        if (manifest.manifest.schemaversion === 3) {
-            const coverage = manifest.manifest.coverage;
-            if (coverage.eligibleentrycount !== actual.size) {
-                throw new Error("Commit-backed snapshot coverage does not match its workspace tree");
-            }
-            if (coverage.complete !== (coverage.exclusions.length === 0)) {
-                throw new Error("Commit-backed snapshot coverage completeness is inconsistent");
-            }
-        } else {
-            const expected = manifestVerification.workspaceStates;
-            if (actual.size !== expected.size) {
-                throw new Error("Workspace tree and scope manifest diverge");
-            }
-            for (const [path, expectedState] of expected) {
-                const actualState = actual.get(path);
-                if (!actualState || !canonicalJson(actualState).equals(canonicalJson(expectedState))) {
-                    throw new Error(`Workspace tree and scope manifest diverge: ${path}`);
-                }
-            }
+        const coverage = manifest.manifest.coverage;
+        if (coverage.eligibleentrycount !== actual.size) {
+            throw new Error("Commit-backed snapshot coverage does not match its workspace tree");
+        }
+        if (coverage.complete !== (coverage.exclusions.length === 0)) {
+            throw new Error("Commit-backed snapshot coverage completeness is inconsistent");
         }
         if (leafOids.size > 0) {
             const expectedObjectIds = [...leafOids];
@@ -1939,35 +1503,7 @@ export class WorkspaceSnapshotStore {
     #storedManifestObjects(signal?: AbortSignal): StoredManifestObjectReader {
         return {
             readBlob: (oid) => this.#readBlobUnlocked(oid, signal),
-            readBlobs: (oids) => this.#readStoredPathStateBlobs(oids, signal),
-            readTree: async (oid) => {
-                validateOid(oid);
-                const result = await this.git.run(["cat-file", "tree", oid], {
-                    gitDir: this.storeRoot,
-                    timeoutMs: StoreGitTimeoutMs,
-                    signal,
-                });
-                return result.stdout;
-            },
         };
-    }
-
-    async #readStoredPathStateBlobs(
-        oids: readonly string[],
-        signal?: AbortSignal
-    ): Promise<ReadonlyMap<string, Buffer>> {
-        if (oids.length === 0 || oids.length > StoredManifestBlobBatchSize || new Set(oids).size !== oids.length) {
-            throw new Error("Invalid stored path state blob batch");
-        }
-        for (const oid of oids) validateOid(oid);
-        const result = await this.git.run(["cat-file", "--batch"], {
-            gitDir: this.storeRoot,
-            stdin: Buffer.from(`${oids.join("\n")}\n`),
-            timeoutMs: StoreGitTimeoutMs,
-            maxStdoutBytes: StoredPathStateBatchOutputBytes,
-            signal,
-        });
-        return parseBatchBlobs(result.stdout, oids, StoredPathStateMaxBytes);
     }
 
     async collectWorkspaceTreeStates(
@@ -2029,6 +1565,11 @@ export class WorkspaceSnapshotStore {
     ownerRefName(snapshotId: string): string {
         validateOid(snapshotId);
         return `refs/crest/snapshots/${snapshotId}`;
+    }
+
+    snapshotObjectRefName(snapshotId: string): string {
+        validateOid(snapshotId);
+        return `refs/crest-objects/snapshots/${snapshotId}`;
     }
 
     pendingRefName(record: Pick<PendingWorkspaceBoundaryV1, "sessionId" | "boundaryToken">): string {
@@ -2416,16 +1957,16 @@ function scopeEntryIdentity(value: BigIntStats): WorkspaceScopeEntryIdentity {
 }
 
 function asSnapshotCaptureError(error: unknown): Error {
-    if (error instanceof AnchoredReaderError && error.code === "capture_budget") {
+    if (error instanceof StablePathReaderError && error.code === "capture_budget") {
         return new WorkspaceSnapshotStoreError("capture_budget", error.message, { cause: error });
     }
-    if (error instanceof AnchoredReaderError && error.code === "unstable_file") {
+    if (error instanceof StablePathReaderError && error.code === "unstable_file") {
         return new WorkspaceSnapshotStoreError("unstable_file", error.message, { cause: error });
     }
     return error instanceof Error ? error : new Error("Workspace group capture failed", { cause: error });
 }
 
-function serializeScopeIdentity(value: WorkspaceScopeEntryIdentity): AnchoredReaderEntryIdentity {
+function serializeScopeIdentity(value: WorkspaceScopeEntryIdentity): StablePathReaderEntryIdentity {
     return {
         dev: value.dev.toString(),
         ino: value.ino.toString(),
@@ -2438,7 +1979,7 @@ function serializeScopeIdentity(value: WorkspaceScopeEntryIdentity): AnchoredRea
     };
 }
 
-function serializeFingerprint(value: FileFingerprint): AnchoredReaderEntryIdentity & { oid: string } {
+function serializeFingerprint(value: FileFingerprint): StablePathReaderEntryIdentity & { oid: string } {
     return {
         dev: value.dev.toString(),
         ino: value.ino.toString(),
@@ -2452,7 +1993,7 @@ function serializeFingerprint(value: FileFingerprint): AnchoredReaderEntryIdenti
     };
 }
 
-function deserializeFingerprint(value: AnchoredReaderEntryIdentity, oid: string): FileFingerprint {
+function deserializeFingerprint(value: StablePathReaderEntryIdentity, oid: string): FileFingerprint {
     return {
         dev: BigInt(value.dev),
         ino: BigInt(value.ino),
@@ -2726,65 +2267,6 @@ function validateCaptureOptions(options: CaptureWorkspaceOptions): void {
     }
 }
 
-function validateIncrementalCommitInput(input: {
-    base: WorkspaceSnapshotRefV1;
-    mutations: IncrementalPathMutation[];
-    scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-    newlyHashedBytes: number;
-    profile: CaptureWorkspaceOptions["profile"];
-}): void {
-    if (
-        !input ||
-        !input.base ||
-        !Array.isArray(input.mutations) ||
-        !input.scope ||
-        typeof input.scope !== "object" ||
-        !input.coverage ||
-        typeof input.coverage.complete !== "boolean" ||
-        !Number.isSafeInteger(input.coverage.eligibleEntryCount) ||
-        input.coverage.eligibleEntryCount < 0 ||
-        !Array.isArray(input.coverage.exclusions) ||
-        !Number.isSafeInteger(input.newlyHashedBytes) ||
-        input.newlyHashedBytes < 0 ||
-        input.newlyHashedBytes > WorkspaceCheckpointLimits.maxNewlyHashedBytes ||
-        !["pre-turn", "terminal", "safety"].includes(input.profile)
-    ) {
-        throw new Error("Invalid incremental snapshot commit input");
-    }
-    input.coverage.exclusions.forEach(toStoredCoverageExclusion);
-}
-
-function cloneIncrementalCommitInput(input: {
-    base: WorkspaceSnapshotRefV1;
-    mutations: IncrementalPathMutation[];
-    scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-    newlyHashedBytes: number;
-    profile: CaptureWorkspaceOptions["profile"];
-}): {
-    base: WorkspaceSnapshotRefV1;
-    mutations: IncrementalPathMutation[];
-    scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-    newlyHashedBytes: number;
-    profile: CaptureWorkspaceOptions["profile"];
-} {
-    validateIncrementalCommitInput(input);
-    return {
-        base: { ...input.base },
-        mutations: normalizeIncrementalMutations(input.mutations),
-        scope: JSON.parse(JSON.stringify(input.scope)) as WorkspaceScopeManifest,
-        coverage: {
-            complete: input.coverage.complete,
-            eligibleEntryCount: input.coverage.eligibleEntryCount,
-            exclusions: input.coverage.exclusions.map(cloneCoverageExclusion),
-        },
-        newlyHashedBytes: input.newlyHashedBytes,
-        profile: input.profile,
-    };
-}
-
 function cloneCommitSnapshotInput(input: {
     commit: string;
     scope: WorkspaceScopeManifest;
@@ -2827,7 +2309,7 @@ function cloneCommitSnapshotInput(input: {
     };
 }
 
-function deriveIncrementalCoverage(
+function deriveCandidateCoverage(
     base: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">,
     changes: readonly WorkspacePathChangeV1[]
 ): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
@@ -2847,7 +2329,7 @@ function deriveIncrementalCoverage(
     for (const change of changes) {
         eligibleEntryDelta += Number(isEligiblePathState(change.after)) - Number(isEligiblePathState(change.before));
         if (!Number.isSafeInteger(eligibleEntryDelta)) {
-            throw new Error("Incremental snapshot coverage is invalid");
+            throw new Error("Candidate snapshot coverage is invalid");
         }
         if (change.before.state === "excluded") pathExclusions.delete(change.path);
         if (change.after.state === "excluded") {
@@ -2859,7 +2341,7 @@ function deriveIncrementalCoverage(
     }
     const eligibleEntryCount = base.eligibleEntryCount + eligibleEntryDelta;
     if (!Number.isSafeInteger(eligibleEntryCount) || eligibleEntryCount < 0) {
-        throw new Error("Incremental snapshot coverage is invalid");
+        throw new Error("Candidate snapshot coverage is invalid");
     }
     const exclusions = [...nonPathExclusions, ...pathExclusions.values()].sort(compareCoverageExclusions);
     return {
@@ -2867,14 +2349,6 @@ function deriveIncrementalCoverage(
         eligibleEntryCount,
         exclusions,
     };
-}
-
-function canonicalCoverage(coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">): Buffer {
-    return canonicalJson({
-        complete: coverage.complete,
-        eligibleEntryCount: coverage.eligibleEntryCount,
-        exclusions: coverage.exclusions.map(cloneCoverageExclusion).sort(compareCoverageExclusions),
-    });
 }
 
 function compareCoverageExclusions(
@@ -2893,13 +2367,23 @@ function cloneCoverageExclusion(
     return { pathBytesBase64: stored.pathbytesbase64, reason: stored.reason };
 }
 
+function withoutNewlyHashedBytes(
+    coverage: WorkspaceSnapshotCoverage
+): Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes"> {
+    return {
+        complete: coverage.complete,
+        eligibleEntryCount: coverage.eligibleEntryCount,
+        exclusions: coverage.exclusions.map(cloneCoverageExclusion),
+    };
+}
+
 function isEligiblePathState(state: CapturedPathStateV1): boolean {
     return state.state === "file" || state.state === "symlink";
 }
 
 function toStoredCoverageExclusion(
     exclusion: WorkspaceSnapshotCoverage["exclusions"][number]
-): StoredScopeManifestV2["coverage"]["exclusions"][number] {
+): StoredScopeManifest["coverage"]["exclusions"][number] {
     if (!exclusion || typeof exclusion !== "object" || typeof exclusion.reason !== "string") {
         throw new Error("Invalid incremental snapshot coverage exclusion");
     }
@@ -2988,6 +2472,12 @@ function validateCrestRefName(value: string): void {
         value.includes("..")
     ) {
         throw new Error("Invalid Crest ref name");
+    }
+}
+
+function validateSnapshotObjectRefName(value: string): void {
+    if (!/^refs\/crest-objects\/snapshots\/[0-9a-f]{40}$/.test(value)) {
+        throw new Error("Invalid workspace snapshot object ref name");
     }
 }
 
@@ -3167,37 +2657,6 @@ function quotaGeneration(processOwner: ProcessOwnerIdentity): string {
     return createHash("sha256").update(`${processOwner.pid}\0${processOwner.processStartToken}`, "utf8").digest("hex");
 }
 
-function estimateIncrementalMetadataBytes(input: {
-    mutations: readonly IncrementalPathMutation[];
-    scope: WorkspaceScopeManifest;
-    coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
-}): number {
-    let metadataBytes = IncrementalQuotaBaseMetadataBytes;
-    metadataBytes = addBoundedQuotaEstimate(metadataBytes, canonicalJson(input.scope).length * 2);
-    metadataBytes = addBoundedQuotaEstimate(metadataBytes, canonicalJson(input.coverage).length * 2);
-    metadataBytes = addBoundedQuotaEstimate(metadataBytes, input.mutations.length * IncrementalQuotaPerMutationBytes);
-    const pathBytes = input.mutations.reduce((total, mutation) => total + Buffer.byteLength(mutation.path), 0);
-    metadataBytes = addBoundedQuotaEstimate(metadataBytes, pathBytes * IncrementalQuotaPerPathByte);
-    if (metadataBytes > IncrementalQuotaMaxMetadataBytes) {
-        throw new WorkspaceSnapshotStoreError(
-            "capture_budget",
-            "Incremental snapshot metadata exceeds its quota bound"
-        );
-    }
-    return metadataBytes;
-}
-
-function addBoundedQuotaEstimate(left: number, right: number): number {
-    const sum = left + right;
-    if (!Number.isSafeInteger(right) || right < 0 || !Number.isSafeInteger(sum)) {
-        throw new WorkspaceSnapshotStoreError(
-            "capture_budget",
-            "Incremental snapshot metadata exceeds its quota bound"
-        );
-    }
-    return sum;
-}
-
 async function prepareQuotaObjectWrite(
     storeRoot: string,
     type: "blob" | "tree",
@@ -3283,31 +2742,6 @@ function assertBatchBlobObjects(value: Buffer, expectedObjectIds: string[]): voi
             throw new Error("Workspace tree leaf is missing or is not a blob");
         }
     }
-}
-
-function parseBatchBlobs(
-    value: Buffer,
-    expectedObjectIds: readonly string[],
-    maxBlobBytes: number
-): Map<string, Buffer> {
-    const blobs = new Map<string, Buffer>();
-    let offset = 0;
-    for (const expectedOid of expectedObjectIds) {
-        const lineEnd = value.indexOf(0x0a, offset);
-        if (lineEnd < offset) throw new Error("Git returned an invalid stored path state blob batch");
-        const header = value.subarray(offset, lineEnd).toString("ascii").split(" ");
-        if (header.length !== 3 || header[0] !== expectedOid || header[1] !== "blob") {
-            throw new Error("Git returned an invalid stored path state blob batch");
-        }
-        const size = parseSafeInteger(header[2]!, "stored path state blob size");
-        if (size > maxBlobBytes || lineEnd + 1 + size >= value.length || value[lineEnd + 1 + size] !== 0x0a) {
-            throw new Error("Git returned an invalid stored path state blob batch");
-        }
-        blobs.set(expectedOid, Buffer.from(value.subarray(lineEnd + 1, lineEnd + 1 + size)));
-        offset = lineEnd + 1 + size + 1;
-    }
-    if (offset !== value.length) throw new Error("Git returned an invalid stored path state blob batch");
-    return blobs;
 }
 
 function parseSafeInteger(value: string, label: string): number {

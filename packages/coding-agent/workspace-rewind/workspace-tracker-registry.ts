@@ -8,7 +8,6 @@ import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-st
 import { WorkspaceCandidates } from "./workspace-candidates";
 import { ParcelWorkspaceChangeFeed, type WorkspaceChangeFeed } from "./workspace-change-feed";
 import { discoverWorkspaceScope } from "./workspace-scope";
-import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 import { WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
 export interface WorkspaceTrackerLease {
@@ -25,7 +24,6 @@ export type WorkspaceTrackerAcquireInput = Parameters<typeof WorkspaceSnapshotSt
 export interface WorkspaceTrackerRegistryDependencies {
     openStore: typeof WorkspaceSnapshotStore.open;
     makeFeed(input: { workspaceRoot: string; storeRoot: string }): WorkspaceChangeFeed;
-    makeTracker(input: { store: WorkspaceSnapshotStore; feed: WorkspaceChangeFeed }): WorkspaceSnapshotTracker;
     makeCandidates(input: {
         store: WorkspaceSnapshotStore;
         feed: WorkspaceChangeFeed;
@@ -34,7 +32,6 @@ export interface WorkspaceTrackerRegistryDependencies {
     makeWriterLeases(): WorkspaceWriterLeaseRegistry;
     makeSnapshotSource(input: {
         store: WorkspaceSnapshotStore;
-        tracker: WorkspaceSnapshotTracker;
         candidates: WorkspaceCandidates;
     }): Promise<WorkspaceCheckpointSnapshotSource>;
 }
@@ -42,7 +39,7 @@ export interface WorkspaceTrackerRegistryDependencies {
 interface WorkspaceTrackerRegistryResource {
     store: WorkspaceSnapshotStore;
     mutationLog: WorkspaceSnapshotStore["mutationLog"];
-    tracker: WorkspaceSnapshotTracker;
+    feed: WorkspaceChangeFeed;
     candidates: WorkspaceCandidates;
     writerLeases: WorkspaceWriterLeaseRegistry;
     snapshotSource: WorkspaceCheckpointSnapshotSource;
@@ -64,7 +61,6 @@ interface WorkspaceTrackerRegistryBinding {
 const DefaultDependencies: WorkspaceTrackerRegistryDependencies = {
     openStore: WorkspaceSnapshotStore.open,
     makeFeed: (input) => new ParcelWorkspaceChangeFeed(input),
-    makeTracker: (input) => new WorkspaceSnapshotTracker(input),
     makeCandidates: ({ store, feed, userGit }) =>
         new WorkspaceCandidates({
             workspaceRoot: store.identity.canonicalRoot,
@@ -83,8 +79,12 @@ const DefaultDependencies: WorkspaceTrackerRegistryDependencies = {
             },
         }),
     makeWriterLeases: () => new WorkspaceWriterLeaseRegistry(),
-    makeSnapshotSource: ({ store, tracker, candidates }) =>
-        initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture: tracker, candidates }),
+    makeSnapshotSource: ({ store, candidates }) =>
+        initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            fullReconcile: (options) => store.captureFullReconcile(options),
+            candidates,
+        }),
 };
 
 export class WorkspaceTrackerRegistry {
@@ -158,23 +158,21 @@ export class WorkspaceTrackerRegistry {
                 workspaceRoot: store.identity.canonicalRoot,
                 storeRoot: store.storeRoot,
             });
-            let tracker: WorkspaceSnapshotTracker | undefined;
             try {
-                tracker = this.dependencies.makeTracker({ store, feed });
                 const candidates = this.dependencies.makeCandidates({ store, feed, userGit: input.git });
                 const writerLeases = this.dependencies.makeWriterLeases();
-                const snapshotSource = await this.dependencies.makeSnapshotSource({ store, tracker, candidates });
+                const snapshotSource = await this.dependencies.makeSnapshotSource({ store, candidates });
                 return {
                     store,
                     mutationLog: store.mutationLog,
-                    tracker,
+                    feed,
                     candidates,
                     writerLeases,
                     snapshotSource,
                 };
             } catch (error) {
                 try {
-                    await (tracker ? tracker.dispose() : feed.dispose());
+                    await feed.dispose();
                 } catch (cleanupError) {
                     throw new AggregateError(
                         [error, cleanupError],
@@ -200,7 +198,7 @@ export class WorkspaceTrackerRegistry {
                     }
                 }
                 try {
-                    await resource.tracker.dispose();
+                    await resource.feed.dispose();
                 } catch (error) {
                     failures.push(error);
                 }

@@ -86,7 +86,7 @@ async function makeFixture(label: string, gitRepository = false) {
     let hostedPtyRunning = false;
     const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
         store,
-        legacyCapture: store,
+        fullReconcile: (options) => store.captureFullReconcile(options),
     });
     const manager = registerWorkspaceCheckpointManager({
         harness,
@@ -163,7 +163,7 @@ function pathChanges(checkpoint: WorkspaceCheckpointV1): string[] {
 describe("turn-boundary workspace capture is tool-independent", () => {
     it("captures only when a potentially-writing operation starts and when its turn ends", async () => {
         const value = await makeFixture("default-source");
-        const capture = vi.spyOn(value.store, "capture");
+        const capture = vi.spyOn(value.store, "captureFullReconcile");
         const diff = vi.spyOn(value.store, "diff");
 
         const checkpoint = await runTurn(value, "default-source", () =>

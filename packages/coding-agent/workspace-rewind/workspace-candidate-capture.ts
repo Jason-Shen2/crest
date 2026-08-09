@@ -7,18 +7,17 @@ import { chmod, lstat, mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
-import {
-    AnchoredReaderError,
-    runAnchoredReaderBatch,
-    type AnchoredReaderBatchEntry,
-    type AnchoredReaderBatchHooks,
-    type AnchoredReaderEntryIdentity,
-} from "./anchored-reader";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
-import { normalizeIncrementalMutations, type IncrementalPathMutation } from "./incremental-tree";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import type { CapturedPathStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import {
+    StablePathReaderError,
+    runStablePathReaderBatch,
+    type StablePathReaderBatchEntry,
+    type StablePathReaderBatchHooks,
+    type StablePathReaderEntryIdentity,
+} from "./workspace-path-reader";
 import {
     classifyIncrementalWorkspacePaths,
     type IncrementalWorkspaceScopeEntry,
@@ -26,11 +25,16 @@ import {
     type WorkspaceScopeManifest,
 } from "./workspace-scope";
 
-export type IncrementalPathCaptureResult =
-    | { status: "captured"; mutations: IncrementalPathMutation[]; newlyHashedBytes: number }
+export interface WorkspaceCandidatePathEntry {
+    path: string;
+    state: CapturedPathStateV1;
+}
+
+export type WorkspaceCandidateCaptureResult =
+    | { status: "captured"; entries: WorkspaceCandidatePathEntry[]; newlyHashedBytes: number }
     | { status: "reconcile"; reason: "scope-invalidated" | "unstable-path" | "unsafe-evidence" };
 
-export interface IncrementalPathCaptureOptions {
+export interface WorkspaceCandidateCaptureOptions {
     identity: CanonicalWorkspaceIdentity;
     git: WorkspaceGitRunner;
     storeRoot: string;
@@ -40,10 +44,10 @@ export interface IncrementalPathCaptureOptions {
     maxNewlyHashedBytes: number;
     timeoutMs: number;
     base: BasePathKindReader;
-    hooks?: IncrementalPathCaptureHooks;
+    hooks?: WorkspaceCandidateCaptureHooks;
 }
 
-export interface IncrementalPathCaptureHooks extends AnchoredReaderBatchHooks {
+export interface WorkspaceCandidateCaptureHooks extends StablePathReaderBatchHooks {
     scopeEnumerated?(entryCount: number): void;
 }
 
@@ -55,27 +59,27 @@ export interface BasePathKindReader {
     ): Promise<ReadonlyMap<string, "absent" | "leaf" | "tree">>;
 }
 
-export interface IncrementalCapturedBatch {
-    readonly kind: "incremental-captured-batch";
+export interface WorkspaceCandidateBatch {
+    readonly kind: "workspace-candidate-batch";
 }
 
-interface IncrementalCapturedBatchRecord {
+interface WorkspaceCandidateBatchRecord {
     storeRoot: string;
-    mutations: ReadonlyArray<IncrementalPathMutation>;
+    entries: ReadonlyArray<WorkspaceCandidatePathEntry>;
     newlyHashedBytes: number;
     stagingRoot?: string;
-    stagingRootIdentity?: AnchoredReaderEntryIdentity;
+    stagingRootIdentity?: StablePathReaderEntryIdentity;
     files: Array<{
         path: string;
         stagingPath: string;
         oid: string;
-        identity: AnchoredReaderEntryIdentity;
+        identity: StablePathReaderEntryIdentity;
     }>;
 }
 
-const CapturedBatchRecords = new WeakMap<IncrementalCapturedBatch, IncrementalCapturedBatchRecord>();
+const CapturedBatchRecords = new WeakMap<WorkspaceCandidateBatch, WorkspaceCandidateBatchRecord>();
 
-export class IncrementalPathCapture {
+export class WorkspaceCandidateCapture {
     readonly identity: CanonicalWorkspaceIdentity;
     readonly git: WorkspaceGitRunner;
     readonly storeRoot: string;
@@ -85,20 +89,20 @@ export class IncrementalPathCapture {
     readonly maxNewlyHashedBytes: number;
     readonly timeoutMs: number;
     readonly base: BasePathKindReader;
-    readonly hooks?: IncrementalPathCaptureHooks;
-    pendingCaptures = new WeakMap<object, IncrementalCapturedBatch>();
-    readonly pendingBatches = new Set<IncrementalCapturedBatch>();
-    readonly pendingResults = new Map<IncrementalCapturedBatch, object>();
-    readonly consumedBatches = new Set<IncrementalCapturedBatch>();
-    readonly batchOperations = new Map<IncrementalCapturedBatch, Promise<void>>();
+    readonly hooks?: WorkspaceCandidateCaptureHooks;
+    pendingCaptures = new WeakMap<object, WorkspaceCandidateBatch>();
+    readonly pendingBatches = new Set<WorkspaceCandidateBatch>();
+    readonly pendingResults = new Map<WorkspaceCandidateBatch, object>();
+    readonly consumedBatches = new Set<WorkspaceCandidateBatch>();
+    readonly batchOperations = new Map<WorkspaceCandidateBatch, Promise<void>>();
     readonly stagingRoots = new Set<string>();
     readonly inFlightCaptures = new Set<{ controller: AbortController; promise: Promise<unknown> }>();
     lifecycle: "active" | "disposing" | "disposed" = "active";
     disposePromise?: Promise<void>;
 
-    constructor(input: IncrementalPathCaptureOptions) {
+    constructor(input: WorkspaceCandidateCaptureOptions) {
         if (!isAbsolute(input.storeRoot) || basename(input.storeRoot) !== "repo.git") {
-            throw new Error("Invalid incremental snapshot store root");
+            throw new Error("Invalid candidate snapshot store root");
         }
         this.identity = cloneIdentity(input.identity);
         this.git = input.git;
@@ -110,7 +114,7 @@ export class IncrementalPathCapture {
         this.timeoutMs = validateNonNegativeLimit(input.timeoutMs, "timeout");
         this.hooks = input.hooks;
         if (!input.base || typeof input.base.readNodeKind !== "function") {
-            throw new Error("Incremental capture requires a base path kind reader");
+            throw new Error("Workspace candidate capture requires a base path kind reader");
         }
         this.base = Object.freeze({
             readNodeKind: input.base.readNodeKind.bind(input.base),
@@ -121,7 +125,7 @@ export class IncrementalPathCapture {
             this.scope.policy.maxEntries !== this.maxEntries ||
             this.scope.policy.maxUntrackedBytes !== this.maxUntrackedBytes
         ) {
-            throw new Error("Incremental capture scope policy does not match its limits");
+            throw new Error("Workspace candidate capture scope policy does not match its limits");
         }
     }
 
@@ -129,9 +133,9 @@ export class IncrementalPathCapture {
         paths: readonly string[],
         signal?: AbortSignal,
         timeoutMs: number = this.timeoutMs
-    ): Promise<IncrementalPathCaptureResult> {
+    ): Promise<WorkspaceCandidateCaptureResult> {
         if (this.lifecycle !== "active") {
-            return Promise.reject(new Error("Incremental path capture is disposed"));
+            return Promise.reject(new Error("Workspace candidate capture is disposed"));
         }
         const captureTimeoutMs = validateNonNegativeLimit(timeoutMs, "timeout");
         const controller = new AbortController();
@@ -139,7 +143,7 @@ export class IncrementalPathCapture {
         signal?.addEventListener("abort", onAbort, { once: true });
         if (signal?.aborted) onAbort();
         const deadline = Date.now() + captureTimeoutMs;
-        const deadlineError = new AnchoredReaderError("timeout", "Incremental path capture timed out");
+        const deadlineError = new StablePathReaderError("timeout", "Workspace candidate capture timed out");
         const timer = setTimeout(() => controller.abort(deadlineError), captureTimeoutMs);
         const tracked = { controller, promise: Promise.resolve() as Promise<unknown> };
         const promise = this.captureActive([...paths], controller.signal, deadline)
@@ -161,12 +165,12 @@ export class IncrementalPathCapture {
         paths: readonly string[],
         signal: AbortSignal,
         deadline: number
-    ): Promise<IncrementalPathCaptureResult> {
+    ): Promise<WorkspaceCandidateCaptureResult> {
         assertCaptureDeadline(deadline, signal);
         if (paths.length === 0) {
-            const result: IncrementalPathCaptureResult = {
+            const result: WorkspaceCandidateCaptureResult = {
                 status: "captured",
-                mutations: [],
+                entries: [],
                 newlyHashedBytes: 0,
             };
             this.registerPendingCapture(result, { storeRoot: this.storeRoot, files: [] });
@@ -211,9 +215,9 @@ export class IncrementalPathCapture {
         );
         if (readable.length === 0) {
             assertCaptureDeadline(deadline, signal);
-            const result: IncrementalPathCaptureResult = {
+            const result: WorkspaceCandidateCaptureResult = {
                 status: "captured",
-                mutations: normalizeIncrementalMutations(direct.map(toDirectMutation)),
+                entries: normalizeWorkspaceCandidateEntries(direct.map(toDirectEntry)),
                 newlyHashedBytes: 0,
             };
             this.registerPendingCapture(result, { storeRoot: this.storeRoot, files: [] });
@@ -222,13 +226,13 @@ export class IncrementalPathCapture {
         if (process.platform === "win32") {
             return { status: "reconcile", reason: "unsafe-evidence" };
         }
-        const stagingRoot = await mkdtemp(join(tmpdir(), "crest-incremental-path-capture-"));
+        const stagingRoot = await mkdtemp(join(tmpdir(), "crest-workspace-candidate-capture-"));
         this.stagingRoots.add(stagingRoot);
         let retained = false;
         try {
             await chmod(stagingRoot, 0o700);
             const requests = readable.map((entry, index) => makeReaderEntry(entry, stagingRoot, index));
-            const results = await runAnchoredReaderBatch({
+            const results = await runStablePathReaderBatch({
                 rootPath: this.identity.canonicalRoot,
                 entries: requests,
                 maxSingleFileBytes: WorkspaceCheckpointInternalLimits.maxSingleFileBytes,
@@ -244,7 +248,7 @@ export class IncrementalPathCapture {
             const staged = results.map((result) => result.stagingPath!);
             const oids = await this.hashStagedPaths(staged, remainingCaptureMs(deadline, signal), signal);
             const sourceByPath = new Map(readable.map((entry) => [entry.path!, entry]));
-            const mutations = results.map((result, index): IncrementalPathMutation => {
+            const entries = results.map((result, index): WorkspaceCandidatePathEntry => {
                 const source = sourceByPath.get(result.path)!;
                 return {
                     path: result.path,
@@ -258,10 +262,10 @@ export class IncrementalPathCapture {
                               },
                 };
             });
-            mutations.push(...direct.map(toDirectMutation));
-            const result: IncrementalPathCaptureResult = {
+            entries.push(...direct.map(toDirectEntry));
+            const result: WorkspaceCandidateCaptureResult = {
                 status: "captured",
-                mutations: normalizeIncrementalMutations(mutations),
+                entries: normalizeWorkspaceCandidateEntries(entries),
                 newlyHashedBytes,
             };
             assertCaptureDeadline(deadline, signal);
@@ -283,10 +287,10 @@ export class IncrementalPathCapture {
             retained = true;
             return result;
         } catch (error) {
-            if (signal.aborted && signal.reason instanceof AnchoredReaderError) throw signal.reason;
+            if (signal.aborted && signal.reason instanceof StablePathReaderError) throw signal.reason;
             if (error instanceof WorkspaceGitRunnerError && error.code === "aborted") throw error;
-            if (error instanceof AnchoredReaderError && error.code === "aborted") throw error;
-            if (error instanceof AnchoredReaderError && error.code === "unstable_file") {
+            if (error instanceof StablePathReaderError && error.code === "aborted") throw error;
+            if (error instanceof StablePathReaderError && error.code === "unstable_file") {
                 return { status: "reconcile", reason: "unstable-path" };
             }
             return { status: "reconcile", reason: "unsafe-evidence" };
@@ -296,12 +300,12 @@ export class IncrementalPathCapture {
     }
 
     async consumeCaptured<T>(
-        result: IncrementalPathCaptureResult,
-        consumer: (batch: IncrementalCapturedBatch) => Promise<T>
+        result: WorkspaceCandidateCaptureResult,
+        consumer: (batch: WorkspaceCandidateBatch) => Promise<T>
     ): Promise<T> {
         const batch = this.getPendingCapture(result);
         if (this.consumedBatches.has(batch)) {
-            throw new Error("Incremental capture result was already consumed");
+            throw new Error("Workspace candidate capture result was already consumed");
         }
         const release = this.reserveBatchOperation(batch, "consume");
         try {
@@ -322,7 +326,7 @@ export class IncrementalPathCapture {
             if (consumerFailure && cleanupFailure) {
                 throw new AggregateError(
                     [consumerFailure, cleanupFailure],
-                    "Incremental capture consumer and cleanup failed"
+                    "Workspace candidate capture consumer and cleanup failed"
                 );
             }
             if (consumerFailure) throw consumerFailure;
@@ -333,7 +337,7 @@ export class IncrementalPathCapture {
         }
     }
 
-    async discardCaptured(result: IncrementalPathCaptureResult): Promise<void> {
+    async discardCaptured(result: WorkspaceCandidateCaptureResult): Promise<void> {
         const batch = this.getPendingCapture(result);
         const release = this.reserveBatchOperation(batch, "discard");
         try {
@@ -366,27 +370,27 @@ export class IncrementalPathCapture {
         ]);
         const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
         if (failures.length > 0) {
-            throw new AggregateError(failures, "Failed to dispose incremental capture staging");
+            throw new AggregateError(failures, "Failed to dispose workspace candidate capture staging");
         }
         this.lifecycle = "disposed";
     }
 
     registerPendingCapture(
-        result: IncrementalPathCaptureResult,
-        record: Omit<IncrementalCapturedBatchRecord, "mutations" | "newlyHashedBytes">
+        result: WorkspaceCandidateCaptureResult,
+        record: Omit<WorkspaceCandidateBatchRecord, "entries" | "newlyHashedBytes">
     ): void {
-        if (this.lifecycle !== "active") throw new Error("Incremental path capture is disposed");
+        if (this.lifecycle !== "active") throw new Error("Workspace candidate capture is disposed");
         if (result.status !== "captured") throw new Error("Cannot register a non-captured incremental batch");
-        const mutations = freezeMutations(result.mutations);
+        const entries = freezeEntries(result.entries);
         const batch = Object.freeze(
             Object.defineProperty({}, "kind", {
-                value: "incremental-captured-batch",
+                value: "workspace-candidate-batch",
                 enumerable: false,
-            }) as IncrementalCapturedBatch
+            }) as WorkspaceCandidateBatch
         );
         CapturedBatchRecords.set(batch, {
             ...record,
-            mutations,
+            entries,
             newlyHashedBytes: result.newlyHashedBytes,
         });
         this.pendingCaptures.set(result, batch);
@@ -394,20 +398,21 @@ export class IncrementalPathCapture {
         this.pendingResults.set(batch, result);
     }
 
-    getPendingCapture(result: IncrementalPathCaptureResult): IncrementalCapturedBatch {
+    getPendingCapture(result: WorkspaceCandidateCaptureResult): WorkspaceCandidateBatch {
         const batch = this.pendingCaptures.get(result);
-        if (!batch) throw new Error("Incremental capture result is not pending or was already consumed or discarded");
+        if (!batch)
+            throw new Error("Workspace candidate capture result is not pending or was already consumed or discarded");
         return batch;
     }
 
-    reserveBatchOperation(batch: IncrementalCapturedBatch, kind: "consume" | "discard"): () => void {
+    reserveBatchOperation(batch: WorkspaceCandidateBatch, kind: "consume" | "discard"): () => void {
         if (this.batchOperations.has(batch)) {
-            throw new Error("Incremental capture batch operation is already active");
+            throw new Error("Workspace candidate capture batch operation is already active");
         }
         const retryingFailedDisposeCleanup =
             kind === "discard" && this.lifecycle === "disposing" && this.disposePromise == null;
         if (this.lifecycle !== "active" && !retryingFailedDisposeCleanup) {
-            throw new Error("Incremental path capture is disposed");
+            throw new Error("Workspace candidate capture is disposed");
         }
         let settle!: () => void;
         const settled = new Promise<void>((resolve) => {
@@ -416,17 +421,17 @@ export class IncrementalPathCapture {
         this.batchOperations.set(batch, settled);
         return () => {
             if (this.batchOperations.get(batch) !== settled) {
-                throw new Error("Incremental capture batch operation ownership changed");
+                throw new Error("Workspace candidate capture batch operation ownership changed");
             }
             this.batchOperations.delete(batch);
             settle();
         };
     }
 
-    async cleanupPendingBatch(batch: IncrementalCapturedBatch): Promise<void> {
+    async cleanupPendingBatch(batch: WorkspaceCandidateBatch): Promise<void> {
         const result = this.pendingResults.get(batch);
         if (!result || !this.pendingBatches.has(batch)) {
-            throw new Error("Incremental capture result is not pending or was already consumed or discarded");
+            throw new Error("Workspace candidate capture result is not pending or was already consumed or discarded");
         }
         await cleanupCapturedBatch(batch);
         this.pendingCaptures.delete(result);
@@ -476,112 +481,113 @@ function remainingCaptureMs(deadline: number, signal: AbortSignal): number {
 }
 
 function assertCaptureDeadline(deadline: number, signal: AbortSignal): void {
-    if (signal.aborted) throw signal.reason ?? new AnchoredReaderError("aborted", "Incremental path capture aborted");
-    if (Date.now() >= deadline) throw new AnchoredReaderError("timeout", "Incremental path capture timed out");
+    if (signal.aborted)
+        throw signal.reason ?? new StablePathReaderError("aborted", "Workspace candidate capture aborted");
+    if (Date.now() >= deadline) throw new StablePathReaderError("timeout", "Workspace candidate capture timed out");
 }
 
-async function cleanupCapturedBatch(batch: IncrementalCapturedBatch): Promise<void> {
+async function cleanupCapturedBatch(batch: WorkspaceCandidateBatch): Promise<void> {
     const record = CapturedBatchRecords.get(batch);
-    if (!record) throw new Error("Invalid incremental captured batch");
+    if (!record) throw new Error("Invalid workspace candidate batch");
     if (record.stagingRoot) await rm(record.stagingRoot, { recursive: true, force: true });
     CapturedBatchRecords.delete(batch);
 }
 
-export async function materializeIncrementalCapturedBatch(
-    batch: IncrementalCapturedBatch,
+export async function materializeWorkspaceCandidateBatch(
+    batch: WorkspaceCandidateBatch,
     input: { storeRoot: string; writeBlob: (bytes: Buffer) => Promise<string> }
 ): Promise<void> {
     const record = CapturedBatchRecords.get(batch);
     if (!record || record.storeRoot !== input.storeRoot) {
-        throw new Error("Invalid incremental captured batch");
+        throw new Error("Invalid workspace candidate batch");
     }
     if (!record.stagingRoot) {
-        if (record.files.length !== 0) throw new Error("Invalid incremental captured batch");
+        if (record.files.length !== 0) throw new Error("Invalid workspace candidate batch");
         return;
     }
     const rootBefore = await lstat(record.stagingRoot, { bigint: true });
     if (!rootBefore.isDirectory() || !sameSerializedIdentity(rootBefore, record.stagingRootIdentity!)) {
-        throw new Error("Incremental capture staging root changed before commit");
+        throw new Error("Workspace candidate capture staging root changed before commit");
     }
     for (const file of record.files) {
         if (
             dirname(file.stagingPath) !== record.stagingRoot ||
             !/^[0-9]+-[0-9a-f]{24}$/.test(basename(file.stagingPath))
         ) {
-            throw new Error("Invalid incremental capture staging path");
+            throw new Error("Invalid workspace candidate capture staging path");
         }
         const before = await lstat(file.stagingPath, { bigint: true });
         if (!before.isFile() || before.nlink !== 1n || !sameSerializedIdentity(before, file.identity)) {
-            throw new Error("Incremental capture staging file changed before commit");
+            throw new Error("Workspace candidate capture staging file changed before commit");
         }
         const handle = await open(file.stagingPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         let bytes: Buffer;
         try {
             const opened = await handle.stat({ bigint: true });
             if (!opened.isFile() || opened.nlink !== 1n || !sameSerializedIdentity(opened, file.identity)) {
-                throw new Error("Incremental capture staging file changed before commit");
+                throw new Error("Workspace candidate capture staging file changed before commit");
             }
             bytes = await handle.readFile();
             const openedAfter = await handle.stat({ bigint: true });
             if (!sameSerializedIdentity(openedAfter, file.identity)) {
-                throw new Error("Incremental capture staging file changed during commit");
+                throw new Error("Workspace candidate capture staging file changed during commit");
             }
         } finally {
             await handle.close();
         }
         if (!sameSerializedIdentity(await lstat(file.stagingPath, { bigint: true }), file.identity)) {
-            throw new Error("Incremental capture staging file changed during commit");
+            throw new Error("Workspace candidate capture staging file changed during commit");
         }
         const oid = createHash("sha1")
             .update(Buffer.from(`blob ${bytes.length}\0`))
             .update(bytes)
             .digest("hex");
-        if (oid !== file.oid) throw new Error("Incremental capture staged bytes do not match their object id");
+        if (oid !== file.oid) throw new Error("Workspace candidate capture staged bytes do not match their object id");
         if ((await input.writeBlob(bytes)) !== file.oid) {
             throw new Error("Private snapshot store returned a different object id");
         }
     }
     if (!sameSerializedIdentity(await lstat(record.stagingRoot, { bigint: true }), record.stagingRootIdentity!)) {
-        throw new Error("Incremental capture staging root changed during commit");
+        throw new Error("Workspace candidate capture staging root changed during commit");
     }
 }
 
-export function readIncrementalCapturedBatchSemantics(
-    batch: IncrementalCapturedBatch,
+export function readWorkspaceCandidateBatchSemantics(
+    batch: WorkspaceCandidateBatch,
     storeRoot: string
-): { mutations: IncrementalPathMutation[]; newlyHashedBytes: number } {
+): { entries: WorkspaceCandidatePathEntry[]; newlyHashedBytes: number } {
     const record = CapturedBatchRecords.get(batch);
     if (!record || record.storeRoot !== storeRoot) {
-        throw new Error("Invalid incremental captured batch");
+        throw new Error("Invalid workspace candidate batch");
     }
     const staged = record.files
         .map((file) => ({ path: file.path, oid: file.oid }))
         .sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
-    const semantic = record.mutations
-        .filter((mutation) => mutation.state.state === "file" || mutation.state.state === "symlink")
-        .map((mutation) => ({ path: mutation.path, oid: "oid" in mutation.state ? mutation.state.oid : "" }));
+    const semantic = record.entries
+        .filter((entry) => entry.state.state === "file" || entry.state.state === "symlink")
+        .map((entry) => ({ path: entry.path, oid: "oid" in entry.state ? entry.state.oid : "" }));
     if (JSON.stringify(staged) !== JSON.stringify(semantic)) {
-        throw new Error("Incremental captured batch staging does not match its semantics");
+        throw new Error("Workspace candidate batch staging does not match its semantics");
     }
     return {
-        mutations: normalizeIncrementalMutations(record.mutations.map(cloneMutation)),
+        entries: normalizeWorkspaceCandidateEntries(record.entries.map(cloneEntry)),
         newlyHashedBytes: record.newlyHashedBytes,
     };
 }
 
-function freezeMutations(mutations: IncrementalPathMutation[]): ReadonlyArray<IncrementalPathMutation> {
+function freezeEntries(entries: WorkspaceCandidatePathEntry[]): ReadonlyArray<WorkspaceCandidatePathEntry> {
     return Object.freeze(
-        normalizeIncrementalMutations(mutations).map((mutation) =>
-            Object.freeze({ path: mutation.path, state: Object.freeze({ ...mutation.state }) })
+        normalizeWorkspaceCandidateEntries(entries).map((entry) =>
+            Object.freeze({ path: entry.path, state: Object.freeze({ ...entry.state }) })
         )
     );
 }
 
-function cloneMutation(mutation: IncrementalPathMutation): IncrementalPathMutation {
-    return { path: mutation.path, state: { ...mutation.state } };
+function cloneEntry(entry: WorkspaceCandidatePathEntry): WorkspaceCandidatePathEntry {
+    return { path: entry.path, state: { ...entry.state } };
 }
 
-function sameSerializedIdentity(value: BigIntStats, expected: AnchoredReaderEntryIdentity): boolean {
+function sameSerializedIdentity(value: BigIntStats, expected: StablePathReaderEntryIdentity): boolean {
     return (
         value.dev.toString() === expected.dev &&
         value.ino.toString() === expected.ino &&
@@ -598,7 +604,7 @@ function makeReaderEntry(
     entry: IncrementalWorkspaceScopeEntry & { kind: "file" | "symlink" },
     stagingRoot: string,
     index: number
-): AnchoredReaderBatchEntry {
+): StablePathReaderBatchEntry {
     if (!entry.parentIdentity || !entry.entryIdentity || !entry.path) {
         throw new Error("Incremental path identity evidence is missing");
     }
@@ -616,7 +622,7 @@ function makeReaderEntry(
     };
 }
 
-function serializeEntryIdentity(value: WorkspaceScopeEntryIdentity): AnchoredReaderEntryIdentity {
+function serializeEntryIdentity(value: WorkspaceScopeEntryIdentity): StablePathReaderEntryIdentity {
     return {
         dev: value.dev.toString(),
         ino: value.ino.toString(),
@@ -629,11 +635,11 @@ function serializeEntryIdentity(value: WorkspaceScopeEntryIdentity): AnchoredRea
     };
 }
 
-function toDirectMutation(entry: IncrementalWorkspaceScopeEntry): IncrementalPathMutation {
+function toDirectEntry(entry: IncrementalWorkspaceScopeEntry): WorkspaceCandidatePathEntry {
     let state: CapturedPathStateV1;
     if (entry.kind === "absent") state = { state: "absent" };
     else if (entry.kind === "excluded") state = { state: "excluded", reason: entry.exclusionReason! };
-    else throw new Error("Incremental direct mutation is readable");
+    else throw new Error("Incremental direct entry is readable");
     return { path: entry.path!, state };
 }
 
@@ -664,4 +670,17 @@ function cloneScope(scope: WorkspaceScopeManifest): WorkspaceScopeManifest {
 function validateNonNegativeLimit(value: number, label: string): number {
     if (!Number.isSafeInteger(value) || value < 0) throw new Error(`Invalid incremental ${label} limit`);
     return value;
+}
+
+export function normalizeWorkspaceCandidateEntries(
+    entries: readonly WorkspaceCandidatePathEntry[]
+): WorkspaceCandidatePathEntry[] {
+    const byPath = new Map<string, WorkspaceCandidatePathEntry>();
+    for (const entry of entries) {
+        if (typeof entry.path !== "string" || entry.path.length === 0) {
+            throw new Error("Invalid workspace candidate path");
+        }
+        byPath.set(entry.path, { path: entry.path, state: { ...entry.state } });
+    }
+    return [...byPath.values()].sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
 }

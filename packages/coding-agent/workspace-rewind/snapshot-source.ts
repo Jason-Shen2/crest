@@ -3,15 +3,20 @@
 
 import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
-import {
-    IncrementalPathCapture,
-    materializeIncrementalCapturedBatch,
-    type IncrementalPathCaptureResult,
-} from "./incremental-path-capture";
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
-import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
+import {
+    WorkspaceCheckpointLimits,
+    type CaptureWorkspaceOptions,
+    type ReconciledWorkspaceState,
+    type WorkspaceSnapshotStore,
+} from "./snapshot-store";
 import { encodeCanonicalStoredJson, validateWorkspaceRelativePath } from "./stored-manifest";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
+import {
+    materializeWorkspaceCandidateBatch,
+    WorkspaceCandidateCapture,
+    type WorkspaceCandidateCaptureResult,
+} from "./workspace-candidate-capture";
 import { type WorkspaceCandidateBoundary, type WorkspaceCandidates } from "./workspace-candidates";
 import { refreshWorkspaceScopeGitIndexEvidence, type WorkspaceScopeManifest } from "./workspace-scope";
 
@@ -38,21 +43,18 @@ export interface WorkspaceCheckpointSnapshotSource {
     dispose?(): Promise<void>;
 }
 
-export interface LegacyWorkspaceSnapshotCapture {
-    capture(options: CaptureWorkspaceOptions): Promise<WorkspaceCheckpointHead>;
-    fullReconcile?(options: CaptureWorkspaceOptions): Promise<WorkspaceCheckpointHead>;
-}
+export type WorkspaceFullReconcile = (options: CaptureWorkspaceOptions) => Promise<ReconciledWorkspaceState>;
 
 const WorkspaceSourceInitializations = new Map<string, Promise<void>>();
 
 export async function initializeWorkspaceCheckpointSnapshotSource(input: {
     store: WorkspaceSnapshotStore;
-    legacyCapture: LegacyWorkspaceSnapshotCapture;
+    fullReconcile: WorkspaceFullReconcile;
     candidates?: WorkspaceCandidates;
 }): Promise<WorkspaceCheckpointSnapshotSource> {
     const source = new CommitBackedWorkspaceCheckpointSnapshotSource(
         input.store,
-        input.legacyCapture,
+        input.fullReconcile,
         input.candidates
     );
     const key = `${input.store.storeRoot}:${input.store.identity.workspaceIdentity}:${input.store.identity.workspaceIncarnation}`;
@@ -79,18 +81,18 @@ export async function initializeWorkspaceCheckpointSnapshotSource(input: {
 
 class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpointSnapshotSource {
     readonly store: WorkspaceSnapshotStore;
-    readonly legacyCapture: LegacyWorkspaceSnapshotCapture;
+    readonly fullReconcile: WorkspaceFullReconcile;
     readonly candidates?: WorkspaceCandidates;
     captureQueue: Promise<void> = Promise.resolve();
     disposed = false;
 
     constructor(
         store: WorkspaceSnapshotStore,
-        legacyCapture: LegacyWorkspaceSnapshotCapture,
+        fullReconcile: WorkspaceFullReconcile,
         candidates?: WorkspaceCandidates
     ) {
         this.store = store;
-        this.legacyCapture = legacyCapture;
+        this.fullReconcile = fullReconcile;
         this.candidates = candidates;
     }
 
@@ -100,9 +102,9 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             await this.readCommitHead(head);
             return;
         }
-        const captured = await this.legacyCapture.capture({ profile: "terminal" });
+        const captured = await this.fullReconcile({ profile: "terminal" });
         try {
-            await this.appendCapturedMutation({ captured, kind: "external" });
+            await this.appendWorkspaceMutation({ captured, kind: "external" });
         } catch (error) {
             const concurrentHead = await this.store.mutationLog.readHead();
             if (!concurrentHead) throw error;
@@ -176,24 +178,6 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         );
     }
 
-    async appendCapturedMutation(input: {
-        expectedHead?: string;
-        captured: WorkspaceCheckpointHead;
-        kind: "external" | "agent-turn";
-        sessionId?: string;
-        turnId?: string;
-    }): Promise<WorkspaceCheckpointHead> {
-        const metadata = await this.store.readSnapshotMetadata(input.captured.ref);
-        return await this.appendWorkspaceMutation({
-            ...input,
-            captured: {
-                tree: input.captured.ref.tree,
-                scope: metadata.scope,
-                coverage: cloneCoverage(input.captured.coverage),
-            },
-        });
-    }
-
     async appendWorkspaceMutation(input: {
         expectedHead?: string;
         captured: CapturedWorkspaceState;
@@ -233,7 +217,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
     }
 
     async captureWorkspaceActive(base: WorkspaceSnapshotRefV1, signal?: AbortSignal): Promise<CapturedWorkspaceState> {
-        if (!this.candidates) return await this.captureLegacy(signal);
+        if (!this.candidates) return await this.captureFullReconcile(signal);
         const metadata = await this.store.readSnapshotMetadata(base);
         const boundary = await this.readCandidateBoundary(base.tree, signal);
         const discovered = await this.candidates.collect(boundary, signal);
@@ -252,7 +236,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             const retried = await this.captureCandidatePaths(base, refreshedScope, discovered.paths, signal);
             if (retried) return retried;
         }
-        return await this.captureLegacyFullReconcile(signal);
+        return await this.captureFullReconcile(signal);
     }
 
     async captureCandidatePaths(
@@ -318,7 +302,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         paths: readonly string[],
         signal?: AbortSignal
     ): Promise<StagedCandidateCapture | undefined> {
-        const capture = new IncrementalPathCapture({
+        const capture = new WorkspaceCandidateCapture({
             identity: this.store.identity,
             git: this.store.git,
             storeRoot: this.store.storeRoot,
@@ -353,7 +337,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
     ): Promise<CapturedWorkspaceState> {
         try {
             return await staged.capture.consumeCaptured(staged.result, async (batch) => {
-                await materializeIncrementalCapturedBatch(batch, {
+                await materializeWorkspaceCandidateBatch(batch, {
                     storeRoot: this.store.storeRoot,
                     writeBlob: (bytes) => this.writeCandidateBlob(bytes, signal),
                 });
@@ -363,9 +347,9 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                     indexFile: join(this.store.storeRoot, "journal", "workspace-candidate.index"),
                 });
                 await index.load(base.tree);
-                await index.apply(staged.result.mutations);
+                await index.apply(staged.result.entries);
                 const tree = await index.writeTree();
-                const coverage = await this.store.computeIncrementalSnapshotCoverage(base, staged.result.mutations);
+                const coverage = await this.store.computeCandidateSnapshotCoverage(base, staged.result.entries);
                 return {
                     tree,
                     scope,
@@ -385,33 +369,11 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         }
     }
 
-    async captureLegacy(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
-        const captured = await this.legacyCapture.capture({
+    async captureFullReconcile(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
+        return await this.fullReconcile({
             profile: "terminal",
             ...(signal ? { signal } : {}),
         });
-        const metadata = await this.store.readSnapshotMetadata(captured.ref);
-        return {
-            tree: captured.ref.tree,
-            scope: metadata.scope,
-            coverage: cloneCoverage(captured.coverage),
-        };
-    }
-
-    async captureLegacyFullReconcile(signal?: AbortSignal): Promise<CapturedWorkspaceState> {
-        if (!this.legacyCapture.fullReconcile) {
-            throw new Error("Workspace candidate capture requires an explicit full reconcile");
-        }
-        const captured = await this.legacyCapture.fullReconcile({
-            profile: "terminal",
-            ...(signal ? { signal } : {}),
-        });
-        const metadata = await this.store.readSnapshotMetadata(captured.ref);
-        return {
-            tree: captured.ref.tree,
-            scope: metadata.scope,
-            coverage: cloneCoverage(captured.coverage),
-        };
     }
 
     async readCandidateBoundary(shadowTree: string, signal?: AbortSignal): Promise<WorkspaceCandidateBoundary> {
@@ -547,8 +509,8 @@ interface CapturedWorkspaceState {
 }
 
 interface StagedCandidateCapture {
-    capture: IncrementalPathCapture;
-    result: Extract<IncrementalPathCaptureResult, { status: "captured" }>;
+    capture: WorkspaceCandidateCapture;
+    result: Extract<WorkspaceCandidateCaptureResult, { status: "captured" }>;
 }
 
 function mergeCandidatePaths(left: readonly string[], right: readonly string[]): string[] {

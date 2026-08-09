@@ -1,18 +1,19 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { lstat } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { constants } from "node:fs";
+import { lstat, mkdir, open } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, normalize } from "node:path";
 
 import { encodeDurableJson } from "./durability";
 import {
     type AnchoredJournalDirectoryIdentity,
     type AnchoredJournalEntry,
+    ensureAnchoredJournalSubdirectory,
     inspectAnchoredJournalEntry,
     readAnchoredJournalEntry,
     writeAnchoredJournalEntry,
 } from "./journal-directory";
-import { ensurePrivateCursorRoot, sameDirectoryIdentity } from "./workspace-change-feed-storage";
 
 const QuotaStateName = "quota-v1.json";
 const MaximumQuotaStateBytes = 4 * 1024;
@@ -131,7 +132,7 @@ export class SnapshotQuotaAccounting {
     async open(): Promise<SnapshotQuotaAccounting> {
         this.storeRootIdentity = await readPrivateStoreRootIdentity(this.storeRoot);
         this.rootIdentity = await this.withPinnedStoreRoot(() =>
-            ensurePrivateCursorRoot(join(this.storeRoot, "tracker"))
+            ensurePrivateQuotaRoot(join(this.storeRoot, "tracker"))
         );
         let loaded:
             | { state: StoredQuotaStateV1; entry: AnchoredJournalEntry; rootIdentity: AnchoredJournalDirectoryIdentity }
@@ -546,4 +547,46 @@ async function readPrivateStoreRootIdentity(storeRoot: string): Promise<Anchored
         ino: state.ino.toString(),
         birthtimeNs: state.birthtimeNs.toString(),
     };
+}
+
+async function ensurePrivateQuotaRoot(root: string): Promise<AnchoredJournalDirectoryIdentity> {
+    if (process.platform === "win32") {
+        throw new Error("Snapshot quota accounting requires owner-only directory ACL support");
+    }
+    const parent = dirname(root);
+    try {
+        await mkdir(parent, { mode: 0o700 });
+    } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+    }
+    await securePrivateQuotaDirectory(parent);
+    return ensureAnchoredJournalSubdirectory({ root: parent, name: basename(root) });
+}
+
+async function securePrivateQuotaDirectory(path: string): Promise<void> {
+    const handle = await open(path, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0));
+    try {
+        const before = await handle.stat({ bigint: true });
+        if (!before.isDirectory()) throw new Error("Unsafe snapshot quota directory");
+        await handle.chmod(0o700);
+        const after = await handle.stat({ bigint: true });
+        if (
+            !after.isDirectory() ||
+            before.dev !== after.dev ||
+            before.ino !== after.ino ||
+            before.birthtimeNs !== after.birthtimeNs ||
+            (after.mode & 0o077n) !== 0n
+        ) {
+            throw new Error("Snapshot quota directory changed while securing");
+        }
+    } finally {
+        await handle.close();
+    }
+}
+
+function sameDirectoryIdentity(
+    left: AnchoredJournalDirectoryIdentity,
+    right: AnchoredJournalDirectoryIdentity
+): boolean {
+    return left.dev === right.dev && left.ino === right.ino && left.birthtimeNs === right.birthtimeNs;
 }

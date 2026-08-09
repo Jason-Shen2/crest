@@ -29,10 +29,8 @@ import { decodeWorkspaceStateEntry } from "./session-state";
 import { initializeWorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type WorkspaceCheckpointV1 } from "./types";
-import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery } from "./workspace-recovery";
-import { WorkspaceSnapshotTracker } from "./workspace-snapshot-tracker";
 
 const cleanupRoots: string[] = [];
 
@@ -106,7 +104,7 @@ async function fixture(
     const confirmations = new RewindConfirmationRegistry();
     const snapshotSource = await initializeWorkspaceCheckpointSnapshotSource({
         store,
-        legacyCapture: store,
+        fullReconcile: (options) => store.captureFullReconcile(options),
     });
     const engine = new WorkspaceRewindEngine({
         store,
@@ -168,88 +166,71 @@ async function appendAvailableCheckpoint(
 }
 
 describe("WorkspaceRewindEngine real filesystem transaction", () => {
-    it("rewinds an incremental directory rename checkpoint with the same path set as a full snapshot", async () => {
+    it("rewinds a directory rename checkpoint with the complete V3 path set", async () => {
         const value = await fixture();
         await mkdir(join(value.workspaceRoot, "old-dir", "nested"), { recursive: true });
         await writeFile(join(value.workspaceRoot, "old-dir", "a.txt"), "a");
         await writeFile(join(value.workspaceRoot, "old-dir", "nested", "b.txt"), "b");
-        const feed = new BoundaryChangeFeed();
-        const tracker = new WorkspaceSnapshotTracker({
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: value.store,
-            feed,
-            state: {
-                load: async () => ({ status: "untrusted" }),
-                publish: async () => undefined,
-            },
+            fullReconcile: (options) => value.store.captureFullReconcile(options),
         });
-        try {
-            const source = await initializeWorkspaceCheckpointSnapshotSource({
-                store: value.store,
-                legacyCapture: value.store,
-            });
-            const checkpointBefore = await source.synchronizeExternal();
-            const before = await tracker.capture({ profile: "pre-turn" });
-            const turnId = await value.session.appendMessage({
-                role: "user",
-                content: "rename directory",
-                timestamp: Date.now(),
-            } as never);
-            await rename(join(value.workspaceRoot, "old-dir"), join(value.workspaceRoot, "new-dir"));
-            feed.record(["old-dir", "new-dir"]);
-            const after = await tracker.capture({ profile: "terminal" });
-            const changes = await tracker.diff(before.ref, after.ref);
-            const checkpointAfter = await source.captureOwnedTurn({
-                base: checkpointBefore.ref,
-                sessionId: value.metadata.id,
-                turnId,
-            });
-            const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
-                schemaVersion: 1,
-                status: "available",
-                originSessionId: value.metadata.id,
-                turnId,
-                workspaceIdentity: value.identity.workspaceIdentity,
-                workspaceIncarnation: value.identity.workspaceIncarnation,
-                before: checkpointBefore.ref,
-                after: checkpointAfter.after,
-                changes: checkpointAfter.changes,
-                coverage: checkpointAfter.coverage,
-            } satisfies WorkspaceCheckpointV1);
+        const checkpointBefore = await source.synchronizeExternal();
+        const turnId = await value.session.appendMessage({
+            role: "user",
+            content: "rename directory",
+            timestamp: Date.now(),
+        } as never);
+        await rename(join(value.workspaceRoot, "old-dir"), join(value.workspaceRoot, "new-dir"));
+        const checkpointAfter = await source.captureOwnedTurn({
+            base: checkpointBefore.ref,
+            sessionId: value.metadata.id,
+            turnId,
+        });
+        const checkpointId = await value.session.appendCustomEntry(WorkspaceControlCustomTypes.checkpoint, {
+            schemaVersion: 1,
+            status: "available",
+            originSessionId: value.metadata.id,
+            turnId,
+            workspaceIdentity: value.identity.workspaceIdentity,
+            workspaceIncarnation: value.identity.workspaceIncarnation,
+            before: checkpointBefore.ref,
+            after: checkpointAfter.after,
+            changes: checkpointAfter.changes,
+            coverage: checkpointAfter.coverage,
+        } satisfies WorkspaceCheckpointV1);
 
-            expect(changes.map((change) => change.path)).toEqual([
-                "new-dir/a.txt",
-                "new-dir/nested/b.txt",
-                "old-dir/a.txt",
-                "old-dir/nested/b.txt",
-            ]);
-            const preview = await value.engine.previewRewind({
-                session: value.session,
-                sessionId: value.metadata.id,
-                workspace: value.identity,
-                semanticLeafId: checkpointId,
-                targetTurnId: turnId,
-            });
-            await value.engine.applyRewind({
-                session: value.session,
-                sessionId: value.metadata.id,
-                workspace: value.identity,
-                semanticLeafId: checkpointId,
-                targetTurnId: turnId,
-                mode: "normal",
-                confirmation: value.confirmations.take(preview.confirmationToken!),
-            });
+        expect(checkpointAfter.changes.map((change) => change.path)).toEqual([
+            "new-dir/a.txt",
+            "new-dir/nested/b.txt",
+            "old-dir/a.txt",
+            "old-dir/nested/b.txt",
+        ]);
+        const preview = await value.engine.previewRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: checkpointId,
+            targetTurnId: turnId,
+        });
+        await value.engine.applyRewind({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: checkpointId,
+            targetTurnId: turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(preview.confirmationToken!),
+        });
 
-            expect(await readFile(join(value.workspaceRoot, "old-dir", "a.txt"), "utf8")).toBe("a");
-            expect(await readFile(join(value.workspaceRoot, "old-dir", "nested", "b.txt"), "utf8")).toBe("b");
-            await expect(lstat(join(value.workspaceRoot, "new-dir", "a.txt"))).rejects.toMatchObject({
-                code: "ENOENT",
-            });
-            await expect(lstat(join(value.workspaceRoot, "new-dir", "nested", "b.txt"))).rejects.toMatchObject({
-                code: "ENOENT",
-            });
-        } finally {
-            await tracker.dispose();
-        }
+        expect(await readFile(join(value.workspaceRoot, "old-dir", "a.txt"), "utf8")).toBe("a");
+        expect(await readFile(join(value.workspaceRoot, "old-dir", "nested", "b.txt"), "utf8")).toBe("b");
+        await expect(lstat(join(value.workspaceRoot, "new-dir", "a.txt"))).rejects.toMatchObject({
+            code: "ENOENT",
+        });
+        await expect(lstat(join(value.workspaceRoot, "new-dir", "nested", "b.txt"))).rejects.toMatchObject({
+            code: "ENOENT",
+        });
     }, 30_000);
 
     it("composes turn Undo state into a later conversation Revert without restoring stale turn bytes", async () => {
@@ -308,7 +289,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         await symlink("before-target", join(value.workspaceRoot, "link"));
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: value.store,
-            legacyCapture: value.store,
+            fullReconcile: (options) => value.store.captureFullReconcile(options),
         });
         const before = await source.synchronizeExternal();
 
@@ -426,7 +407,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         await writeFile(join(value.workspaceRoot, "file.txt"), "before");
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store: value.store,
-            legacyCapture: value.store,
+            fullReconcile: (options) => value.store.captureFullReconcile(options),
         });
         const before = await source.synchronizeExternal();
         const turnId = await value.session.appendMessage({
@@ -499,7 +480,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
             await writeFile(join(value.workspaceRoot, "b.txt"), "before b");
             const source = await initializeWorkspaceCheckpointSnapshotSource({
                 store: value.store,
-                legacyCapture: value.store,
+                fullReconcile: (options) => value.store.captureFullReconcile(options),
             });
             const before = await source.synchronizeExternal();
             const turnId = await value.session.appendMessage({
@@ -700,34 +681,3 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         });
     }, 30_000);
 });
-
-class BoundaryChangeFeed implements WorkspaceChangeFeed {
-    paths: string[] = [];
-    trusted = false;
-
-    record(paths: readonly string[]): void {
-        this.paths = [...new Set([...this.paths, ...paths])].sort((left, right) =>
-            Buffer.compare(Buffer.from(left), Buffer.from(right))
-        );
-    }
-
-    async start(): Promise<void> {
-        this.trusted = true;
-        this.paths = [];
-    }
-
-    async drain(): Promise<WorkspaceChangeDrain> {
-        if (!this.trusted) return { status: "unavailable", reason: "not-started" };
-        const changedPaths = [...this.paths];
-        this.paths = [];
-        return { status: "complete", changedPaths };
-    }
-
-    isTrusted(): boolean {
-        return this.trusted;
-    }
-
-    async dispose(): Promise<void> {
-        this.trusted = false;
-    }
-}

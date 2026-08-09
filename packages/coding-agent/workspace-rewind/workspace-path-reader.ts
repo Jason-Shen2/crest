@@ -8,13 +8,13 @@ import { waitForChildProcess } from "../tools/_child-process";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { observeSafely } from "./observation";
 
-export interface AnchoredReaderIdentity {
+export interface StablePathReaderIdentity {
     dev: string;
     ino: string;
     birthtimeNs: string;
 }
 
-export interface AnchoredReaderEntryIdentity extends AnchoredReaderIdentity {
+export interface StablePathReaderEntryIdentity extends StablePathReaderIdentity {
     mode: string;
     nlink: string;
     size: string;
@@ -22,59 +22,66 @@ export interface AnchoredReaderEntryIdentity extends AnchoredReaderIdentity {
     ctimeNs: string;
 }
 
-export interface AnchoredReaderEntry {
+export interface StablePathReaderEntry {
     path: string;
     name: string;
     kind: "file" | "symlink";
-    identity: AnchoredReaderEntryIdentity;
+    identity: StablePathReaderEntryIdentity;
     stagingPath: string;
-    previous?: AnchoredReaderEntryIdentity & { oid: string };
+    previous?: StablePathReaderEntryIdentity & { oid: string };
 }
 
-export interface AnchoredReaderResult {
+export interface StablePathReaderResult {
     path: string;
     stagingPath?: string;
     reusedOid?: string;
-    identity: AnchoredReaderEntryIdentity;
+    identity: StablePathReaderEntryIdentity;
     hashedBytes: number;
 }
 
-export interface AnchoredReaderBatchEntry extends AnchoredReaderEntry {
-    parentIdentity: AnchoredReaderIdentity;
+export interface StablePathReaderTestBarrier {
+    path: string;
+    openedMarker: string;
+    releaseMarker: string;
 }
 
-export interface AnchoredReaderBatchHooks {
+export interface StablePathReaderBatchEntry extends StablePathReaderEntry {
+    parentIdentity: StablePathReaderIdentity;
+}
+
+export interface StablePathReaderBatchHooks {
     workerStarted?(): void;
     workerSettled?(): void;
 }
 
-export type AnchoredReaderGroupRunner = typeof runAnchoredReader;
+export type StablePathReaderGroupRunner = typeof runStablePathReader;
 
-export class AnchoredReaderError extends Error {
+export class StablePathReaderError extends Error {
     readonly code: "aborted" | "timeout" | "capture_budget" | "unstable_file" | "worker_failed";
 
-    constructor(code: AnchoredReaderError["code"], message: string, options?: { cause?: unknown }) {
+    constructor(code: StablePathReaderError["code"], message: string, options?: { cause?: unknown }) {
         super(message, options);
-        this.name = "AnchoredReaderError";
+        this.name = "StablePathReaderError";
         this.code = code;
     }
 }
 
 const ReaderInputMaxBytes = 64 * 1024 ** 2;
 const ReaderOutputMaxBytes = 64 * 1024 ** 2;
-export const IncrementalReaderConcurrency = 8;
-export const AnchoredReaderRacyWindowNs = 1_000_000_000n;
+export const StablePathReaderConcurrency = 8;
+export const StablePathReaderRacyWindowNs = 1_000_000_000n;
 
-export function hasReusableAnchoredIdentity(
-    previous: AnchoredReaderEntryIdentity | undefined,
-    current: AnchoredReaderEntryIdentity,
+export function hasReusablePathIdentity(
+    previous: StablePathReaderEntryIdentity | undefined,
+    current: StablePathReaderEntryIdentity,
     nowMs: number
 ): boolean {
     if (
         !previous ||
         !["dev", "ino", "birthtimeNs", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every(
             (key) =>
-                current[key as keyof AnchoredReaderEntryIdentity] === previous[key as keyof AnchoredReaderEntryIdentity]
+                current[key as keyof StablePathReaderEntryIdentity] ===
+                previous[key as keyof StablePathReaderEntryIdentity]
         )
     ) {
         return false;
@@ -89,33 +96,33 @@ export function hasReusableAnchoredIdentity(
     }
     const newest =
         BigInt(current.mtimeNs) > BigInt(current.ctimeNs) ? BigInt(current.mtimeNs) : BigInt(current.ctimeNs);
-    return BigInt(nowMs) * 1_000_000n - newest > AnchoredReaderRacyWindowNs;
+    return BigInt(nowMs) * 1_000_000n - newest > StablePathReaderRacyWindowNs;
 }
 
-export async function runAnchoredReaderBatch(
+export async function runStablePathReaderBatch(
     input: {
         rootPath: string;
-        entries: AnchoredReaderBatchEntry[];
+        entries: StablePathReaderBatchEntry[];
         maxSingleFileBytes: number;
         maxTotalBytes: number;
         timeoutMs: number;
         signal: AbortSignal;
-        hooks?: AnchoredReaderBatchHooks;
+        hooks?: StablePathReaderBatchHooks;
     },
-    runGroup: AnchoredReaderGroupRunner = runAnchoredReader
-): Promise<AnchoredReaderResult[]> {
+    runGroup: StablePathReaderGroupRunner = runStablePathReader
+): Promise<StablePathReaderResult[]> {
     if (input.entries.length === 0) return [];
     const entries = [...input.entries];
     for (const entry of entries) {
         if (basename(entry.path) !== entry.name) {
-            throw new AnchoredReaderError("worker_failed", "Anchored reader batch received an invalid path");
+            throw new StablePathReaderError("worker_failed", "Stable path reader batch received an invalid path");
         }
     }
     const maximumBytes = entries.reduce((total, entry) => total + Number(entry.identity.size), 0);
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes > input.maxTotalBytes) {
-        throw new AnchoredReaderError("capture_budget", "Anchored reader batch byte budget exceeded");
+        throw new StablePathReaderError("capture_budget", "Stable path reader batch byte budget exceeded");
     }
-    const groups = new Map<string, AnchoredReaderBatchEntry[]>();
+    const groups = new Map<string, StablePathReaderBatchEntry[]>();
     for (const entry of entries) {
         const parent = dirname(entry.path) === "." ? "" : dirname(entry.path);
         const group = groups.get(parent) ?? [];
@@ -123,10 +130,10 @@ export async function runAnchoredReaderBatch(
         groups.set(parent, group);
     }
     const queue = [...groups.entries()];
-    const results: AnchoredReaderResult[] = [];
+    const results: StablePathReaderResult[] = [];
     const controller = new AbortController();
     const deadline = Date.now() + input.timeoutMs;
-    const deadlineError = new AnchoredReaderError("timeout", "Anchored reader batch timed out");
+    const deadlineError = new StablePathReaderError("timeout", "Stable path reader batch timed out");
     const timer = setTimeout(() => controller.abort(deadlineError), input.timeoutMs);
     const onExternalAbort = () => controller.abort(input.signal.reason);
     input.signal.addEventListener("abort", onExternalAbort, { once: true });
@@ -149,7 +156,7 @@ export async function runAnchoredReaderBatch(
                             entry.parentIdentity.birthtimeNs !== parentIdentity.birthtimeNs
                     )
                 ) {
-                    throw new AnchoredReaderError("unstable_file", "Anchored reader parent evidence conflicts");
+                    throw new StablePathReaderError("unstable_file", "Stable path reader parent evidence conflicts");
                 }
                 observeSafely(input.hooks?.workerStarted);
                 try {
@@ -175,7 +182,7 @@ export async function runAnchoredReaderBatch(
     };
     try {
         await Promise.allSettled(
-            Array.from({ length: Math.min(IncrementalReaderConcurrency, queue.length) }, () => runWorker())
+            Array.from({ length: Math.min(StablePathReaderConcurrency, queue.length) }, () => runWorker())
         );
     } finally {
         clearTimeout(timer);
@@ -186,15 +193,16 @@ export async function runAnchoredReaderBatch(
     return results.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
 }
 
-export async function runAnchoredReader(input: {
+export async function runStablePathReader(input: {
     parentPath: string;
-    parentIdentity: AnchoredReaderIdentity;
-    entries: AnchoredReaderEntry[];
+    parentIdentity: StablePathReaderIdentity;
+    entries: StablePathReaderEntry[];
     maxSingleFileBytes: number;
     maxTotalBytes: number;
     timeoutMs: number;
     signal: AbortSignal;
-}): Promise<AnchoredReaderResult[]> {
+    testBarrier?: StablePathReaderTestBarrier;
+}): Promise<StablePathReaderResult[]> {
     const maxSingleFileBytes = Math.min(input.maxSingleFileBytes, WorkspaceCheckpointInternalLimits.maxSingleFileBytes);
     const encoded = Buffer.from(
         JSON.stringify({
@@ -203,15 +211,16 @@ export async function runAnchoredReader(input: {
             maxSingleFileBytes,
             maxTotalBytes: input.maxTotalBytes,
             nowMs: Date.now(),
+            ...(input.testBarrier ? { testBarrier: input.testBarrier } : {}),
         })
     );
     if (encoded.length > ReaderInputMaxBytes) {
-        throw new AnchoredReaderError("capture_budget", "Anchored reader input budget exceeded");
+        throw new StablePathReaderError("capture_budget", "Stable path reader input budget exceeded");
     }
     if (input.signal.aborted) {
-        throw new AnchoredReaderError("aborted", "Anchored reader aborted");
+        throw new StablePathReaderError("aborted", "Stable path reader aborted");
     }
-    const child = spawn(process.execPath, ["-e", AnchoredReaderWorkerSource], {
+    const child = spawn(process.execPath, ["-e", StablePathReaderWorkerSource], {
         cwd: input.parentPath,
         env: {
             ELECTRON_RUN_AS_NODE: "1",
@@ -225,16 +234,16 @@ export async function runAnchoredReader(input: {
     const stderr: Buffer[] = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
-    let terminalError: AnchoredReaderError | undefined;
+    let terminalError: StablePathReaderError | undefined;
     const terminate = (code: "aborted" | "timeout" | "worker_failed", message: string) => {
-        terminalError ??= new AnchoredReaderError(code, message);
+        terminalError ??= new StablePathReaderError(code, message);
         child.kill("SIGKILL");
     };
-    const onAbort = () => terminate("aborted", "Anchored reader aborted");
+    const onAbort = () => terminate("aborted", "Stable path reader aborted");
     const onStdout = (chunk: Buffer) => {
         stdoutBytes += chunk.length;
         if (stdoutBytes > ReaderOutputMaxBytes) {
-            terminate("worker_failed", "Anchored reader output exceeded its limit");
+            terminate("worker_failed", "Stable path reader output exceeded its limit");
             return;
         }
         stdout.push(chunk);
@@ -249,11 +258,11 @@ export async function runAnchoredReader(input: {
     child.stderr.on("data", onStderr);
     child.stdin.on("error", (error: NodeJS.ErrnoException) => {
         if (error.code !== "EPIPE") {
-            terminate("worker_failed", "Anchored reader input failed");
+            terminate("worker_failed", "Stable path reader input failed");
         }
     });
     input.signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => terminate("timeout", "Anchored reader timed out"), input.timeoutMs);
+    const timer = setTimeout(() => terminate("timeout", "Stable path reader timed out"), input.timeoutMs);
     child.stdin.end(encoded);
     try {
         let exitCode;
@@ -263,7 +272,7 @@ export async function runAnchoredReader(input: {
             if (terminalError) {
                 throw terminalError;
             }
-            throw new AnchoredReaderError("worker_failed", "Anchored reader could not be started", { cause });
+            throw new StablePathReaderError("worker_failed", "Stable path reader could not be started", { cause });
         }
         if (terminalError) {
             throw terminalError;
@@ -271,16 +280,16 @@ export async function runAnchoredReader(input: {
         const diagnostic = Buffer.concat(stderr, Math.min(stderrBytes, ReaderOutputMaxBytes)).toString("utf8");
         if (exitCode !== 0) {
             if (diagnostic.startsWith("capture_budget:")) {
-                throw new AnchoredReaderError("capture_budget", diagnostic);
+                throw new StablePathReaderError("capture_budget", diagnostic);
             }
             if (diagnostic.startsWith("unstable_file:")) {
-                throw new AnchoredReaderError("unstable_file", diagnostic);
+                throw new StablePathReaderError("unstable_file", diagnostic);
             }
-            throw new AnchoredReaderError("worker_failed", diagnostic || `Anchored reader exited ${exitCode}`);
+            throw new StablePathReaderError("worker_failed", diagnostic || `Stable path reader exited ${exitCode}`);
         }
         const value: unknown = JSON.parse(Buffer.concat(stdout, stdoutBytes).toString("utf8"));
-        if (!isAnchoredReaderResult(value, input.entries, maxSingleFileBytes)) {
-            throw new AnchoredReaderError("worker_failed", "Anchored reader returned an invalid result");
+        if (!isStablePathReaderResult(value, input.entries, maxSingleFileBytes)) {
+            throw new StablePathReaderError("worker_failed", "Stable path reader returned an invalid result");
         }
         return value;
     } finally {
@@ -291,11 +300,11 @@ export async function runAnchoredReader(input: {
     }
 }
 
-function isAnchoredReaderResult(
+function isStablePathReaderResult(
     value: unknown,
-    entries: AnchoredReaderEntry[],
+    entries: StablePathReaderEntry[],
     maxSingleFileBytes: number
-): value is AnchoredReaderResult[] {
+): value is StablePathReaderResult[] {
     if (!Array.isArray(value) || value.length !== entries.length) {
         return false;
     }
@@ -304,7 +313,7 @@ function isAnchoredReaderResult(
         if (item == null || typeof item !== "object") {
             return false;
         }
-        const result = item as Partial<AnchoredReaderResult>;
+        const result = item as Partial<StablePathReaderResult>;
         const resultKeys = Object.keys(result).sort().join(",");
         if (
             resultKeys !== "hashedBytes,identity,path,reusedOid" &&
@@ -312,16 +321,16 @@ function isAnchoredReaderResult(
         ) {
             return false;
         }
-        const identity = result.identity as Partial<AnchoredReaderEntryIdentity> | undefined;
+        const identity = result.identity as Partial<StablePathReaderEntryIdentity> | undefined;
         const validIdentity =
             identity != null &&
             Object.keys(identity).sort().join(",") === "birthtimeNs,ctimeNs,dev,ino,mode,mtimeNs,nlink,size" &&
             ["dev", "ino", "birthtimeNs", "mode", "nlink", "size", "mtimeNs", "ctimeNs"].every((key) => {
-                const value = identity[key as keyof AnchoredReaderEntryIdentity];
+                const value = identity[key as keyof StablePathReaderEntryIdentity];
                 return (
                     typeof value === "string" &&
                     /^(0|[1-9][0-9]*)$/.test(value) &&
-                    value === expected.identity[key as keyof AnchoredReaderEntryIdentity]
+                    value === expected.identity[key as keyof StablePathReaderEntryIdentity]
                 );
             });
         const hasStaging = result.stagingPath === expected.stagingPath && result.reusedOid == null;
@@ -338,7 +347,7 @@ function isAnchoredReaderResult(
     });
 }
 
-const AnchoredReaderWorkerSource = String.raw`
+const StablePathReaderWorkerSource = String.raw`
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const chunks = [];
@@ -399,7 +408,7 @@ function reusable(previous, current, nowMs) {
     const newest = BigInt(current.mtimeNs) > BigInt(current.ctimeNs)
         ? BigInt(current.mtimeNs)
         : BigInt(current.ctimeNs);
-    return BigInt(nowMs) * 1000000n - newest > ${AnchoredReaderRacyWindowNs}n;
+    return BigInt(nowMs) * 1000000n - newest > ${StablePathReaderRacyWindowNs}n;
 }
 async function writeBytes(path, bytes) {
     const output = await fsp.open(path, "wx", 0o600);
@@ -407,6 +416,20 @@ async function writeBytes(path, bytes) {
         await output.writeFile(bytes);
     } finally {
         await output.close();
+    }
+}
+async function waitAtTestBarrier(input, entry) {
+    const barrier = input.testBarrier;
+    if (!barrier || barrier.path !== entry.path) return;
+    await fsp.writeFile(barrier.openedMarker, "opened", { flag: "wx", mode: 0o600 });
+    while (true) {
+        try {
+            await fsp.lstat(barrier.releaseMarker);
+            return;
+        } catch (error) {
+            if (!error || error.code !== "ENOENT") throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1));
     }
 }
 async function main(input) {
@@ -485,6 +508,7 @@ async function main(input) {
             if (total + size > input.maxTotalBytes) throw new Error("capture_budget:total bytes");
             const output = await fsp.open(entry.stagingPath, "wx", 0o600);
             try {
+                await waitAtTestBarrier(input, entry);
                 const buffer = Buffer.alloc(Math.min(1024 * 1024, Math.max(1, size)));
                 let offset = 0;
                 while (offset < size) {

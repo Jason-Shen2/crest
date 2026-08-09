@@ -7,11 +7,11 @@ import { constants, lstatSync, type BigIntStats, type Dirent } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-import { hasReusableAnchoredIdentity } from "./anchored-reader";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { observeSafely } from "./observation";
 import type { WorkspaceCoverageReason, WorkspaceSnapshotCoverage } from "./types";
 import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { hasReusablePathIdentity } from "./workspace-path-reader";
 
 export interface WorkspaceScopeEntry {
     pathBytes: Buffer;
@@ -1236,7 +1236,7 @@ async function verifyIncrementalGitIndexEvidence(
     const currentIdentity = serializeEntryIdentity(current);
     if (JSON.stringify(currentIdentity) !== JSON.stringify(expected.entryIdentity)) return false;
     assertSameDirectory(parentBefore, await readDirectoryIdentity(Buffer.from(parentPath)));
-    if (hasReusableAnchoredIdentity(expected.entryIdentity, currentIdentity, Date.now())) return true;
+    if (hasReusablePathIdentity(expected.entryIdentity, currentIdentity, Date.now())) return true;
     return sameGitIndexEvidence(expected, await captureGitIndexEvidence(pathBytes, signal));
 }
 
