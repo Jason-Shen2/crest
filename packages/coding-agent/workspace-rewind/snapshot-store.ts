@@ -4,7 +4,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
 import {
-    chmod,
     link,
     lstat,
     mkdir,
@@ -18,7 +17,6 @@ import {
     unlink,
     writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 
 import { encodeDurableJson, ensureDurableGitObjects } from "./durability";
@@ -1385,36 +1383,6 @@ export class WorkspaceSnapshotStore {
             });
         }
         return this.writeTreeNode(root, runtime);
-    }
-
-    async writeStateTree(entries: CapturedEntry[], runtime: CaptureRuntime): Promise<string> {
-        const stagingRoot = await mkdtemp(join(tmpdir(), "crest-snapshot-state-tree-"));
-        await chmod(stagingRoot, 0o700);
-        try {
-            const storedEntries = entries.filter((entry) => entry.state.state !== "absent");
-            const paths = storedEntries.map((_, index) => join(stagingRoot, `${index}.json`));
-            let nextIndex = 0;
-            const writeNext = async () => {
-                while (nextIndex < storedEntries.length) {
-                    const index = nextIndex++;
-                    assertCaptureActive(runtime.deadline, runtime.signal);
-                    await writeFile(
-                        paths[index]!,
-                        canonicalJson({ schemaversion: 1, state: storedEntries[index]!.state }),
-                        { mode: 0o600, signal: runtime.signal }
-                    );
-                }
-            };
-            await Promise.all(Array.from({ length: Math.min(8, storedEntries.length) }, writeNext));
-            const oids = await this.hashStagedPaths(paths, runtime);
-            const root: TreeNode = { children: new Map() };
-            for (let index = 0; index < storedEntries.length; index++) {
-                insertTreeLeaf(root, storedEntries[index]!.path, { mode: "100644", oid: oids[index]! });
-            }
-            return await this.writeTreeNode(root, runtime);
-        } finally {
-            await rm(stagingRoot, { recursive: true, force: true });
-        }
     }
 
     async writeTreeNode(node: TreeNode, runtime: CaptureRuntime): Promise<string> {
