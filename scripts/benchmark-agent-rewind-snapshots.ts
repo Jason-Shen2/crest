@@ -1,28 +1,39 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import type { JsonlSessionMetadata, SessionTreeEntry } from "@crest/agent/harness/types";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
+import { promisify } from "node:util";
 
-import { WorkspaceGitRunner } from "../packages/coding-agent/workspace-rewind/git-runner";
+import { RewindConfirmationRegistry } from "../packages/coding-agent/workspace-rewind/confirmation-token";
 import {
-    IncrementalPathCapture,
-    type IncrementalPathCaptureHooks,
-} from "../packages/coding-agent/workspace-rewind/incremental-path-capture";
-import { observeSafely } from "../packages/coding-agent/workspace-rewind/observation";
+    WorkspaceGitRunner,
+    type GitRunOptions,
+    type GitRunResult,
+} from "../packages/coding-agent/workspace-rewind/git-runner";
+import { PendingWorkspaceRestoreStore } from "../packages/coding-agent/workspace-rewind/pending-restore-store";
+import type { RestorePlanV1 } from "../packages/coding-agent/workspace-rewind/restore-plan";
 import {
     WorkspaceCheckpointLimits,
     WorkspaceSnapshotStore,
     WorkspaceSnapshotStoreError,
 } from "../packages/coding-agent/workspace-rewind/snapshot-store";
+import { WorkspaceCandidates } from "../packages/coding-agent/workspace-rewind/workspace-candidates";
 import type {
+    WorkspaceChangeDrain,
     WorkspaceChangeFeed,
-    WorkspaceChangeRead,
 } from "../packages/coding-agent/workspace-rewind/workspace-change-feed";
 import type { CanonicalWorkspaceIdentity } from "../packages/coding-agent/workspace-rewind/workspace-identity";
-import { WorkspaceSnapshotTracker } from "../packages/coding-agent/workspace-rewind/workspace-snapshot-tracker";
+import { WorkspaceRecovery } from "../packages/coding-agent/workspace-rewind/workspace-recovery";
+import {
+    WorkspaceRestoreExecutor,
+    type WorkspaceRestoreCommitStrategy,
+} from "../packages/coding-agent/workspace-rewind/workspace-restore-executor";
 import {
     WorkspaceTrackerRegistry,
     type WorkspaceTrackerAcquireInput,
@@ -30,7 +41,15 @@ import {
 } from "../packages/coding-agent/workspace-rewind/workspace-tracker-registry";
 
 type FixtureShape = "deep" | "wide";
-type BenchmarkMode = "full-baseline" | "warm-incremental";
+export type BenchmarkScenario =
+    | "cold"
+    | "no-tool-fresh"
+    | "warm-no-change"
+    | "dirty-paths"
+    | "session-contention"
+    | "overlap"
+    | "restore";
+export type BenchmarkOutcome = "pass" | "fallback" | "unavailable" | "timeout" | "budget";
 
 export interface BenchmarkOptions {
     entryCounts: number[];
@@ -38,509 +57,698 @@ export interface BenchmarkOptions {
 }
 
 export interface BenchmarkRow {
+    scenario: BenchmarkScenario;
     shape: FixtureShape;
-    mode: BenchmarkMode;
-    outcome: "completed" | "capture-timeout" | "capture-budget" | "baseline-unavailable";
-    contentCardinality: number;
+    outcome: BenchmarkOutcome;
     entryCount: number;
-    directoryCount: number;
-    dirtyCount: number;
+    dirtyPathCount: number;
     sessionCount: number;
-    p50Ms: number;
-    p95Ms: number;
+    iterations: number;
+    candidateCount: number;
+    bytesRead: number;
+    commitsTraversed: number;
     fullReconcileCount: number;
-    enumeratedEntries: number;
-    workerPeak: number;
-    newObjects: number;
-    newlyHashedBytes: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+    reason?: string;
 }
 
-interface CaptureMetrics {
-    fullReconcileCount: number;
-    enumeratedEntries: number;
-    workerActive: number;
-    workerPeak: number;
-    newlyHashedBytes: number;
-    hooks: IncrementalPathCaptureHooks;
+export interface BenchmarkFixtureView {
+    root: string;
+    shape: FixtureShape;
+}
+
+interface BenchmarkMetrics {
+    candidateCount: number;
+    bytesRead: number;
+    commitsTraversed: number;
+    fallbackCount: number;
     reset(): void;
 }
 
-export interface BenchmarkFixture {
-    root: string;
-    shape: FixtureShape;
+interface BenchmarkFixture extends BenchmarkFixtureView {
     workspaceRoot: string;
-    directoryCount: number;
-    contentCardinality: number;
+    entryCount: number;
     paths: string[];
-    store: WorkspaceSnapshotStore;
-    tracker: WorkspaceSnapshotTracker;
-    feed: DeterministicChangeFeed;
-    metrics: CaptureMetrics;
     registry: WorkspaceTrackerRegistry;
     registryInput: WorkspaceTrackerAcquireInput;
-    keeperLease: WorkspaceTrackerLease;
+    feed: DeterministicChangeFeed;
+    metrics: BenchmarkMetrics;
+    coldDurations: number[];
+    coldError?: unknown;
+    keeperLease?: WorkspaceTrackerLease;
 }
 
-export interface BenchmarkDependencies {
-    makeFixture: typeof makeFixture;
-    countLooseObjects: typeof countLooseObjects;
-    mutatePaths: typeof mutatePaths;
-    now(): number;
-    acquireLeases(fixture: BenchmarkFixture, count: number): Promise<WorkspaceTrackerLease[]>;
-    cleanupFixture(fixture: BenchmarkFixture): Promise<void>;
+export interface BenchmarkDependencies<TFixture extends BenchmarkFixtureView = BenchmarkFixture> {
+    makeFixture(entryCount: number, shape: FixtureShape): Promise<TFixture>;
+    measureFixture(fixture: TFixture, options: BenchmarkOptions): Promise<BenchmarkRow[]>;
+    cleanupFixture(fixture: TFixture): Promise<void>;
 }
 
-const DirtyCounts = [0, 1, 100] as const;
+const DirtyPathCounts = [1, 10, 100] as const;
 const SessionCounts = [1, 2, 4] as const;
 const DefaultEntryCounts = [10_000, 50_000, 200_000];
-const DefaultIterations = 20;
-const RepresentativeContentCardinality = 64;
+const DefaultIterations = 10;
+const execFileAsync = promisify(execFile);
+
 const DefaultBenchmarkDependencies: BenchmarkDependencies = {
     makeFixture,
-    countLooseObjects,
-    mutatePaths,
-    now: () => performance.now(),
-    acquireLeases: (fixture, count) =>
-        Promise.all(Array.from({ length: count }, () => fixture.registry.acquire(fixture.registryInput))),
+    measureFixture,
     cleanupFixture: cleanupBenchmarkFixture,
 };
 
-export async function cleanupBenchmarkFixture(
-    fixture: Pick<BenchmarkFixture, "root" | "keeperLease">,
-    removeRoot: (root: string) => Promise<void> = (root) => rm(root, { recursive: true, force: true })
-): Promise<void> {
-    let releaseFailed = false;
-    let releaseFailure: unknown;
-    let removeFailed = false;
-    let removeFailure: unknown;
-    try {
-        await fixture.keeperLease.release();
-    } catch (error) {
-        releaseFailed = true;
-        releaseFailure = error;
-    } finally {
-        try {
-            await removeRoot(fixture.root);
-        } catch (error) {
-            removeFailed = true;
-            removeFailure = error;
-        }
-    }
-    if (releaseFailed && removeFailed) {
-        throw new AggregateError([releaseFailure, removeFailure], "Benchmark fixture release and removal failed");
-    }
-    if (releaseFailed) throw releaseFailure;
-    if (removeFailed) throw removeFailure;
-}
-
-export async function runAgentRewindSnapshotBenchmark(
+export async function runAgentRewindSnapshotBenchmark<TFixture extends BenchmarkFixtureView = BenchmarkFixture>(
     options: BenchmarkOptions,
     onRow: (row: BenchmarkRow) => void = () => undefined,
-    dependencies: Partial<BenchmarkDependencies> = {}
+    dependencies: Partial<BenchmarkDependencies<TFixture>> = {}
 ): Promise<BenchmarkRow[]> {
-    const resolved = { ...DefaultBenchmarkDependencies, ...dependencies };
-    const rows: BenchmarkRow[] = [];
-    const append = (row: BenchmarkRow) => {
-        rows.push(row);
-        observeSafely(() => onRow(row));
+    const resolved = {
+        ...(DefaultBenchmarkDependencies as unknown as BenchmarkDependencies<TFixture>),
+        ...dependencies,
     };
+    const rows: BenchmarkRow[] = [];
     for (const entryCount of options.entryCounts) {
         for (const shape of ["deep", "wide"] as const) {
-            append(await measureUniqueContentColdProbe(entryCount, shape, resolved));
-            const fixture = await resolved.makeFixture(entryCount, shape, RepresentativeContentCardinality);
+            const fixture = await resolved.makeFixture(entryCount, shape);
+            let observerError: unknown;
             try {
-                const baseline = await measureFullBaseline(fixture, resolved);
-                append(baseline);
-                for (const dirtyCount of DirtyCounts) {
-                    for (const sessionCount of SessionCounts) {
-                        const input = {
-                            dirtyCount: Math.min(dirtyCount, fixture.paths.length),
-                            sessionCount,
-                            iterations: options.iterations,
-                        };
-                        append(
-                            baseline.outcome === "completed"
-                                ? await measureWarmRow(fixture, input, resolved)
-                                : makeUnavailableWarmRow(fixture, input)
-                        );
+                const measured = await resolved.measureFixture(fixture, options);
+                for (const row of measured) {
+                    rows.push(row);
+                    if (observerError) continue;
+                    try {
+                        onRow(row);
+                    } catch (error) {
+                        observerError = error;
                     }
                 }
             } finally {
                 await resolved.cleanupFixture(fixture);
             }
+            if (observerError) throw observerError;
         }
     }
     return rows;
 }
 
-async function measureFullBaseline(
-    fixture: BenchmarkFixture,
-    dependencies: BenchmarkDependencies
-): Promise<BenchmarkRow> {
-    fixture.metrics.reset();
-    const objectsBefore = await dependencies.countLooseObjects(fixture.store);
-    const started = dependencies.now();
+export async function runAgentRewindSnapshotFixture(
+    entryCount: number,
+    shape: FixtureShape,
+    iterations: number,
+    matrix: "full" | "smoke" = "full"
+): Promise<BenchmarkRow[]> {
+    const fixture = await makeFixture(entryCount, shape);
     try {
-        const captured = await fixture.tracker.capture({ profile: "terminal" });
-        fixture.metrics.newlyHashedBytes += captured.coverage.newlyHashedBytes;
-        return makeRow(fixture, {
-            mode: "full-baseline",
-            outcome: "completed",
-            dirtyCount: 0,
-            sessionCount: 1,
-            durations: [dependencies.now() - started],
-            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
-        });
-    } catch (error) {
-        const outcome = captureFailureOutcome(error);
-        if (!outcome) throw error;
-        return makeRow(fixture, {
-            mode: "full-baseline",
-            outcome,
-            dirtyCount: 0,
-            sessionCount: 1,
-            durations: [dependencies.now() - started],
-            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
-        });
+        return await measureFixture(fixture, { entryCounts: [entryCount], iterations }, matrix);
+    } finally {
+        await cleanupBenchmarkFixture(fixture);
     }
 }
 
-async function measureUniqueContentColdProbe(
-    entryCount: number,
-    shape: FixtureShape,
-    dependencies: BenchmarkDependencies
-): Promise<BenchmarkRow> {
-    const fixture = await dependencies.makeFixture(entryCount, shape, entryCount);
-    try {
-        fixture.metrics.reset();
-        const objectsBefore = await dependencies.countLooseObjects(fixture.store);
-        const started = dependencies.now();
+export async function cleanupBenchmarkFixture(
+    fixture: Pick<BenchmarkFixture, "root"> & { keeperLease?: Pick<WorkspaceTrackerLease, "release"> },
+    removeRoot: (root: string) => Promise<void> = (root) => rm(root, { recursive: true, force: true })
+): Promise<void> {
+    const failures: unknown[] = [];
+    if (fixture.keeperLease) {
         try {
-            const captured = await fixture.tracker.capture({ profile: "terminal" });
-            const elapsed = dependencies.now() - started;
-            fixture.metrics.newlyHashedBytes += captured.coverage.newlyHashedBytes;
-            const objectsAfter = await dependencies.countLooseObjects(fixture.store);
-            return makeRow(fixture, {
-                mode: "full-baseline",
-                outcome: "completed",
-                dirtyCount: 0,
-                sessionCount: 1,
-                durations: [elapsed],
-                newObjects: objectsAfter - objectsBefore,
-            });
+            await fixture.keeperLease.release();
         } catch (error) {
-            const outcome = captureFailureOutcome(error);
-            if (!outcome) throw error;
-            const elapsed = dependencies.now() - started;
-            const objectsAfter = await dependencies.countLooseObjects(fixture.store);
-            return makeRow(fixture, {
-                mode: "full-baseline",
-                outcome,
-                dirtyCount: 0,
-                sessionCount: 1,
-                durations: [elapsed],
-                newObjects: objectsAfter - objectsBefore,
-            });
+            failures.push(error);
         }
-    } finally {
-        await dependencies.cleanupFixture(fixture);
     }
-}
-
-async function measureWarmRow(
-    fixture: BenchmarkFixture,
-    input: { dirtyCount: number; sessionCount: number; iterations: number },
-    dependencies: BenchmarkDependencies
-): Promise<BenchmarkRow> {
-    fixture.metrics.reset();
-    const durations: number[] = [];
-    const objectsBefore = await dependencies.countLooseObjects(fixture.store);
-    const leases = await dependencies.acquireLeases(fixture, input.sessionCount);
     try {
-        for (let iteration = 0; iteration < input.iterations; iteration++) {
-            const dirtyPaths = fixture.paths.slice(0, input.dirtyCount);
-            await dependencies.mutatePaths(
-                fixture.workspaceRoot,
-                dirtyPaths,
-                `${input.dirtyCount}:${input.sessionCount}:${iteration}`
-            );
-            fixture.feed.record(dirtyPaths);
-            const started = dependencies.now();
-            const captures = leases.map((lease) =>
-                Promise.resolve().then(() => lease.tracker.capture({ profile: "terminal" }))
-            );
-            const settled = await Promise.allSettled(captures);
-            durations.push(dependencies.now() - started);
-            const completed = settled.filter(
-                (result): result is Extract<(typeof settled)[number], { status: "fulfilled" }> =>
-                    result.status === "fulfilled"
-            );
-            fixture.metrics.newlyHashedBytes += completed.reduce(
-                (total, capture) => total + capture.value.coverage.newlyHashedBytes,
-                0
-            );
-            const unexpected = settled.find(
-                (result): result is PromiseRejectedResult =>
-                    result.status === "rejected" && captureFailureOutcome(result.reason) == null
-            );
-            if (unexpected) throw unexpected.reason;
-            const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
-            if (rejected) {
-                return makeRow(fixture, {
-                    mode: "warm-incremental",
-                    outcome: captureFailureOutcome(rejected.reason)!,
-                    dirtyCount: input.dirtyCount,
-                    sessionCount: input.sessionCount,
-                    durations,
-                    newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
-                });
-            }
-        }
-        return makeRow(fixture, {
-            mode: "warm-incremental",
-            dirtyCount: input.dirtyCount,
-            sessionCount: input.sessionCount,
-            durations,
-            newObjects: (await dependencies.countLooseObjects(fixture.store)) - objectsBefore,
-        });
-    } finally {
-        await Promise.all(leases.map((lease) => lease.release()));
+        await removeRoot(fixture.root);
+    } catch (error) {
+        failures.push(error);
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Benchmark fixture cleanup failed");
 }
 
-function makeRow(
-    fixture: BenchmarkFixture,
-    input: {
-        mode: BenchmarkMode;
-        outcome?: BenchmarkRow["outcome"];
-        dirtyCount: number;
-        sessionCount: number;
-        durations: number[];
-        newObjects: number;
-    }
-): BenchmarkRow {
-    return {
-        shape: fixture.shape,
-        mode: input.mode,
-        outcome: input.outcome ?? "completed",
-        contentCardinality: fixture.contentCardinality,
-        entryCount: fixture.paths.length + fixture.directoryCount,
-        directoryCount: fixture.directoryCount,
-        dirtyCount: input.dirtyCount,
-        sessionCount: input.sessionCount,
-        p50Ms: percentile(input.durations, 0.5),
-        p95Ms: percentile(input.durations, 0.95),
-        fullReconcileCount: fixture.metrics.fullReconcileCount,
-        enumeratedEntries: fixture.metrics.enumeratedEntries,
-        workerPeak: fixture.metrics.workerPeak,
-        newObjects: input.newObjects,
-        newlyHashedBytes: fixture.metrics.newlyHashedBytes,
-    };
-}
-
-function makeUnavailableWarmRow(
-    fixture: BenchmarkFixture,
-    input: { dirtyCount: number; sessionCount: number }
-): BenchmarkRow {
-    fixture.metrics.reset();
-    return makeRow(fixture, {
-        mode: "warm-incremental",
-        outcome: "baseline-unavailable",
-        dirtyCount: input.dirtyCount,
-        sessionCount: input.sessionCount,
-        durations: [0],
-        newObjects: 0,
-    });
-}
-
-function captureFailureOutcome(error: unknown): "capture-timeout" | "capture-budget" | undefined {
-    if (!(error instanceof WorkspaceSnapshotStoreError)) return undefined;
-    if (error.code === "capture_timeout") return "capture-timeout";
-    return error.code === "capture_budget" ? "capture-budget" : undefined;
-}
-
-async function makeFixture(
-    entryCount: number,
-    shape: FixtureShape,
-    contentCardinality: number
-): Promise<BenchmarkFixture> {
-    if (!Number.isSafeInteger(entryCount) || entryCount < 1 || entryCount > WorkspaceCheckpointLimits.maxEntries) {
-        throw new Error(`Entry count must be between 1 and ${WorkspaceCheckpointLimits.maxEntries}`);
-    }
-    const root = await mkdtemp(join(tmpdir(), `crest-rewind-benchmark-${shape}-${entryCount}-`));
+async function makeFixture(entryCount: number, shape: FixtureShape): Promise<BenchmarkFixture> {
+    validateEntryCount(entryCount);
+    const root = await mkdtemp(join(tmpdir(), `crest-rewind-v3-${shape}-${entryCount}-`));
+    const metrics = makeMetrics();
     try {
         const workspaceRoot = await realpath(await mkdir(join(root, "workspace"), { recursive: true }));
-        const layout = await createFixtureEntries(workspaceRoot, entryCount, shape, contentCardinality);
+        const paths = await createFixtureEntries(workspaceRoot, entryCount, shape);
+        await initializeGitFixture(workspaceRoot);
         const identity = await makeIdentity(workspaceRoot, `${shape}-${entryCount}`);
+        const git = new ObservedWorkspaceGitRunner(metrics);
         const registryInput: WorkspaceTrackerAcquireInput = {
             dataRoot: join(root, "data"),
             identity,
-            git: new WorkspaceGitRunner(),
+            git,
             processOwner: {
                 pid: process.pid,
                 processStartToken: `benchmark-${shape}-${entryCount}`,
                 nonce: "7".repeat(64),
             },
         };
-        const store = await WorkspaceSnapshotStore.open(registryInput);
-        const metrics = makeMetrics();
-        instrumentStore(store, metrics);
         const feed = new DeterministicChangeFeed();
         const registry = new WorkspaceTrackerRegistry({
-            openStore: async () => store,
+            openStore: async (input) => {
+                const store = await WorkspaceSnapshotStore.open(input);
+                observeStore(store, metrics);
+                return store;
+            },
             makeFeed: () => feed,
-            makeTracker: () =>
-                new WorkspaceSnapshotTracker({
-                    store,
+            makeCandidates: ({ store, userGit }) =>
+                new WorkspaceCandidates({
+                    workspaceRoot,
                     feed,
-                    state: {
-                        load: async () => ({ status: "untrusted" }),
-                        publish: async () => undefined,
-                    },
-                    makePathCapture: (input) =>
-                        new IncrementalPathCapture({
-                            identity,
-                            git: store.git,
-                            storeRoot: store.storeRoot,
-                            scope: input.scope,
-                            maxEntries: WorkspaceCheckpointLimits.maxEntries,
-                            maxUntrackedBytes: WorkspaceCheckpointLimits.maxUntrackedFileBytes,
-                            maxNewlyHashedBytes: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
-                            timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
-                            base: input.base,
-                            hooks: metrics.hooks,
-                        }),
+                    userGit,
+                    shadowGit: store.git,
                 }),
         });
-        const keeperLease = await registry.acquire(registryInput);
-        return {
+        const fixture: BenchmarkFixture = {
             root,
             shape,
             workspaceRoot,
-            directoryCount: layout.directoryCount,
-            contentCardinality: layout.contentCardinality,
-            paths: layout.paths,
-            store,
-            tracker: keeperLease.tracker,
-            feed,
-            metrics,
+            entryCount,
+            paths,
             registry,
             registryInput,
-            keeperLease,
+            feed,
+            metrics,
+            coldDurations: [],
         };
+        metrics.reset();
+        const started = performance.now();
+        try {
+            fixture.keeperLease = await registry.acquire(registryInput);
+            fixture.coldDurations.push(performance.now() - started);
+        } catch (error) {
+            fixture.coldDurations.push(performance.now() - started);
+            fixture.coldError = error;
+        }
+        return fixture;
     } catch (error) {
         await rm(root, { recursive: true, force: true });
         throw error;
     }
 }
 
-async function createFixtureEntries(
-    workspaceRoot: string,
-    entryCount: number,
-    shape: FixtureShape,
-    contentCardinality: number
-): Promise<{ directoryCount: number; contentCardinality: number; paths: string[] }> {
-    const directoryCount =
-        shape === "deep" ? Math.min(32, Math.ceil(Math.log2(entryCount))) : Math.min(8, Math.max(0, entryCount - 1));
-    let relativeRoot = "";
-    if (shape === "deep") {
-        relativeRoot = Array.from({ length: directoryCount }, (_, index) => `d${index.toString(36)}`).join("/");
-        await mkdir(join(workspaceRoot, relativeRoot), { recursive: true });
-    } else if (directoryCount > 0) {
-        await Promise.all(
-            Array.from({ length: directoryCount }, (_, index) => mkdir(join(workspaceRoot, `w${index}`)))
-        );
-    }
-    const fileCount = entryCount - directoryCount;
-    const effectiveContentCardinality = Math.max(1, Math.min(contentCardinality, fileCount));
-    const paths = Array.from({ length: fileCount }, (_, index) => {
-        if (relativeRoot) return `${relativeRoot}/f${index.toString(36)}`;
-        if (directoryCount > 0) return `w${index % directoryCount}/f${index.toString(36)}`;
-        return `f${index.toString(36)}`;
+async function measureFixture(
+    fixture: BenchmarkFixture,
+    options: BenchmarkOptions,
+    matrix: "full" | "smoke" = "full"
+): Promise<BenchmarkRow[]> {
+    const cold = makeMeasuredRow(fixture, {
+        scenario: "cold",
+        dirtyPathCount: 0,
+        sessionCount: 1,
+        iterations: 1,
+        durations: fixture.coldError ? [] : fixture.coldDurations,
+        error: fixture.coldError,
     });
-    for (let offset = 0; offset < paths.length; offset += 128) {
-        await Promise.all(
-            paths
-                .slice(offset, offset + 128)
-                .map((path, index) =>
-                    writeFile(
-                        join(workspaceRoot, path),
-                        Buffer.from(`content-${(offset + index) % effectiveContentCardinality}`)
-                    )
-                )
-        );
+    if (!fixture.keeperLease) {
+        return [
+            cold,
+            ...unavailableRows(
+                fixture,
+                options.iterations,
+                `cold authority unavailable: ${failureMessage(fixture.coldError)}`
+            ),
+        ];
     }
-    return { directoryCount, contentCardinality: effectiveContentCardinality, paths };
+    const rows = [cold];
+    rows.push(await measureNoToolFresh(fixture, options.iterations));
+    rows.push(await measureWarmNoChange(fixture, options.iterations));
+    const dirtyPathCounts = matrix === "smoke" ? ([1] as const) : DirtyPathCounts;
+    const sessionCounts = matrix === "smoke" ? ([4] as const) : SessionCounts;
+    for (const dirtyPathCount of dirtyPathCounts) {
+        rows.push(await measureDirtyPaths(fixture, dirtyPathCount, options.iterations));
+    }
+    for (const sessionCount of sessionCounts) {
+        rows.push(await measureSessionContention(fixture, sessionCount, options.iterations));
+    }
+    rows.push(await measureOverlap(fixture, options.iterations));
+    rows.push(await measureRestore(fixture, options.iterations));
+    return rows;
 }
 
-async function mutatePaths(workspaceRoot: string, paths: readonly string[], version: string): Promise<void> {
-    await Promise.all(paths.map((path, index) => writeFile(join(workspaceRoot, path), `${version}:${index}`)));
+async function measureNoToolFresh(fixture: BenchmarkFixture, iterations: number): Promise<BenchmarkRow> {
+    return await measureOperations(fixture, "no-tool-fresh", 0, 1, iterations, async (iteration) => {
+        const head = await fixture.keeperLease!.snapshotSource.readHead();
+        const fallbackBefore = fixture.metrics.fullReconcileCount;
+        const captured = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+            base: head.ref,
+            sessionId: "no-tool-session",
+            turnId: `no-tool-${iteration}`,
+        });
+        recordCoverage(fixture.metrics, captured.coverage, fallbackBefore);
+    });
 }
 
-function makeMetrics(): CaptureMetrics {
-    const metrics: CaptureMetrics = {
-        fullReconcileCount: 0,
-        enumeratedEntries: 0,
-        workerActive: 0,
-        workerPeak: 0,
-        newlyHashedBytes: 0,
-        hooks: {
-            scopeEnumerated: (entryCount) => {
-                metrics.enumeratedEntries += entryCount;
-            },
-            workerStarted: () => {
-                metrics.workerActive++;
-                metrics.workerPeak = Math.max(metrics.workerPeak, metrics.workerActive);
-            },
-            workerSettled: () => {
-                metrics.workerActive--;
-            },
-        },
-        reset() {
-            metrics.fullReconcileCount = 0;
-            metrics.enumeratedEntries = 0;
-            metrics.workerActive = 0;
-            metrics.workerPeak = 0;
-            metrics.newlyHashedBytes = 0;
+async function measureWarmNoChange(fixture: BenchmarkFixture, iterations: number): Promise<BenchmarkRow> {
+    return await measureOperations(fixture, "warm-no-change", 0, 1, iterations, async () => {
+        const fallbackBefore = fixture.metrics.fullReconcileCount;
+        const captured = await fixture.keeperLease!.snapshotSource.synchronizeExternal();
+        recordCoverage(fixture.metrics, captured.coverage, fallbackBefore);
+    });
+}
+
+async function measureDirtyPaths(
+    fixture: BenchmarkFixture,
+    dirtyPathCount: number,
+    iterations: number
+): Promise<BenchmarkRow> {
+    const paths = fixture.paths.slice(0, Math.min(dirtyPathCount, fixture.paths.length));
+    return await measureOperations(fixture, "dirty-paths", dirtyPathCount, 1, iterations, async (iteration) => {
+        const head = await fixture.keeperLease!.snapshotSource.readHead();
+        await mutatePaths(fixture.workspaceRoot, paths, `dirty-${dirtyPathCount}-${iteration}`);
+        fixture.feed.record(paths);
+        const fallbackBefore = fixture.metrics.fullReconcileCount;
+        const captured = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+            base: head.ref,
+            sessionId: "dirty-session",
+            turnId: `dirty-${dirtyPathCount}-${iteration}`,
+        });
+        recordCoverage(fixture.metrics, captured.coverage, fallbackBefore);
+    });
+}
+
+async function measureSessionContention(
+    fixture: BenchmarkFixture,
+    sessionCount: number,
+    iterations: number
+): Promise<BenchmarkRow> {
+    const leases = await Promise.all(
+        Array.from({ length: sessionCount }, () => fixture.registry.acquire(fixture.registryInput))
+    );
+    try {
+        if (leases.some((lease) => lease.snapshotSource !== fixture.keeperLease!.snapshotSource)) {
+            throw new Error("Workspace Sessions did not share one snapshot authority");
+        }
+        return await measureOperations(fixture, "session-contention", 0, sessionCount, iterations, async () => {
+            await Promise.all(
+                leases.map(async (lease, index) => {
+                    const writer = await lease.writerLeases.acquire({
+                        workspaceKey: `${fixture.registryInput.identity.workspaceIdentity}:${fixture.registryInput.identity.workspaceIncarnation}`,
+                        sessionId: `contention-${index}`,
+                        boundaryToken: `contention-${index}`,
+                    });
+                    try {
+                        const fallbackBefore = fixture.metrics.fullReconcileCount;
+                        const captured = await lease.snapshotSource.synchronizeExternal();
+                        recordCoverage(fixture.metrics, captured.coverage, fallbackBefore);
+                    } finally {
+                        writer.release();
+                    }
+                })
+            );
+        });
+    } finally {
+        await Promise.all(leases.map((lease) => lease.release()));
+    }
+}
+
+async function measureOverlap(fixture: BenchmarkFixture, iterations: number): Promise<BenchmarkRow> {
+    const path = fixture.paths[0]!;
+    return await measureOperations(fixture, "overlap", 1, 2, iterations, async (iteration) => {
+        let head = await fixture.keeperLease!.snapshotSource.readHead();
+        await mutatePaths(fixture.workspaceRoot, [path], `overlap-a-${iteration}`);
+        fixture.feed.record([path]);
+        let fallbackBefore = fixture.metrics.fullReconcileCount;
+        const first = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+            base: head.ref,
+            sessionId: "overlap-a",
+            turnId: `overlap-a-${iteration}`,
+        });
+        recordCoverage(fixture.metrics, first.coverage, fallbackBefore);
+        head = await fixture.keeperLease!.snapshotSource.readHead();
+        await mutatePaths(fixture.workspaceRoot, [path], `overlap-b-${iteration}`);
+        fixture.feed.record([path]);
+        fallbackBefore = fixture.metrics.fullReconcileCount;
+        const second = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+            base: head.ref,
+            sessionId: "overlap-b",
+            turnId: `overlap-b-${iteration}`,
+        });
+        recordCoverage(fixture.metrics, second.coverage, fallbackBefore);
+        const overlaps = await fixture.keeperLease!.mutationLog.findForeignOverlap({
+            afterCommit: first.after.id,
+            paths: [path],
+            includedCommits: new Set(),
+            ownerSessionId: "overlap-a",
+        });
+        if (!overlaps.some((item) => item.path === path && item.sessionId === "overlap-b")) {
+            throw new Error("Same-path Session overlap was not detected");
+        }
+    });
+}
+
+async function measureRestore(fixture: BenchmarkFixture, iterations: number): Promise<BenchmarkRow> {
+    const path = fixture.paths[0]!;
+    return await measureOperations(fixture, "restore", 1, 1, iterations, async (iteration) => {
+        const before = await fixture.keeperLease!.snapshotSource.readHead();
+        await mutatePaths(fixture.workspaceRoot, [path], `restore-source-${iteration}`);
+        fixture.feed.record([path]);
+        const fallbackBefore = fixture.metrics.fullReconcileCount;
+        const changed = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+            base: before.ref,
+            sessionId: "restore-session",
+            turnId: `restore-source-${iteration}`,
+        });
+        recordCoverage(fixture.metrics, changed.coverage, fallbackBefore);
+        const source = await fixture.keeperLease!.snapshotSource.readHead();
+        const expectedCurrent = await fixture.keeperLease!.store.readPathState(source.ref, path);
+        const beforeState = await fixture.keeperLease!.store.readPathState(before.ref, path);
+        if (expectedCurrent.state === "excluded" || beforeState.state === "excluded") {
+            throw new Error("Restore benchmark path is excluded");
+        }
+        const plan: RestorePlanV1 = {
+            target: { kind: "turn-undo", sourceTurnId: `restore-source-${iteration}` },
+            sessionId: "restore-session",
+            workspaceIdentity: fixture.registryInput.identity.workspaceIdentity,
+            workspaceIncarnation: fixture.registryInput.identity.workspaceIncarnation,
+            semanticLeafId: `restore-leaf-${iteration}`,
+            commitParentId: `restore-leaf-${iteration}`,
+            paths: [
+                {
+                    path,
+                    operation: "write",
+                    target: beforeState,
+                    expectedCurrent,
+                    liveFingerprint: fingerprintCaptured(expectedCurrent),
+                    conflict: "none",
+                },
+            ],
+            coverageWarnings: [],
+            forceRequired: false,
+            hardBlocked: false,
+        };
+        const session = makeBenchmarkSession(fixture, iteration, plan.semanticLeafId!);
+        const pending = new PendingWorkspaceRestoreStore(fixture.keeperLease!.store);
+        const recovery = new WorkspaceRecovery({
+            workspace: fixture.registryInput.identity,
+            store: fixture.keeperLease!.store,
+            pending,
+            locateSession: async () => session,
+        });
+        const confirmations = new RewindConfirmationRegistry();
+        const executor = new WorkspaceRestoreExecutor({
+            store: fixture.keeperLease!.store,
+            pending,
+            recovery,
+            createOperationId: () => `restore-operation-${iteration}`,
+        });
+        await executor.execute({
+            session: session as never,
+            workspace: fixture.registryInput.identity,
+            source: source.ref,
+            plan,
+            confirmation: confirmations.take(confirmations.issue(plan)),
+            mode: "normal",
+            commit: benchmarkCommitStrategy(),
+        });
+        const restoredHead = await fixture.keeperLease!.snapshotSource.readHead();
+        const restoredState = await fixture.keeperLease!.store.readPathState(restoredHead.ref, path);
+        if (JSON.stringify(restoredState) !== JSON.stringify(beforeState) || changed.changes.length !== 1) {
+            throw new Error("Restore workload did not reproduce the exact prior path state");
+        }
+        const pendingAfter = await pending.readCandidate();
+        if (pendingAfter.kind !== "none") throw new Error("Restore workload left a pending journal");
+    });
+}
+
+function makeBenchmarkSession(fixture: BenchmarkFixture, iteration: number, initialLeaf: string) {
+    const metadata: JsonlSessionMetadata = {
+        id: "restore-session",
+        cwd: fixture.workspaceRoot,
+        path: join(fixture.root, `restore-session-${iteration}.db`),
+        createdAt: "2026-08-08T00:00:00.000Z",
+    };
+    const entries: SessionTreeEntry[] = [
+        {
+            type: "message",
+            id: initialLeaf,
+            parentId: null,
+            timestamp: "2026-08-08T00:00:00.000Z",
+            message: { role: "user", content: "benchmark restore", timestamp: 0 },
+        } as SessionTreeEntry,
+    ];
+    let leaf: string | null = initialLeaf;
+    return {
+        getMetadata: async () => structuredClone(metadata),
+        getEntries: async () => structuredClone(entries),
+        getLeafId: async () => leaf,
+        getEntry: async (id: string) => structuredClone(entries.find((entry) => entry.id === id)),
+        getStorage: () => ({ createEntryId: async () => `restore-state-${iteration}` }),
+        appendEntries: async (next: SessionTreeEntry[], input: { expectedLeafId: string | null }) => {
+            if (leaf !== input.expectedLeafId) throw new Error("Benchmark Session leaf moved during restore");
+            entries.push(...structuredClone(next));
+            leaf = next.at(-1)!.id;
         },
     };
-    return metrics;
 }
 
-function instrumentStore(store: WorkspaceSnapshotStore, metrics: CaptureMetrics): void {
+function benchmarkCommitStrategy(): WorkspaceRestoreCommitStrategy {
+    return {
+        makeResult: ({ folded, sessionMetadata }) => ({
+            sessionMetadata,
+            semanticLeafId: folded.semanticLeafId,
+            displayLeafId: folded.displayLeafId,
+        }),
+    };
+}
+
+function fingerprintCaptured(state: Exclude<RestorePlanV1["paths"][number]["target"], { state: "excluded" }>): string {
+    const value =
+        state.state === "absent"
+            ? ["absent"]
+            : state.state === "file"
+              ? ["file", state.oid, state.executable]
+              : ["symlink", state.oid];
+    return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+async function measureOperations(
+    fixture: BenchmarkFixture,
+    scenario: BenchmarkScenario,
+    dirtyPathCount: number,
+    sessionCount: number,
+    iterations: number,
+    operation: (iteration: number) => Promise<void>
+): Promise<BenchmarkRow> {
+    fixture.metrics.reset();
+    const durations: number[] = [];
+    let error: unknown;
+    for (let iteration = 0; iteration < iterations; iteration++) {
+        const started = performance.now();
+        try {
+            await operation(iteration);
+            durations.push(performance.now() - started);
+        } catch (operationError) {
+            error = operationError;
+            break;
+        }
+    }
+    return makeMeasuredRow(fixture, {
+        scenario,
+        dirtyPathCount,
+        sessionCount,
+        iterations,
+        durations,
+        error,
+    });
+}
+
+function makeMeasuredRow(
+    fixture: BenchmarkFixture,
+    input: {
+        scenario: BenchmarkScenario;
+        dirtyPathCount: number;
+        sessionCount: number;
+        iterations: number;
+        durations: number[];
+        error?: unknown;
+    }
+): BenchmarkRow {
+    const fallbackCount = input.scenario === "cold" ? 0 : fixture.metrics.fullReconcileCount;
+    const outcome = classifyOutcome(input.error, fallbackCount);
+    return {
+        scenario: input.scenario,
+        shape: fixture.shape,
+        outcome,
+        entryCount: fixture.entryCount,
+        dirtyPathCount: input.dirtyPathCount,
+        sessionCount: input.sessionCount,
+        iterations: input.iterations,
+        candidateCount: fixture.metrics.candidateCount,
+        bytesRead: fixture.metrics.bytesRead,
+        commitsTraversed: fixture.metrics.commitsTraversed,
+        fallbackCount,
+        p50Ms: input.durations.length === 0 ? null : percentile(input.durations, 0.5),
+        p95Ms: input.durations.length === 0 ? null : percentile(input.durations, 0.95),
+        ...(input.error ? { reason: failureMessage(input.error) } : {}),
+    };
+}
+
+function classifyOutcome(error: unknown, fallbackCount: number): BenchmarkOutcome {
+    if (!error) return fallbackCount > 0 ? "fallback" : "pass";
+    if (error instanceof WorkspaceSnapshotStoreError) {
+        if (error.code === "capture_timeout") return "timeout";
+        if (error.code === "capture_budget") return "budget";
+    }
+    const message = failureMessage(error);
+    if (/timed out|timeout/i.test(message)) return "timeout";
+    if (/budget|quota/i.test(message)) return "budget";
+    return "unavailable";
+}
+
+function unavailableRows(fixture: BenchmarkFixture, iterations: number, reason: string): BenchmarkRow[] {
+    const make = (scenario: BenchmarkScenario, dirtyPathCount: number, sessionCount: number): BenchmarkRow => ({
+        scenario,
+        shape: fixture.shape,
+        outcome: "unavailable",
+        entryCount: fixture.entryCount,
+        dirtyPathCount,
+        sessionCount,
+        iterations,
+        candidateCount: 0,
+        bytesRead: 0,
+        commitsTraversed: 0,
+        fallbackCount: 0,
+        p50Ms: null,
+        p95Ms: null,
+        reason,
+    });
+    return [
+        make("no-tool-fresh", 0, 1),
+        make("warm-no-change", 0, 1),
+        ...DirtyPathCounts.map((dirty) => make("dirty-paths", dirty, 1)),
+        ...SessionCounts.map((sessions) => make("session-contention", 0, sessions)),
+        make("overlap", 1, 2),
+        make("restore", 1, 1),
+    ];
+}
+
+async function createFixtureEntries(workspaceRoot: string, entryCount: number, shape: FixtureShape): Promise<string[]> {
+    const directoryCount = shape === "deep" ? Math.min(24, Math.max(1, Math.ceil(Math.log2(entryCount)))) : 0;
+    const relativeRoot = Array.from({ length: directoryCount }, (_, index) => `d${index.toString(36)}`).join("/");
+    if (relativeRoot) await mkdir(join(workspaceRoot, relativeRoot), { recursive: true });
+    const fileCount = entryCount - directoryCount;
+    const paths = Array.from({ length: fileCount }, (_, index) =>
+        relativeRoot ? `${relativeRoot}/f${index.toString(36)}` : `f${index.toString(36)}`
+    );
+    for (let offset = 0; offset < paths.length; offset += 256) {
+        await Promise.all(
+            paths
+                .slice(offset, offset + 256)
+                .map((path, index) => writeFile(join(workspaceRoot, path), `content-${(offset + index) % 64}`))
+        );
+    }
+    return paths;
+}
+
+async function initializeGitFixture(workspaceRoot: string): Promise<void> {
+    await execFileAsync("git", ["init", "--quiet"], { cwd: workspaceRoot });
+    await execFileAsync("git", ["add", "--all"], {
+        cwd: workspaceRoot,
+        maxBuffer: 64 * 1024 * 1024,
+    });
+    await execFileAsync(
+        "git",
+        [
+            "-c",
+            "user.name=Crest Benchmark",
+            "-c",
+            "user.email=benchmark@crest.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+        { cwd: workspaceRoot, maxBuffer: 64 * 1024 * 1024 }
+    );
+}
+
+async function mutatePaths(workspaceRoot: string, paths: readonly string[], value: string): Promise<void> {
+    await Promise.all(paths.map((path, index) => writeFile(join(workspaceRoot, path), `${value}:${index}`)));
+}
+
+function makeMetrics(): BenchmarkMetrics {
+    return {
+        candidateCount: 0,
+        bytesRead: 0,
+        commitsTraversed: 0,
+        fullReconcileCount: 0,
+        reset() {
+            this.candidateCount = 0;
+            this.bytesRead = 0;
+            this.commitsTraversed = 0;
+            this.fullReconcileCount = 0;
+        },
+    };
+}
+
+function observeStore(store: WorkspaceSnapshotStore, metrics: BenchmarkMetrics): void {
     const captureFullReconcile = store.captureFullReconcile.bind(store);
     store.captureFullReconcile = async (options) => {
         metrics.fullReconcileCount++;
-        const captureAnchoredGroupAttempt = store.captureAnchoredGroupAttempt.bind(store);
-        store.captureAnchoredGroupAttempt = async (...args) => {
-            metrics.workerActive++;
-            metrics.workerPeak = Math.max(metrics.workerPeak, metrics.workerActive);
-            try {
-                return await captureAnchoredGroupAttempt(...args);
-            } finally {
-                metrics.workerActive--;
-            }
-        };
-        try {
-            return await captureFullReconcile({
-                ...options,
-                observer: {
-                    scopeEnumerated: (entryCount) => {
-                        metrics.enumeratedEntries += entryCount;
-                    },
-                },
-            });
-        } finally {
-            store.captureAnchoredGroupAttempt = captureAnchoredGroupAttempt;
-        }
+        const captured = await captureFullReconcile(options);
+        metrics.bytesRead += captured.coverage.newlyHashedBytes;
+        return captured;
+    };
+    const readNodeKinds = store.readNodeKinds.bind(store);
+    store.readNodeKinds = async (snapshot, paths, signal) => {
+        metrics.candidateCount += paths.length;
+        return await readNodeKinds(snapshot, paths, signal);
     };
 }
 
-async function countLooseObjects(store: WorkspaceSnapshotStore): Promise<number> {
-    const result = await store.git.run(["count-objects", "-v"], { gitDir: store.storeRoot, timeoutMs: 30_000 });
-    const match = /^count: (\d+)$/m.exec(result.stdout.toString("ascii"));
-    if (!match) throw new Error("Git returned invalid object statistics");
-    return Number(match[1]);
+function recordCoverage(
+    metrics: BenchmarkMetrics,
+    coverage: { newlyHashedBytes: number },
+    fullReconcileCountBefore: number
+): void {
+    if (metrics.fullReconcileCount === fullReconcileCountBefore) metrics.bytesRead += coverage.newlyHashedBytes;
+}
+
+class ObservedWorkspaceGitRunner extends WorkspaceGitRunner {
+    constructor(readonly metrics: BenchmarkMetrics) {
+        super();
+    }
+
+    override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+        const result = await super.run(args, options);
+        if (args[0] === "cat-file" && args[1] === "commit") this.metrics.commitsTraversed++;
+        return result;
+    }
+}
+
+class DeterministicChangeFeed implements WorkspaceChangeFeed {
+    trusted = false;
+    paths = new Set<string>();
+
+    record(paths: readonly string[]): void {
+        for (const path of paths) this.paths.add(path);
+    }
+
+    async start(): Promise<void> {
+        this.trusted = true;
+    }
+
+    async drain(): Promise<WorkspaceChangeDrain> {
+        if (!this.trusted) return { status: "unavailable", reason: "not-started" };
+        const changedPaths = [...this.paths].sort((left, right) =>
+            Buffer.compare(Buffer.from(left), Buffer.from(right))
+        );
+        this.paths.clear();
+        return { status: "complete", changedPaths };
+    }
+
+    isTrusted(): boolean {
+        return this.trusted;
+    }
+
+    async dispose(): Promise<void> {
+        this.trusted = false;
+        this.paths.clear();
+    }
 }
 
 async function makeIdentity(workspaceRoot: string, label: string): Promise<CanonicalWorkspaceIdentity> {
@@ -555,12 +763,9 @@ async function makeIdentity(workspaceRoot: string, label: string): Promise<Canon
 
 async function ancestorIdentityChain(path: string): Promise<CanonicalWorkspaceIdentity["ancestorIdentityChain"]> {
     const paths: string[] = [];
-    let cursor = path;
-    while (true) {
+    for (let cursor = path; ; cursor = dirname(cursor)) {
         paths.unshift(cursor);
-        const parent = dirname(cursor);
-        if (parent === cursor) break;
-        cursor = parent;
+        if (dirname(cursor) === cursor) break;
     }
     return await Promise.all(
         paths.map(async (absolutePath) => {
@@ -581,6 +786,16 @@ function percentile(values: readonly number[], quantile: number): number {
     return Number(sorted[index]!.toFixed(2));
 }
 
+function failureMessage(error: unknown): string {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+function validateEntryCount(entryCount: number): void {
+    if (!Number.isSafeInteger(entryCount) || entryCount < 2 || entryCount > WorkspaceCheckpointLimits.maxEntries) {
+        throw new Error(`Entry count must be between 2 and ${WorkspaceCheckpointLimits.maxEntries}`);
+    }
+}
+
 function parseOptions(argv: readonly string[]): BenchmarkOptions {
     let entryCounts = DefaultEntryCounts;
     let iterations = DefaultIterations;
@@ -598,14 +813,7 @@ function parseOptions(argv: readonly string[]): BenchmarkOptions {
         }
         throw new Error(`Unknown argument: ${argument}`);
     }
-    if (
-        entryCounts.length === 0 ||
-        entryCounts.some(
-            (value) => !Number.isSafeInteger(value) || value < 1 || value > WorkspaceCheckpointLimits.maxEntries
-        )
-    ) {
-        throw new Error(`--entries must contain integers between 1 and ${WorkspaceCheckpointLimits.maxEntries}`);
-    }
+    for (const entryCount of entryCounts) validateEntryCount(entryCount);
     if (!Number.isSafeInteger(iterations) || iterations < 1) {
         throw new Error("--iterations must be a positive integer");
     }
@@ -615,82 +823,21 @@ function parseOptions(argv: readonly string[]): BenchmarkOptions {
 function printRows(rows: readonly BenchmarkRow[]): void {
     console.table(
         rows.map((row) => ({
+            scenario: row.scenario,
             shape: row.shape,
-            mode: row.mode,
             outcome: row.outcome,
-            cardinality: row.contentCardinality,
             entries: row.entryCount,
-            directories: row.directoryCount,
-            dirty: row.dirtyCount,
+            dirty: row.dirtyPathCount,
             sessions: row.sessionCount,
+            candidates: row.candidateCount,
+            bytesread: row.bytesRead,
+            commits: row.commitsTraversed,
+            fallbacks: row.fallbackCount,
             p50ms: row.p50Ms,
             p95ms: row.p95Ms,
-            full: row.fullReconcileCount,
-            enumerated: row.enumeratedEntries,
-            workerpeak: row.workerPeak,
-            newobjects: row.newObjects,
-            hashedbytes: row.newlyHashedBytes,
         }))
     );
     console.log(JSON.stringify({ rows }, null, 2));
-}
-
-class DeterministicChangeFeed implements WorkspaceChangeFeed {
-    events: Array<{ sequence: number; path: string }> = [];
-    initialized = false;
-    committedSequence = 0;
-    nextSequence = 0;
-    nextCandidate = 0;
-    candidates = new Map<string, number>();
-
-    record(paths: readonly string[]): void {
-        for (const path of paths) this.events.push({ sequence: ++this.nextSequence, path });
-    }
-
-    async prepareForReconcile(): Promise<void> {}
-
-    async initializeAfterReconcile(): Promise<void> {
-        this.committedSequence = this.nextSequence;
-        this.candidates.clear();
-        this.initialized = true;
-    }
-
-    async readChanges(): Promise<WorkspaceChangeRead> {
-        if (!this.initialized) return { status: "gap", reason: "cold-start" };
-        return this.readAfter(this.committedSequence);
-    }
-
-    async advanceCandidate(candidateCursor: string): Promise<WorkspaceChangeRead> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        return this.readAfter(sequence);
-    }
-
-    async commitCursor(candidateCursor: string): Promise<void> {
-        const sequence = this.candidates.get(candidateCursor);
-        if (sequence == null) throw new Error("Unknown deterministic candidate cursor");
-        this.committedSequence = sequence;
-        this.candidates.clear();
-    }
-
-    markGap(): void {
-        this.initialized = false;
-    }
-
-    async dispose(): Promise<void> {}
-
-    readAfter(sequence: number): WorkspaceChangeRead {
-        const candidateCursor = (++this.nextCandidate).toString(16).padStart(32, "0");
-        this.candidates.set(candidateCursor, this.nextSequence);
-        return {
-            status: "complete",
-            changedPaths: [
-                ...new Set(this.events.filter((event) => event.sequence > sequence).map((event) => event.path)),
-            ].sort(),
-            scopeInvalidated: false,
-            candidateCursor,
-        };
-    }
 }
 
 const invokedPath = process.argv[1] ? await realpath(process.argv[1]).catch(() => process.argv[1]!) : "";
@@ -698,12 +845,12 @@ if (invokedPath === new URL(import.meta.url).pathname) {
     const options = parseOptions(process.argv.slice(2));
     const totalRows = options.entryCounts.length * 22;
     let completedRows = 0;
-    printRows(
-        await runAgentRewindSnapshotBenchmark(options, (row) => {
-            completedRows++;
-            console.log(
-                `[${completedRows}/${totalRows}] ${row.shape} ${row.mode} ${row.outcome} cardinality=${row.contentCardinality} dirty=${row.dirtyCount} sessions=${row.sessionCount} p95=${row.p95Ms}ms`
-            );
-        })
-    );
+    const rows = await runAgentRewindSnapshotBenchmark(options, (row) => {
+        completedRows++;
+        console.log(
+            `[${completedRows}/${totalRows}] ${row.shape} ${row.scenario} ${row.outcome} ` +
+                `dirty=${row.dirtyPathCount} sessions=${row.sessionCount} p95=${row.p95Ms ?? "n/a"}ms`
+        );
+    });
+    printRows(rows);
 }
