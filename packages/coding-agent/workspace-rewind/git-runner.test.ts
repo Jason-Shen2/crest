@@ -694,6 +694,46 @@ describe.sequential("WorkspaceGitRunner", () => {
         });
     });
 
+    test("streams a source tree closure into an independent private object database", async () => {
+        const runner = new WorkspaceGitRunner();
+        const sourceRoot = join(root, "source");
+        const destinationGitDir = join(root, "destination.git");
+        await mkdir(sourceRoot);
+        await runner.run(["init", "--quiet"], { cwd: sourceRoot, timeoutMs: 5_000 });
+        await runner.run(["init", "--quiet", "--bare", destinationGitDir], { cwd: root, timeoutMs: 5_000 });
+        const blob = (
+            await runner.run(["hash-object", "-w", "--stdin", "--no-filters"], {
+                cwd: sourceRoot,
+                stdin: Buffer.from("private baseline bytes"),
+                timeoutMs: 5_000,
+            })
+        ).stdout.toString("ascii").trim();
+        const tree = (
+            await runner.run(["mktree"], {
+                cwd: sourceRoot,
+                stdin: Buffer.from(`100644 blob ${blob}\tfile.txt\n`),
+                timeoutMs: 5_000,
+            })
+        ).stdout.toString("ascii").trim();
+
+        const imported = await runner.importObjectClosure({
+            sourceRoot,
+            sourceTree: tree,
+            destinationGitDir,
+            maxPackBytes: 1024 * 1024,
+            timeoutMs: 5_000,
+        });
+
+        expect(imported.packBytes).toBeGreaterThan(0);
+        await rm(join(sourceRoot, ".git"), { recursive: true, force: true });
+        await expect(
+            runner.run(["cat-file", "blob", blob], { gitDir: destinationGitDir, timeoutMs: 5_000 })
+        ).resolves.toMatchObject({ stdout: Buffer.from("private baseline bytes") });
+        await expect(
+            runner.run(["cat-file", "-t", tree], { gitDir: destinationGitDir, timeoutMs: 5_000 })
+        ).resolves.toMatchObject({ stdout: Buffer.from("tree\n") });
+    });
+
     test("handles child stdin EPIPE without an unhandled error", async () => {
         const runner = new WorkspaceGitRunner(executable);
 

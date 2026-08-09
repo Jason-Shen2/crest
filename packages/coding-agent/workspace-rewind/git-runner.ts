@@ -41,6 +41,15 @@ export interface GitRunResult {
     stderr: Buffer;
 }
 
+export interface GitObjectClosureImportOptions {
+    sourceRoot: string;
+    sourceTree: string;
+    destinationGitDir: string;
+    maxPackBytes: number;
+    timeoutMs: number;
+    signal?: AbortSignal;
+}
+
 export class WorkspaceGitRunnerError extends Error {
     readonly code: WorkspaceGitRunnerErrorCode;
     readonly exitCode?: number | null;
@@ -115,6 +124,136 @@ const SecureGitState = getSecureGitProcessState();
 
 export class WorkspaceGitRunner {
     constructor(readonly executable = "git") {}
+
+    async importObjectClosure(options: GitObjectClosureImportOptions): Promise<{ packBytes: number }> {
+        validateObjectClosureImportOptions(options);
+        if (options.signal?.aborted) throw makeError("aborted");
+        let securePaths: SecureGitPaths;
+        try {
+            securePaths = getSecureGitPaths();
+        } catch (cause) {
+            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
+        }
+        const commonArgs = [
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            `core.hooksPath=${securePaths.hooks}`,
+            "-c",
+            "core.autocrlf=false",
+        ];
+        const env = {
+            ...makeIsolatedEnv(true, securePaths.globalConfig, true, undefined, false),
+            GIT_NO_LAZY_FETCH: "1",
+        };
+        let source;
+        let destination;
+        try {
+            source = spawn(
+                this.executable,
+                [
+                    "--no-replace-objects",
+                    ...commonArgs,
+                    "pack-objects",
+                    "--stdout",
+                    "--revs",
+                    "--delta-base-offset",
+                ],
+                {
+                    cwd: options.sourceRoot,
+                    env,
+                    shell: false,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    windowsHide: true,
+                }
+            );
+            destination = spawn(
+                this.executable,
+                [
+                    ...commonArgs,
+                    `--git-dir=${options.destinationGitDir}`,
+                    "index-pack",
+                    "--stdin",
+                    "--strict",
+                    `--max-input-size=${options.maxPackBytes}`,
+                ],
+                {
+                    env,
+                    shell: false,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    windowsHide: true,
+                }
+            );
+        } catch (cause) {
+            source?.kill("SIGKILL");
+            destination?.kill("SIGKILL");
+            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
+        }
+
+        const sourceStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
+        const destinationStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
+        const destinationStdout = makeBoundedCapture(1024);
+        let packBytes = 0;
+        let terminalError: WorkspaceGitRunnerError | undefined;
+        const terminate = (error: WorkspaceGitRunnerError) => {
+            terminalError ??= error;
+            source.kill("SIGKILL");
+            destination.kill("SIGKILL");
+        };
+        source.stderr.on("data", (chunk: Buffer) => {
+            if (!sourceStderr.push(chunk)) terminate(makeError("stderr_overflow"));
+        });
+        destination.stderr.on("data", (chunk: Buffer) => {
+            if (!destinationStderr.push(chunk)) terminate(makeError("stderr_overflow"));
+        });
+        destination.stdout.on("data", (chunk: Buffer) => {
+            if (!destinationStdout.push(chunk)) terminate(makeError("stdout_overflow"));
+        });
+        source.stdout.on("data", (chunk: Buffer) => {
+            packBytes += chunk.length;
+            if (packBytes > options.maxPackBytes) {
+                terminate(makeError("stdout_overflow"));
+                return;
+            }
+            if (!destination.stdin.write(chunk)) source.stdout.pause();
+        });
+        destination.stdin.on("drain", () => source.stdout.resume());
+        source.stdout.on("end", () => destination.stdin.end());
+        const onAbort = () => terminate(makeError("aborted"));
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        const timer = setTimeout(() => terminate(makeError("timeout")), options.timeoutMs);
+        source.stdin.on("error", (cause: NodeJS.ErrnoException) => {
+            if (cause.code !== "EPIPE") terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+        });
+        destination.stdin.on("error", (cause: NodeJS.ErrnoException) => {
+            if (cause.code !== "EPIPE") terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+        });
+        source.stdin.end(Buffer.from(`${options.sourceTree}\n`));
+        try {
+            const settled = await Promise.allSettled([waitForChildProcess(source), waitForChildProcess(destination)]);
+            if (terminalError) throw terminalError;
+            const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+            if (rejected) {
+                throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, rejected.reason);
+            }
+            const [sourceResult, destinationResult] = settled as [PromiseFulfilledResult<number>, PromiseFulfilledResult<number>];
+            if (sourceResult.value !== 0) {
+                throw makeError("nonzero_exit", Buffer.alloc(0), sourceStderr.bytes(), sourceResult.value);
+            }
+            if (destinationResult.value !== 0) {
+                throw makeError(
+                    "nonzero_exit",
+                    destinationStdout.bytes(),
+                    destinationStderr.bytes(),
+                    destinationResult.value
+                );
+            }
+            return { packBytes };
+        } finally {
+            clearTimeout(timer);
+            options.signal?.removeEventListener("abort", onAbort);
+        }
+    }
 
     async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
         const limits = validateOptions(args, options);
@@ -325,6 +464,38 @@ function validateOptions(
 
 function isNonnegativeSafeInteger(value: number): boolean {
     return Number.isSafeInteger(value) && value >= 0;
+}
+
+function validateObjectClosureImportOptions(options: GitObjectClosureImportOptions): void {
+    if (
+        !options ||
+        !isAbsolute(options.sourceRoot) ||
+        !isAbsolute(options.destinationGitDir) ||
+        !isSha1(options.sourceTree) ||
+        !Number.isSafeInteger(options.maxPackBytes) ||
+        options.maxPackBytes <= 0 ||
+        !Number.isSafeInteger(options.timeoutMs) ||
+        options.timeoutMs <= 0 ||
+        options.timeoutMs > MaxTimeoutMs
+    ) {
+        throw makeError("invalid_options");
+    }
+}
+
+function makeBoundedCapture(limit: number): { push(chunk: Buffer): boolean; bytes(): Buffer } {
+    const chunks: Buffer[] = [];
+    let length = 0;
+    return {
+        push(chunk) {
+            if (length + chunk.length > limit) return false;
+            chunks.push(chunk);
+            length += chunk.length;
+            return true;
+        },
+        bytes() {
+            return Buffer.concat(chunks, length);
+        },
+    };
 }
 
 function isValidLimit(value: number, hardCap: number): boolean {
