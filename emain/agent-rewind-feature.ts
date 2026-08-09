@@ -14,7 +14,6 @@ import {
     type CanonicalWorkspaceIdentity,
 } from "@crest/coding-agent/workspace-rewind/workspace-identity";
 import type { WorkspaceMutationLog } from "@crest/coding-agent/workspace-rewind/workspace-mutation-log";
-import type { WorkspaceSnapshotTracker } from "@crest/coding-agent/workspace-rewind/workspace-snapshot-tracker";
 import {
     acquireWorkspaceTracker,
     type WorkspaceTrackerLease,
@@ -42,7 +41,6 @@ export type LiveAgentRewindFeature =
           state: "enabled";
           processOwner: ProcessOwnerIdentity;
           store: WorkspaceSnapshotStore;
-          tracker: WorkspaceSnapshotTracker;
           mutationLog: WorkspaceMutationLog;
           candidates: WorkspaceCandidates;
           writerLeases: WorkspaceWriterLeaseRegistry;
@@ -110,7 +108,6 @@ export async function acquireAgentRewindFeature(input: {
             state: "enabled",
             processOwner,
             store: lease.store,
-            tracker: lease.tracker,
             mutationLog: lease.mutationLog,
             candidates: lease.candidates,
             writerLeases: lease.writerLeases,

@@ -166,6 +166,8 @@ describe("WorkspaceCandidates Git discovery", () => {
 
         const result = await candidates.collect({
             kind: "git",
+            repositoryRoot: workspaceRoot,
+            workspacePrefix: "",
             shadowGitDir,
             sourceHeadTree,
             shadowTree,
@@ -185,6 +187,8 @@ describe("WorkspaceCandidates Git discovery", () => {
 
         const result = await candidates.collect({
             kind: "git",
+            repositoryRoot: workspaceRoot,
+            workspacePrefix: "",
             shadowGitDir: join(workspaceRoot, ".git"),
             sourceHeadTree,
             shadowTree,
@@ -195,6 +199,69 @@ describe("WorkspaceCandidates Git discovery", () => {
             paths: [".gitignore", "tracked.txt"],
             reconciled: false,
         });
+    });
+
+    test("scopes status and clean HEAD switches to a nested monorepo workspace", async () => {
+        const repositoryRoot = join(root, "monorepo");
+        const nestedWorkspaceRoot = join(repositoryRoot, "sub");
+        await mkdir(nestedWorkspaceRoot, { recursive: true });
+        await mkdir(join(repositoryRoot, "sibling"));
+        await git(repositoryRoot, "init", "-q");
+        await git(repositoryRoot, "config", "user.name", "Crest Tests");
+        await git(repositoryRoot, "config", "user.email", "crest@example.invalid");
+        await writeFile(join(nestedWorkspaceRoot, "tracked.txt"), "base\n");
+        await writeFile(join(repositoryRoot, "sibling", "outside.txt"), "base\n");
+        await git(repositoryRoot, "add", ".");
+        await git(repositoryRoot, "commit", "-qm", "base");
+        const baseWorkspaceTree = await revParse(repositoryRoot, "HEAD:sub");
+        const nestedUserGit = new WorkspaceGitRunner();
+        const run = nestedUserGit.run.bind(nestedUserGit);
+        const runSpy = vi.spyOn(nestedUserGit, "run").mockImplementation((args, options) => run(args, options));
+        const nestedCandidates = new WorkspaceCandidates({
+            workspaceRoot: nestedWorkspaceRoot,
+            feed: new MemoryChangeFeed(),
+            userGit: nestedUserGit,
+            shadowGit: new WorkspaceGitRunner(),
+        });
+        const boundary = {
+            kind: "git" as const,
+            repositoryRoot,
+            workspacePrefix: "sub",
+            shadowGitDir: join(repositoryRoot, ".git"),
+            sourceHeadTree: baseWorkspaceTree,
+            shadowTree: baseWorkspaceTree,
+        };
+
+        await writeFile(join(nestedWorkspaceRoot, "tracked.txt"), "dirty\n");
+        await writeFile(join(nestedWorkspaceRoot, "untracked.txt"), "untracked\n");
+        await writeFile(join(repositoryRoot, "sibling", "outside.txt"), "sibling dirty\n");
+
+        await expect(nestedCandidates.collect(boundary)).resolves.toEqual({
+            status: "complete",
+            paths: ["tracked.txt", "untracked.txt"],
+            reconciled: false,
+        });
+        const statusCall = runSpy.mock.calls.find(([args]) => args[0] === "status");
+        expect(statusCall?.[0]).toEqual(expect.arrayContaining(["--", "sub"]));
+        expect(statusCall?.[1]).toMatchObject({ cwd: repositoryRoot });
+
+        await git(repositoryRoot, "reset", "--hard", "HEAD");
+        await git(repositoryRoot, "clean", "-fd");
+        await writeFile(join(nestedWorkspaceRoot, "tracked.txt"), "new branch\n");
+        await writeFile(join(repositoryRoot, "sibling", "outside.txt"), "new sibling\n");
+        await git(repositoryRoot, "add", ".");
+        await git(repositoryRoot, "commit", "-qm", "new branch");
+        const newWorkspaceTree = await revParse(repositoryRoot, "HEAD:sub");
+        await git(repositoryRoot, "reset", "--hard", "HEAD^");
+        expect(await gitStatus(repositoryRoot)).toBe("");
+
+        await expect(
+            nestedCandidates.collect({
+                ...boundary,
+                sourceHeadTree: baseWorkspaceTree,
+                shadowTree: newWorkspaceTree,
+            })
+        ).resolves.toEqual({ status: "complete", paths: ["tracked.txt"], reconciled: false });
     });
 
     test("fails closed when the Shadow boundary is not readable in the private object database", async () => {
@@ -225,6 +292,8 @@ describe("WorkspaceCandidates Git discovery", () => {
         await expect(
             fallbackCandidates.collect({
                 kind: "git",
+                repositoryRoot: workspaceRoot,
+                workspacePrefix: "",
                 shadowGitDir: join(workspaceRoot, ".git"),
                 sourceHeadTree: "1".repeat(40),
                 shadowTree: "2".repeat(40),
@@ -450,6 +519,8 @@ async function currentGitBoundary(workspaceRoot: string): Promise<GitWorkspaceCa
     const tree = await revParse(workspaceRoot, "HEAD^{tree}");
     return {
         kind: "git",
+        repositoryRoot: workspaceRoot,
+        workspacePrefix: "",
         shadowGitDir: join(workspaceRoot, ".git"),
         sourceHeadTree: tree,
         shadowTree: tree,
@@ -481,6 +552,8 @@ function fakeCandidateShadowGit(): WorkspaceGitRunner {
 function fakeGitBoundary(root: string): GitWorkspaceCandidateBoundary {
     return {
         kind: "git",
+        repositoryRoot: join(root, "workspace"),
+        workspacePrefix: "",
         shadowGitDir: join(root, "shadow.git"),
         sourceHeadTree: "1".repeat(40),
         shadowTree: "2".repeat(40),

@@ -1,9 +1,11 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +25,7 @@ const BaseCommit = "1".repeat(40);
 const ExternalCommit = "2".repeat(40);
 const TurnCommit = "3".repeat(40);
 const TemporaryRoots: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
     await Promise.all(TemporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -238,6 +241,16 @@ async function publishUserCommit(
     );
     await git.run(["update-ref", "HEAD", commit, parent ?? "0".repeat(40)], { gitDir, timeoutMs: 5_000 });
     return commit;
+}
+
+async function commitAll(git: WorkspaceGitRunner, repositoryRoot: string, message: string): Promise<void> {
+    void git;
+    await execFileAsync("git", ["add", "--all"], { cwd: repositoryRoot });
+    await execFileAsync(
+        "git",
+        ["-c", "user.name=Crest Tests", "-c", "user.email=crest@example.invalid", "commit", "-m", message],
+        { cwd: repositoryRoot }
+    );
 }
 
 function parseTestOid(output: Buffer): string {
@@ -500,7 +513,12 @@ describe("Workspace checkpoint snapshot source", () => {
         });
         const legacyCapture = { capture: vi.fn((options) => store.capture(options)) };
         const feed = new TestCandidateFeed();
-        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, userGit: git, shadowGit: git });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed,
+            userGit: git,
+            shadowGit: git,
+        });
         const source = await initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture, candidates });
         const before = await source.readHead();
 
@@ -510,6 +528,118 @@ describe("Workspace checkpoint snapshot source", () => {
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
         expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        await source.dispose?.();
+    });
+
+    it("captures only a nested monorepo workspace with a literal non-ASCII prefix", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-nested-git-candidate-source-"));
+        TemporaryRoots.push(root);
+        const repositoryRoot = join(root, "monorepo");
+        const workspaceRoot = join(repositoryRoot, "sub workspace-λ");
+        await mkdir(workspaceRoot, { recursive: true });
+        await mkdir(join(repositoryRoot, "sibling"));
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: repositoryRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, "tracked.txt"), "base\n");
+        await writeFile(join(repositoryRoot, "sibling", "outside.txt"), "base\n");
+        await commitAll(git, repositoryRoot, "base");
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "nested-git-source", nonce: "6".repeat(64) },
+        });
+        const legacyCapture = { capture: vi.fn((options) => store.capture(options)) };
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, legacyCapture, candidates });
+        const before = await source.readHead();
+
+        await writeFile(join(workspaceRoot, "tracked.txt"), "committed after\n");
+        await writeFile(join(repositoryRoot, "sibling", "outside.txt"), "sibling after\n");
+        await commitAll(git, repositoryRoot, "nested and sibling change");
+        const after = await source.synchronizeExternal();
+
+        await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
+            expect.objectContaining({ path: "tracked.txt" }),
+        ]);
+        expect(legacyCapture.capture).toHaveBeenCalledOnce();
+        await source.dispose?.();
+    });
+
+    it("imports only missing source-tree ancestors and changed subtrees", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-pruned-source-import-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(join(workspaceRoot, "changed"), { recursive: true });
+        await mkdir(join(workspaceRoot, "stable"));
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "before\n");
+        await writeFile(join(workspaceRoot, "stable", "leaf.txt"), "stable\n");
+        await commitAll(git, workspaceRoot, "base");
+        const stableTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD:stable"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "pruned-source-import", nonce: "7".repeat(64) },
+        });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+        const source = await initializeWorkspaceCheckpointSnapshotSource({
+            store,
+            legacyCapture: { capture: (options) => store.capture(options) },
+            candidates,
+        });
+        await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "after\n");
+        await commitAll(git, workspaceRoot, "change one leaf");
+        const sourceTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD^{tree}"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+        const changedTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD:changed"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+        const userCatFileTrees: string[] = [];
+        let corruptPrivateTreeLookup = false;
+        const run = git.run.bind(git);
+        vi.spyOn(git, "run").mockImplementation(async (args, options) => {
+            if (
+                corruptPrivateTreeLookup &&
+                args[0] === "cat-file" &&
+                args[1]?.startsWith("--batch-check=") &&
+                options.gitDir
+            ) {
+                const requested = options.stdin!.toString("ascii").trim();
+                return { stdout: Buffer.from(`${requested} blob\n`), stderr: Buffer.alloc(0) };
+            }
+            if (args[0] === "cat-file" && args[1] === "tree" && options.cwd === identity.canonicalRoot) {
+                userCatFileTrees.push(args[2]!);
+            }
+            return await run(args, options);
+        });
+
+        await source.synchronizeExternal();
+
+        expect(userCatFileTrees).toEqual([sourceTree, changedTree]);
+        expect(userCatFileTrees).not.toContain(stableTree);
+
+        await writeFile(join(workspaceRoot, "changed", "leaf.txt"), "after again\n");
+        await commitAll(git, workspaceRoot, "change leaf again");
+        corruptPrivateTreeLookup = true;
+        await expect(source.synchronizeExternal()).rejects.toThrow(/invalid object result/i);
         await source.dispose?.();
     });
 

@@ -213,7 +213,6 @@ describe("workspace rewind across sessions", () => {
         let managerB: WorkspaceCheckpointManager | undefined;
 
         try {
-            expect(leaseB.tracker).toBe(leaseA.tracker);
             expect(leaseB.store).toBe(leaseA.store);
             expect(leaseB.mutationLog).toBe(leaseA.mutationLog);
             expect(leaseB.candidates).toBe(leaseA.candidates);

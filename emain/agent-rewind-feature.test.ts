@@ -97,7 +97,6 @@ describe("agent rewind feature", () => {
             state: "enabled",
             processOwner: owner,
             store,
-            tracker,
             mutationLog,
             candidates,
             writerLeases,

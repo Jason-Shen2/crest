@@ -14,7 +14,6 @@ import { WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 export interface WorkspaceTrackerLease {
     store: WorkspaceSnapshotStore;
     mutationLog: WorkspaceSnapshotStore["mutationLog"];
-    tracker: WorkspaceSnapshotTracker;
     candidates: WorkspaceCandidates;
     writerLeases: WorkspaceWriterLeaseRegistry;
     snapshotSource: WorkspaceCheckpointSnapshotSource;
@@ -124,7 +123,11 @@ export class WorkspaceTrackerRegistry {
             let decremented = false;
             let releasePromise: Promise<void> | undefined;
             return {
-                ...resource,
+                store: resource.store,
+                mutationLog: resource.mutationLog,
+                candidates: resource.candidates,
+                writerLeases: resource.writerLeases,
+                snapshotSource: resource.snapshotSource,
                 release: () => {
                     if (releasePromise) return releasePromise;
                     if (!decremented) {

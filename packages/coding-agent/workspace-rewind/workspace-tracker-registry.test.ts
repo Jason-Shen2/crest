@@ -201,7 +201,7 @@ describe("WorkspaceTrackerRegistry", () => {
         expect(mutationLog.dispose).not.toHaveBeenCalled();
     });
 
-    it("shares one initialization promise, store, and tracker until the last idempotent release", async () => {
+    it("shares one initialization promise and store until the last idempotent release", async () => {
         const opened = deferred<never>();
         const openStore = vi.fn(() => opened.promise);
         const feed = {};
@@ -223,8 +223,8 @@ describe("WorkspaceTrackerRegistry", () => {
         const [first, second] = await Promise.all([firstPromise, secondPromise]);
         expect(first.store).toBe(store);
         expect(second.store).toBe(store);
-        expect(first.tracker).toBe(tracker);
-        expect(second.tracker).toBe(tracker);
+        expect(first).not.toHaveProperty("tracker");
+        expect(second).not.toHaveProperty("tracker");
 
         await first.release();
         await first.release();
@@ -288,9 +288,9 @@ describe("WorkspaceTrackerRegistry", () => {
         disposing.resolve();
         await expect(firstRelease).resolves.toBeUndefined();
         const replacement = await reacquired;
-        expect(replacement.tracker).toBe(secondTracker);
         expect(makeTracker).toHaveBeenCalledTimes(2);
         await replacement.release();
+        expect(secondTracker.dispose).toHaveBeenCalledTimes(1);
     });
 
     it("isolates different workspace identities and incarnations", async () => {
@@ -303,7 +303,7 @@ describe("WorkspaceTrackerRegistry", () => {
             acquireInput(identity({ workspaceIncarnation: "e".repeat(64), storeKey: "other-incarnation" }))
         );
 
-        expect(new Set([first.tracker, otherIdentity.tracker, otherIncarnation.tracker]).size).toBe(3);
+        expect(value.trackers).toHaveLength(3);
         expect(value.openStore).toHaveBeenCalledTimes(3);
 
         await Promise.all([first.release(), otherIdentity.release(), otherIncarnation.release()]);
@@ -320,7 +320,7 @@ describe("WorkspaceTrackerRegistry", () => {
             git: { different: true } as never,
         });
 
-        expect(second.tracker).toBe(first.tracker);
+        expect(second.snapshotSource).toBe(first.snapshotSource);
         expect(value.openStore).toHaveBeenCalledTimes(1);
         await Promise.all([first.release(), second.release()]);
     });
@@ -381,7 +381,8 @@ describe("WorkspaceTrackerRegistry", () => {
         await expect(registry.acquire(acquireInput(workspace))).rejects.toThrow("tracker failed");
         expect(feed.dispose).toHaveBeenCalledTimes(1);
         const lease = await registry.acquire(acquireInput(workspace));
-        expect(lease.tracker).toBe(tracker);
+        expect(lease).not.toHaveProperty("tracker");
         await lease.release();
+        expect(tracker.dispose).toHaveBeenCalledTimes(1);
     });
 });

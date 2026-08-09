@@ -1,7 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { join } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import {
     IncrementalPathCapture,
@@ -10,7 +10,7 @@ import {
 } from "./incremental-path-capture";
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { WorkspaceCheckpointLimits, type CaptureWorkspaceOptions, type WorkspaceSnapshotStore } from "./snapshot-store";
-import { encodeCanonicalStoredJson } from "./stored-manifest";
+import { encodeCanonicalStoredJson, validateWorkspaceRelativePath } from "./stored-manifest";
 import type { WorkspacePathChangeV1, WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import { type WorkspaceCandidateBoundary, type WorkspaceCandidates } from "./workspace-candidates";
 import { refreshWorkspaceScopeGitIndexEvidence, type WorkspaceScopeManifest } from "./workspace-scope";
@@ -82,7 +82,6 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
     readonly legacyCapture: LegacyWorkspaceSnapshotCapture;
     readonly candidates?: WorkspaceCandidates;
     captureQueue: Promise<void> = Promise.resolve();
-    importedSourceHeadTree?: string;
     disposed = false;
 
     constructor(
@@ -419,6 +418,8 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         const userGit = this.candidates!.userGit;
         if (!userGit) return { kind: "non-git" };
         let sourceHeadTree: string;
+        let repositoryRoot: string;
+        let workspacePrefix: string;
         try {
             const inside = await userGit.run(["rev-parse", "--is-inside-work-tree"], {
                 cwd: this.store.identity.canonicalRoot,
@@ -428,8 +429,17 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             if (!inside.stdout.equals(Buffer.from("true\n")) || inside.stderr.length !== 0) {
                 return { kind: "non-git" };
             }
-            const head = await userGit.run(["rev-parse", "HEAD^{tree}"], {
+            const topLevel = await userGit.run(["rev-parse", "--show-toplevel"], {
                 cwd: this.store.identity.canonicalRoot,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+                maxStdoutBytes: 16 * 1024,
+            });
+            repositoryRoot = parseGitTopLevel(topLevel.stdout, topLevel.stderr);
+            workspacePrefix = workspacePrefixFromTopLevel(repositoryRoot, this.store.identity.canonicalRoot);
+            const revision = workspacePrefix === "" ? "HEAD^{tree}" : `HEAD:${workspacePrefix}`;
+            const head = await userGit.run(["rev-parse", revision], {
+                cwd: repositoryRoot,
                 timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
                 signal,
                 maxStdoutBytes: 128,
@@ -442,6 +452,8 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         await this.importSourceTree(sourceHeadTree, signal);
         return {
             kind: "git",
+            repositoryRoot,
+            workspacePrefix,
             shadowGitDir: this.store.storeRoot,
             sourceHeadTree,
             shadowTree,
@@ -449,11 +461,11 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
     }
 
     async importSourceTree(sourceHeadTree: string, signal?: AbortSignal): Promise<void> {
-        if (this.importedSourceHeadTree === sourceHeadTree) return;
         const visited = new Set<string>();
         const copy = async (tree: string): Promise<void> => {
             if (visited.has(tree)) return;
             visited.add(tree);
+            if (await this.privateTreeExists(tree, signal)) return;
             const raw = await this.candidates!.userGit!.run(["cat-file", "tree", tree], {
                 cwd: this.store.identity.canonicalRoot,
                 timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
@@ -472,7 +484,20 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             }
         };
         await copy(sourceHeadTree);
-        this.importedSourceHeadTree = sourceHeadTree;
+    }
+
+    async privateTreeExists(tree: string, signal?: AbortSignal): Promise<boolean> {
+        const checked = await this.store.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+            gitDir: this.store.storeRoot,
+            stdin: Buffer.from(`${tree}\n`),
+            timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+            signal,
+            maxStdoutBytes: 128,
+        });
+        if (checked.stderr.length !== 0) throw new Error("Private source-tree lookup wrote to stderr");
+        if (checked.stdout.equals(Buffer.from(`${tree} tree\n`))) return true;
+        if (checked.stdout.equals(Buffer.from(`${tree} missing\n`))) return false;
+        throw new Error("Private source-tree lookup returned an invalid object result");
     }
 
     async writeCandidateBlob(bytes: Buffer, signal?: AbortSignal): Promise<string> {
@@ -512,9 +537,36 @@ function candidateBoundariesEqual(left: WorkspaceCandidateBoundary, right: Works
     if (left.kind === "non-git" || right.kind === "non-git") return true;
     return (
         left.shadowGitDir === right.shadowGitDir &&
+        left.repositoryRoot === right.repositoryRoot &&
+        left.workspacePrefix === right.workspacePrefix &&
         left.sourceHeadTree === right.sourceHeadTree &&
         left.shadowTree === right.shadowTree
     );
+}
+
+function parseGitTopLevel(stdout: Buffer, stderr: Buffer): string {
+    if (stderr.length !== 0 || stdout.length < 2 || stdout.at(-1) !== 0x0a) {
+        throw new Error("Git returned an invalid repository top-level path");
+    }
+    const bytes = stdout.subarray(0, -1);
+    const repositoryRoot = bytes.toString("utf8");
+    if (!Buffer.from(repositoryRoot).equals(bytes) || repositoryRoot.includes("\n")) {
+        throw new Error("Git returned an invalid repository top-level path");
+    }
+    if (!isAbsolute(repositoryRoot) || normalize(repositoryRoot) !== repositoryRoot) {
+        throw new Error("Git returned a non-canonical repository top-level path");
+    }
+    return repositoryRoot;
+}
+
+function workspacePrefixFromTopLevel(repositoryRoot: string, workspaceRoot: string): string {
+    const prefix = relative(repositoryRoot, workspaceRoot).split(sep).join("/");
+    if (isAbsolute(prefix) || prefix === ".." || prefix.startsWith("../")) {
+        throw new Error("Workspace is outside its Git repository top level");
+    }
+    if (prefix !== "") validateWorkspaceRelativePath(prefix);
+    if (prefix.includes("\\")) throw new Error("Git Workspace prefix must use forward slashes");
+    return prefix;
 }
 
 function cloneCoverage(coverage: WorkspaceSnapshotCoverage): WorkspaceSnapshotCoverage {

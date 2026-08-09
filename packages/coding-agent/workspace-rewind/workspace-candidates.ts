@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { lstat } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { validateWorkspaceRelativePath } from "./stored-manifest";
@@ -13,6 +13,8 @@ const IgnoreBatchSize = 2_048;
 
 export interface GitWorkspaceCandidateBoundary {
     kind: "git";
+    repositoryRoot: string;
+    workspacePrefix: string;
     shadowGitDir: string;
     // Discovery stays read-only, so lifecycle code must first make both trees readable from shadowGitDir.
     sourceHeadTree: string;
@@ -94,7 +96,7 @@ export class WorkspaceCandidates {
     }
 
     async collectGit(boundary: GitWorkspaceCandidateBoundary, signal?: AbortSignal): Promise<WorkspaceCandidateRead> {
-        if (!this.userGit || !this.shadowGit || !validGitBoundary(boundary)) {
+        if (!this.userGit || !this.shadowGit || !validGitBoundary(boundary, this.workspaceRoot)) {
             return { status: "unavailable", reason: "git-query-failed" };
         }
         try {
@@ -103,7 +105,7 @@ export class WorkspaceCandidates {
             let watcherHints: string[] = [];
             for (let attempt = 0; attempt < 2; attempt++) {
                 const [status, shadowDifference] = await Promise.all([
-                    readGitStatus(this.userGit, this.workspaceRoot, signal),
+                    readGitStatus(this.userGit, boundary, signal),
                     this.shadowGit.run(
                         [
                             "diff",
@@ -124,7 +126,7 @@ export class WorkspaceCandidates {
                 if (!this.feed.isTrusted()) return { status: "unavailable", reason: "watcher-error" };
                 watcherHints = canonicalPaths([...watcherHints, ...hints.changedPaths]);
                 const gitPaths = await collapseRepositoryBoundaries(this.workspaceRoot, [
-                    ...parseStatusPaths(status.stdout),
+                    ...parseStatusPaths(status.stdout, boundary.workspacePrefix),
                     ...parseNulPaths(shadowDifference.stdout),
                 ]);
                 signal?.throwIfAborted();
@@ -182,8 +184,25 @@ export class WorkspaceCandidates {
     }
 }
 
-function validGitBoundary(boundary: GitWorkspaceCandidateBoundary): boolean {
+function validGitBoundary(boundary: GitWorkspaceCandidateBoundary, workspaceRoot: string): boolean {
+    if (
+        typeof boundary.repositoryRoot !== "string" ||
+        typeof boundary.workspacePrefix !== "string" ||
+        typeof boundary.shadowGitDir !== "string" ||
+        typeof boundary.sourceHeadTree !== "string" ||
+        typeof boundary.shadowTree !== "string"
+    ) {
+        return false;
+    }
+    const expectedPrefix = relative(boundary.repositoryRoot, workspaceRoot).split(sep).join("/");
     return (
+        isAbsolute(boundary.repositoryRoot) &&
+        normalize(boundary.repositoryRoot) === boundary.repositoryRoot &&
+        !isAbsolute(expectedPrefix) &&
+        expectedPrefix !== ".." &&
+        !expectedPrefix.startsWith("../") &&
+        boundary.workspacePrefix === expectedPrefix &&
+        (boundary.workspacePrefix === "" || isValidWorkspacePrefix(boundary.workspacePrefix)) &&
         isAbsolute(boundary.shadowGitDir) &&
         normalize(boundary.shadowGitDir) === boundary.shadowGitDir &&
         /^[0-9a-f]{40}$/.test(boundary.sourceHeadTree) &&
@@ -191,7 +210,7 @@ function validGitBoundary(boundary: GitWorkspaceCandidateBoundary): boolean {
     );
 }
 
-function parseStatusPaths(value: Buffer): string[] {
+function parseStatusPaths(value: Buffer, workspacePrefix: string): string[] {
     if (value.length === 0) return [];
     if (value.at(-1) !== 0) throw new Error("Invalid Git status output");
     const paths: string[] = [];
@@ -202,13 +221,31 @@ function parseStatusPaths(value: Buffer): string[] {
             throw new Error("Invalid Git status code");
         }
         const pathBytes = record.subarray(3);
-        let path = decodePath(pathBytes);
+        let path = workspaceRelativeStatusPath(decodePath(pathBytes), workspacePrefix);
         if (path.endsWith("/")) path = path.slice(0, -1);
         if (path === ".git" || path.startsWith(".git/")) continue;
         validateWorkspaceRelativePath(path);
         paths.push(path);
     }
     return paths;
+}
+
+function workspaceRelativeStatusPath(repositoryPath: string, workspacePrefix: string): string {
+    if (workspacePrefix === "") return repositoryPath;
+    const prefix = `${workspacePrefix}/`;
+    if (!repositoryPath.startsWith(prefix)) {
+        throw new Error("Git status returned a path outside the Workspace");
+    }
+    return repositoryPath.slice(prefix.length);
+}
+
+function isValidWorkspacePrefix(prefix: string): boolean {
+    try {
+        validateWorkspaceRelativePath(prefix);
+        return !prefix.includes("\\");
+    } catch {
+        return false;
+    }
 }
 
 function parseNulPaths(value: Buffer): string[] {
@@ -275,7 +312,7 @@ async function collapseRepositoryBoundaries(workspaceRoot: string, paths: readon
 
 async function readGitStatus(
     git: WorkspaceGitRunner,
-    workspaceRoot: string,
+    boundary: GitWorkspaceCandidateBoundary,
     signal?: AbortSignal
 ): Promise<{ stdout: Buffer; stderr: Buffer }> {
     const args = [
@@ -286,17 +323,19 @@ async function readGitStatus(
         "--ignored=no",
         "--ignore-submodules=none",
         "--no-renames",
+        "--",
+        boundary.workspacePrefix || ".",
     ];
     try {
         return await git.run(args, {
-            cwd: workspaceRoot,
+            cwd: boundary.repositoryRoot,
             timeoutMs: GitTimeoutMs,
             signal,
             fsmonitor: "builtin",
         });
     } catch {
         signal?.throwIfAborted();
-        return await git.run(args, { cwd: workspaceRoot, timeoutMs: GitTimeoutMs, signal });
+        return await git.run(args, { cwd: boundary.repositoryRoot, timeoutMs: GitTimeoutMs, signal });
     }
 }
 

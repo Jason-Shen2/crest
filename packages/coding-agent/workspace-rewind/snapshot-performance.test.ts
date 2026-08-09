@@ -118,7 +118,7 @@ describe("incremental snapshot performance contracts", () => {
         expect(metrics.workerPeak).toBe(IncrementalReaderConcurrency);
     });
 
-    test.each([1, 2, 4])("shares one real cold baseline across %i sessions", async (sessionCount) => {
+    test.each([1, 2, 4])("shares one authority without a legacy recapture across %i sessions", async (sessionCount) => {
         const value = await makeWorkspaceFixture(`sessions-${sessionCount}`);
         const metrics = makeMetrics();
         const openStore = vi.fn((input: Parameters<typeof WorkspaceSnapshotStore.open>[0]) =>
@@ -141,8 +141,8 @@ describe("incremental snapshot performance contracts", () => {
         const leases = await Promise.all(Array.from({ length: sessionCount }, () => registry.acquire(input)));
         const fullReconcile = vi.spyOn(leases[0]!.store, "captureFullReconcile");
         try {
-            const captures = await Promise.all(leases.map((lease) => lease.tracker.capture({ profile: "terminal" })));
-            expect(new Set(leases.map((lease) => lease.tracker)).size).toBe(1);
+            const captures = await Promise.all(leases.map((lease) => lease.snapshotSource.synchronizeExternal()));
+            expect(new Set(leases.map((lease) => lease.snapshotSource)).size).toBe(1);
             expect(new Set(captures.map((capture) => capture.ref.id)).size).toBe(1);
             expect(openStore).toHaveBeenCalledTimes(1);
             expect(createTracker).toHaveBeenCalledTimes(1);
@@ -151,7 +151,7 @@ describe("incremental snapshot performance contracts", () => {
                 enumeratedEntryCount: metrics.enumeratedEntryCount,
                 anchoredWorkerCount: metrics.workerCount,
             }).toEqual({
-                captureFullReconcileCount: 1,
+                captureFullReconcileCount: 0,
                 enumeratedEntryCount: 0,
                 anchoredWorkerCount: 0,
             });
