@@ -145,7 +145,16 @@ describe("agent rewind V3 production benchmark contract", () => {
                 treeMaterializeMs: expect.any(Number),
             },
         });
+        expect(profile.scopeEntryCount).toBeGreaterThanOrEqual(12);
+        expect(profile.gitCommands.init).toMatchObject({ calls: 1, durationMs: expect.any(Number) });
         expect(profile.authority.captureTotalMs).toBeLessThanOrEqual(30_000 + 1_000);
+        expect(profile.authority.scopeEnumeratedMs).toBeLessThanOrEqual(profile.authority.discoverScopeMs!);
+        expect(profile.authority.discoverScopeMs).toBeLessThan(profile.authority.captureTotalMs!);
+        expect(profile.authority.stableReaderAndHashMs).toBeLessThan(profile.authority.captureTotalMs!);
+        expect(profile.authority.treeMaterializeMs).toBeLessThan(profile.authority.captureTotalMs!);
+        expect(profile.authority.postCaptureInitializeMs).toBeGreaterThanOrEqual(0);
+        expect(profile).not.toHaveProperty("captureStartedAt");
+        expect(profile).not.toHaveProperty("captureFinishedAt");
     }, 30_000);
 
     test("reports observer failures only after fixture cleanup", async () => {
