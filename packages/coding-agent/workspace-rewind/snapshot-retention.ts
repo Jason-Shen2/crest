@@ -164,8 +164,7 @@ async function scanOwners(input: { store: WorkspaceSnapshotStore; sessionsRoot: 
     }
     const workspaceHead = await input.store.mutationLog.readHead();
     if (workspaceHead) {
-        await input.store.readCommitSnapshot(workspaceHead);
-        refs.add(input.store.ownerRefName(workspaceHead));
+        addOwned(await input.store.readCommitSnapshot(workspaceHead), input.store, snapshots);
     }
     return { snapshots, refs, pending };
 }

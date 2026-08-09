@@ -41,28 +41,34 @@ test("keeps a first-seen orphan through fixed grace and removes it only after se
 
 test("retains the current workspace head association while an older unowned association expires", async () => {
     const { store, sessionsRoot, snapshot } = await makeStore();
-    const metadata = await store.readSnapshotMetadata(snapshot);
+    const firstMetadata = await store.readSnapshotMetadata(snapshot);
     const firstCommit = await store.mutationLog.append({
         tree: snapshot.tree,
         metadata: {
             schemaversion: 1,
             workspaceidentity: store.identity.workspaceIdentity,
             workspaceincarnation: store.identity.workspaceIncarnation,
-            kind: "external",
+            kind: "agent-turn",
+            sessionid: "first-session",
+            turnid: "first-turn",
         },
     });
-    await store.publishCommitSnapshot({ commit: firstCommit, ...metadata });
+    await store.publishCommitSnapshot({ commit: firstCommit, ...firstMetadata });
+    await writeFile(join(store.identity.canonicalRoot, "tracked.txt"), "current-value");
+    const current = await store.captureFullReconcile({ profile: "terminal" });
     const currentCommit = await store.mutationLog.append({
         expectedHead: firstCommit,
-        tree: snapshot.tree,
+        tree: current.tree,
         metadata: {
             schemaversion: 1,
             workspaceidentity: store.identity.workspaceIdentity,
             workspaceincarnation: store.identity.workspaceIncarnation,
-            kind: "external",
+            kind: "agent-turn",
+            sessionid: "corrupt-head-session",
+            turnid: "corrupt-head-turn",
         },
     });
-    const currentSnapshot = await store.publishCommitSnapshot({ commit: currentCommit, ...metadata });
+    const currentSnapshot = await store.publishCommitSnapshot({ commit: currentCommit, ...current });
     await store.deleteCrestRef(store.ownerRefName(snapshot.id));
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
@@ -75,6 +81,41 @@ test("retains the current workspace head association while an older unowned asso
     expect(expired.removedRefs).toEqual([store.ownerRefName(firstCommit)]);
     expect(remainingRefs).toContain(store.ownerRefName(currentCommit));
     await expect(store.readCommitSnapshot(currentCommit)).resolves.toEqual(currentSnapshot);
+});
+
+test("fails closed before deleting refs or running GC when the current workspace head graph is corrupt", async () => {
+    const { store, sessionsRoot, snapshot } = await makeStore();
+    const metadata = await store.readSnapshotMetadata(snapshot);
+    const currentCommit = await store.mutationLog.append({
+        tree: snapshot.tree,
+        metadata: {
+            schemaversion: 1,
+            workspaceidentity: store.identity.workspaceIdentity,
+            workspaceincarnation: store.identity.workspaceIncarnation,
+            kind: "agent-turn",
+            sessionid: "corrupt-head-session",
+            turnid: "corrupt-head-turn",
+        },
+    });
+    await store.publishCommitSnapshot({
+        commit: currentCommit,
+        scope: metadata.scope,
+        coverage: {
+            ...metadata.coverage,
+            eligibleEntryCount: metadata.coverage.eligibleEntryCount + 1,
+        },
+    });
+    const refsBefore = await store.listCrestRefs();
+    const deleteRefs = vi.spyOn(store, "deleteCrestRefs");
+    const git = vi.spyOn(store.git, "run");
+
+    const report = await reconcileSnapshotRefs({ store, sessionsRoot });
+
+    expect(report.removedRefs).toEqual([]);
+    expect(report.failClosedReason).toMatch(/coverage.*workspace tree/i);
+    expect(deleteRefs).not.toHaveBeenCalled();
+    expect(git.mock.calls.some(([args]) => args[0] === "gc")).toBe(false);
+    expect(await store.listCrestRefs()).toEqual(refsBefore);
 });
 
 test("fails closed when any recursive owner source cannot be decoded", async () => {
