@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -15,11 +15,13 @@ import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
 import { discoverWorkspaceScope } from "./workspace-scope";
 
 const TemporaryRoots: string[] = [];
+const CandidateCaptures: WorkspaceCandidateCapture[] = [];
 const OriginalDataHome = process.env.WAVETERM_DATA_HOME;
 
 afterEach(async () => {
     if (OriginalDataHome == null) delete process.env.WAVETERM_DATA_HOME;
     else process.env.WAVETERM_DATA_HOME = OriginalDataHome;
+    await Promise.allSettled(CandidateCaptures.splice(0).map((capture) => capture.dispose()));
     await Promise.all(TemporaryRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -91,6 +93,161 @@ describe("WorkspaceCandidateCapture", () => {
         await expect(fixture.capture.capture([], controller.signal)).rejects.toBe(reason);
         await fixture.capture.dispose();
     });
+
+    it("gives one concurrent consume or discard operation exclusive ownership", async () => {
+        const fixture = await makeFixture();
+        await writeFile(join(fixture.workspace, "plain.txt"), "changed");
+        const result = await fixture.capture.capture(["plain.txt"]);
+        const consumerGate = deferred();
+        const consumerStarted = deferred();
+        const consuming = fixture.capture.consumeCaptured(result, async () => {
+            consumerStarted.resolve();
+            await consumerGate.promise;
+        });
+        await consumerStarted.promise;
+
+        await expect(fixture.capture.discardCaptured(result)).rejects.toThrow(/operation.*active/i);
+        consumerGate.resolve();
+        await consuming;
+
+        const second = await fixture.capture.capture([]);
+        const discards = await Promise.allSettled([
+            fixture.capture.discardCaptured(second),
+            fixture.capture.discardCaptured(second),
+        ]);
+        expect(discards.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+        expect(discards.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    });
+
+    it("waits for an active consumer before dispose cleans the captured batch", async () => {
+        const fixture = await makeFixture();
+        await writeFile(join(fixture.workspace, "plain.txt"), "changed");
+        const result = await fixture.capture.capture(["plain.txt"]);
+        const consumerGate = deferred();
+        const consumerStarted = deferred();
+        const consuming = fixture.capture.consumeCaptured(result, async () => {
+            consumerStarted.resolve();
+            await consumerGate.promise;
+        });
+        await consumerStarted.promise;
+        let disposed = false;
+        const disposing = fixture.capture.dispose().then(() => {
+            disposed = true;
+        });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(disposed).toBe(false);
+        consumerGate.resolve();
+        await Promise.all([consuming, disposing]);
+        expect(disposed).toBe(true);
+    });
+
+    it("dispose aborts and drains an in-flight capture without late registration", async () => {
+        const fixture = await makeFixture();
+        const started = deferred();
+        let captureSettled = false;
+        vi.spyOn(fixture.capture, "captureActive").mockImplementation(
+            async (_paths, signal) =>
+                await new Promise((_, reject) => {
+                    started.resolve();
+                    signal.addEventListener(
+                        "abort",
+                        () => {
+                            setImmediate(() => {
+                                captureSettled = true;
+                                reject(signal.reason);
+                            });
+                        },
+                        { once: true }
+                    );
+                })
+        );
+        const pending = fixture.capture.capture(["plain.txt"]);
+        await started.promise;
+
+        await fixture.capture.dispose();
+
+        await expect(pending).rejects.toThrow(/disposed/i);
+        expect(captureSettled).toBe(true);
+        expect(fixture.capture.pendingBatches.size).toBe(0);
+        await expect(fixture.capture.capture([])).rejects.toThrow(/disposed/i);
+    });
+
+    it("preserves consumer and cleanup failures and retries cleanup without re-consuming", async () => {
+        const fixture = await makeFixture();
+        await writeFile(join(fixture.workspace, "plain.txt"), "changed");
+        const result = await fixture.capture.capture(["plain.txt"]);
+        const consumerError = new Error("consumer failed");
+        const cleanupError = new Error("cleanup failed");
+        const originalCleanup = fixture.capture.cleanupPendingBatch.bind(fixture.capture);
+        vi.spyOn(fixture.capture, "cleanupPendingBatch")
+            .mockRejectedValueOnce(cleanupError)
+            .mockImplementation(originalCleanup);
+
+        let failure: unknown;
+        try {
+            await fixture.capture.consumeCaptured(result, async () => {
+                throw consumerError;
+            });
+        } catch (error) {
+            failure = error;
+        }
+
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).errors).toEqual([consumerError, cleanupError]);
+        await expect(fixture.capture.consumeCaptured(result, async () => undefined)).rejects.toThrow(/consumed/i);
+        await expect(fixture.capture.discardCaptured(result)).resolves.toBeUndefined();
+    });
+
+    it("retains failed cleanup ownership for a later dispose retry", async () => {
+        const fixture = await makeFixture();
+        await writeFile(join(fixture.workspace, "plain.txt"), "changed");
+        await fixture.capture.capture(["plain.txt"]);
+        const originalCleanup = fixture.capture.cleanupPendingBatch.bind(fixture.capture);
+        vi.spyOn(fixture.capture, "cleanupPendingBatch")
+            .mockRejectedValueOnce(new Error("dispose cleanup failed"))
+            .mockImplementation(originalCleanup);
+
+        await expect(fixture.capture.dispose()).rejects.toBeInstanceOf(AggregateError);
+        expect(fixture.capture.pendingBatches.size).toBe(1);
+        await expect(fixture.capture.dispose()).resolves.toBeUndefined();
+        expect(fixture.capture.pendingBatches.size).toBe(0);
+    });
+
+    it("cleans abandoned staging and invalidates every pending result", async () => {
+        const fixture = await makeFixture();
+        const before = new Set(
+            (await readdir(tmpdir())).filter((name) => name.startsWith("crest-workspace-candidate-capture-"))
+        );
+        await writeFile(join(fixture.workspace, "plain.txt"), "changed");
+        const first = await fixture.capture.capture(["plain.txt"]);
+        const second = await fixture.capture.capture([]);
+        const staging = (await readdir(tmpdir())).filter(
+            (name) => name.startsWith("crest-workspace-candidate-capture-") && !before.has(name)
+        );
+        expect(staging).toHaveLength(1);
+
+        await fixture.capture.dispose();
+
+        await expect(stat(join(tmpdir(), staging[0]!))).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fixture.capture.discardCaptured(first)).rejects.toThrow(/pending|discarded|consumed/i);
+        await expect(fixture.capture.discardCaptured(second)).rejects.toThrow(/pending|discarded|consumed/i);
+    });
+
+    it("registers no batch after caller abort or deadline expiry", async () => {
+        const fixture = await makeFixture();
+        const controller = new AbortController();
+        const abortReason = new Error("caller aborted");
+        controller.abort(abortReason);
+
+        await expect(fixture.capture.capture([], controller.signal)).rejects.toBe(abortReason);
+        expect(fixture.capture.pendingBatches.size).toBe(0);
+
+        const expired = new WorkspaceCandidateCapture({ ...fixture.options, timeoutMs: 0 });
+        CandidateCaptures.push(expired);
+        await expect(expired.capture([])).rejects.toMatchObject({ code: "timeout" });
+        expect(expired.pendingBatches.size).toBe(0);
+    });
 });
 
 async function makeFixture(maxNewlyHashedBytes = 1024 ** 2) {
@@ -118,7 +275,7 @@ async function makeFixture(maxNewlyHashedBytes = 1024 ** 2) {
         git,
         processOwner: { pid: process.pid, processStartToken: "candidate-capture-test", nonce: "f".repeat(64) },
     });
-    const capture = new WorkspaceCandidateCapture({
+    const options = {
         identity,
         git,
         storeRoot: store.storeRoot,
@@ -130,8 +287,10 @@ async function makeFixture(maxNewlyHashedBytes = 1024 ** 2) {
         base: {
             readNodeKind: async (path) => (scope.entries.some((entry) => entry.path === path) ? "leaf" : "absent"),
         },
-    });
-    return { capture, store, workspace };
+    };
+    const capture = new WorkspaceCandidateCapture(options);
+    CandidateCaptures.push(capture);
+    return { capture, options, store, workspace };
 }
 
 function gitBlobOid(bytes: Buffer): string {
@@ -139,4 +298,12 @@ function gitBlobOid(bytes: Buffer): string {
         .update(Buffer.from(`blob ${bytes.length}\0`))
         .update(bytes)
         .digest("hex");
+}
+
+function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
 }
