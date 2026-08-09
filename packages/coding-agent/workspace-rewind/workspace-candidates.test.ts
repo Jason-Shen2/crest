@@ -97,7 +97,7 @@ describe("WorkspaceCandidates Git discovery", () => {
     });
 
     afterEach(async () => {
-        await rm(root, { recursive: true, force: true });
+        await removeTemporaryRoot(root);
     });
 
     test("unions dirty, staged, untracked, deleted, and watcher paths in canonical byte order", async () => {
@@ -381,7 +381,7 @@ describe("WorkspaceCandidates non-Git discovery", () => {
     });
 
     afterEach(async () => {
-        await rm(root, { recursive: true, force: true });
+        await removeTemporaryRoot(root);
     });
 
     test("performs one cold baseline and then uses only warm in-memory hints", async () => {
@@ -562,6 +562,10 @@ function fakeGitBoundary(root: string): GitWorkspaceCandidateBoundary {
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
     await execFileAsync("git", args, { cwd });
+}
+
+async function removeTemporaryRoot(root: string): Promise<void> {
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
 }
 
 async function revParse(cwd: string, revision: string): Promise<string> {
