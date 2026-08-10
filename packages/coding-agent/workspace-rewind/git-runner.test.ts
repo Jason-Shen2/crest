@@ -48,11 +48,16 @@ if (command === "report") {
 `;
 
 const InvalidIndexPackSource = `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 const argv = process.argv.slice(2);
 if (argv.includes("pack-objects")) {
+    writeFileSync(join(process.cwd(), "pack-argv.json"), JSON.stringify(argv));
     process.stdin.resume();
     process.stdin.on("end", () => process.stdout.write("pack bytes"));
 } else if (argv.includes("index-pack")) {
+    const gitDir = argv.find((value) => value.startsWith("--git-dir="))?.slice("--git-dir=".length);
+    if (gitDir) writeFileSync(join(gitDir, "index-argv.json"), JSON.stringify(argv));
     process.stdin.resume();
     process.stdin.on("end", () => process.stdout.write("unexpected output\\n"));
 } else {
@@ -857,13 +862,44 @@ describe.sequential("WorkspaceGitRunner", () => {
             timeoutMs: 5_000,
             signal: controller.signal,
         });
-        setTimeout(() => controller.abort(), 1);
+        await waitForStagedImportPack(destinationGitDir);
+        controller.abort();
 
         await expect(importPromise).rejects.toMatchObject({ code: "aborted" });
         expect(await readdir(join(destinationGitDir, "objects", "pack"))).toEqual([]);
         expect(
             (await readdir(join(destinationGitDir, "objects"))).some((name) => name.startsWith("crest-object-import-"))
         ).toBe(false);
+    });
+
+    test("cleans up both children and staging when closure setup exhausts its deadline", async () => {
+        const realRunner = new WorkspaceGitRunner();
+        const sourceRoot = join(root, "setup-timeout-source");
+        const destinationGitDir = join(root, "setup-timeout-destination.git");
+        await mkdir(sourceRoot);
+        await realRunner.run(["init", "--quiet", "--bare", destinationGitDir], { cwd: root, timeoutMs: 5_000 });
+        const now = vi.spyOn(Date, "now");
+        now.mockReturnValueOnce(1_000).mockReturnValue(1_001);
+
+        try {
+            await expect(
+                new WorkspaceGitRunner(executable).importObjectClosure({
+                    sourceRoot,
+                    sourceTree: TestSha1,
+                    destinationGitDir,
+                    maxPackBytes: 1024,
+                    timeoutMs: 1,
+                })
+            ).rejects.toMatchObject({ code: "timeout" });
+
+            expect(
+                (await readdir(join(destinationGitDir, "objects"))).some((name) =>
+                    name.startsWith("crest-object-import-")
+                )
+            ).toBe(false);
+        } finally {
+            now.mockRestore();
+        }
     });
 
     test("rejects malformed index-pack output without publishing objects", async () => {
@@ -893,6 +929,12 @@ describe.sequential("WorkspaceGitRunner", () => {
         expect(
             (await readdir(join(destinationGitDir, "objects"))).some((name) => name.startsWith("crest-object-import-"))
         ).toBe(false);
+        expect(JSON.parse(await readFile(join(sourceRoot, "pack-argv.json"), "utf8"))).toEqual(
+            expect.arrayContaining(["pack.threads=1", "pack.windowMemory=16m"])
+        );
+        expect(JSON.parse(await readFile(join(destinationGitDir, "index-argv.json"), "utf8"))).toEqual(
+            expect.arrayContaining(["index.threads=1"])
+        );
     });
 
     test("handles child stdin EPIPE without an unhandled error", async () => {
@@ -964,6 +1006,23 @@ async function readPidEventually(path: string): Promise<number> {
         }
     }
     throw new Error("fake Git did not write its pid");
+}
+
+async function waitForStagedImportPack(gitDir: string): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    const objects = join(gitDir, "objects");
+    while (Date.now() < deadline) {
+        for (const entry of await readdir(objects)) {
+            if (!entry.startsWith("crest-object-import-")) continue;
+            try {
+                if ((await stat(join(objects, entry, "pack", "seed.pack"))).isFile()) return;
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("closure import did not start writing its staged pack");
 }
 
 function makeMockChild(): ChildProcessWithoutNullStreams {

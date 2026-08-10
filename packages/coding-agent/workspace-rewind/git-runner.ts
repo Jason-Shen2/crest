@@ -156,31 +156,50 @@ export class WorkspaceGitRunner {
         const stagingPackDirectory = join(stagingObjectDirectory, "pack");
         const stagingPack = join(stagingPackDirectory, "seed.pack");
         mkdirSync(stagingPackDirectory);
-        let securePaths: SecureGitPaths;
-        try {
-            securePaths = getSecureGitPaths();
-        } catch (cause) {
-            rmSync(stagingObjectDirectory, { recursive: true, force: true });
-            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
-        }
-        const commonArgs = [
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            `core.hooksPath=${securePaths.hooks}`,
-            "-c",
-            "core.autocrlf=false",
-        ];
-        const env = {
-            ...makeIsolatedEnv(true, securePaths.globalConfig, true, undefined, false),
-            GIT_NO_LAZY_FETCH: "1",
+        let source: ReturnType<typeof spawn> | undefined;
+        let destination: ReturnType<typeof spawn> | undefined;
+        let sourceDone: Promise<number> | undefined;
+        let destinationDone: Promise<number> | undefined;
+        let timer: NodeJS.Timeout | undefined;
+        let onAbort: (() => void) | undefined;
+        const sourceStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
+        const destinationStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
+        const destinationStdout = makeBoundedCapture(1024);
+        let packBytes = 0;
+        let terminalError: WorkspaceGitRunnerError | undefined;
+        const terminate = (error: WorkspaceGitRunnerError) => {
+            terminalError ??= error;
+            source?.kill("SIGKILL");
+            destination?.kill("SIGKILL");
         };
-        let source;
-        let destination;
         try {
+            const securePaths = getSecureGitPaths();
+            const commonArgs = [
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                `core.hooksPath=${securePaths.hooks}`,
+                "-c",
+                "core.autocrlf=false",
+            ];
+            const env = {
+                ...makeIsolatedEnv(true, securePaths.globalConfig, true, undefined, false),
+                GIT_NO_LAZY_FETCH: "1",
+            };
             source = spawn(
                 this.executable,
-                ["--no-replace-objects", ...commonArgs, "pack-objects", "--stdout", "--revs", "--delta-base-offset"],
+                [
+                    "--no-replace-objects",
+                    ...commonArgs,
+                    "-c",
+                    "pack.threads=1",
+                    "-c",
+                    "pack.windowMemory=16m",
+                    "pack-objects",
+                    "--stdout",
+                    "--revs",
+                    "--delta-base-offset",
+                ],
                 {
                     cwd: options.sourceRoot,
                     env,
@@ -189,6 +208,7 @@ export class WorkspaceGitRunner {
                     windowsHide: true,
                 }
             );
+            sourceDone = waitForChildProcess(source);
             destination = spawn(
                 this.executable,
                 [
@@ -197,6 +217,8 @@ export class WorkspaceGitRunner {
                     "core.fsync=pack,pack-metadata",
                     "-c",
                     "core.fsyncMethod=fsync",
+                    "-c",
+                    "index.threads=1",
                     `--git-dir=${options.destinationGitDir}`,
                     "index-pack",
                     "--stdin",
@@ -212,57 +234,40 @@ export class WorkspaceGitRunner {
                     windowsHide: true,
                 }
             );
-        } catch (cause) {
-            source?.kill("SIGKILL");
-            destination?.kill("SIGKILL");
-            rmSync(stagingObjectDirectory, { recursive: true, force: true });
-            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
-        }
-
-        const sourceStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
-        const destinationStderr = makeBoundedCapture(WorkspaceGitRunnerLimits.maxStderrBytes);
-        const destinationStdout = makeBoundedCapture(1024);
-        let packBytes = 0;
-        let terminalError: WorkspaceGitRunnerError | undefined;
-        const terminate = (error: WorkspaceGitRunnerError) => {
-            terminalError ??= error;
-            source.kill("SIGKILL");
-            destination.kill("SIGKILL");
-        };
-        source.stderr.on("data", (chunk: Buffer) => {
-            if (!sourceStderr.push(chunk)) terminate(makeError("stderr_overflow"));
-        });
-        destination.stderr.on("data", (chunk: Buffer) => {
-            if (!destinationStderr.push(chunk)) terminate(makeError("stderr_overflow"));
-        });
-        destination.stdout.on("data", (chunk: Buffer) => {
-            if (!destinationStdout.push(chunk)) terminate(makeError("stdout_overflow"));
-        });
-        source.stdout.on("data", (chunk: Buffer) => {
-            packBytes += chunk.length;
-            if (packBytes > options.maxPackBytes) {
-                terminate(makeError("stdout_overflow"));
-                return;
-            }
-            if (!destination.stdin.write(chunk)) source.stdout.pause();
-        });
-        destination.stdin.on("drain", () => source.stdout.resume());
-        source.stdout.on("end", () => destination.stdin.end());
-        const onAbort = () => terminate(makeError("aborted"));
-        options.signal?.addEventListener("abort", onAbort, { once: true });
-        if (options.signal?.aborted) onAbort();
-        const timer = setTimeout(() => terminate(makeError("timeout")), remainingTimeout(deadline));
-        source.stdin.on("error", (cause: NodeJS.ErrnoException) => {
-            if (cause.code !== "EPIPE")
-                terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
-        });
-        destination.stdin.on("error", (cause: NodeJS.ErrnoException) => {
-            if (cause.code !== "EPIPE")
-                terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
-        });
-        source.stdin.end(Buffer.from(`${options.sourceTree}\n`));
-        try {
-            const settled = await Promise.allSettled([waitForChildProcess(source), waitForChildProcess(destination)]);
+            destinationDone = waitForChildProcess(destination);
+            source.stderr.on("data", (chunk: Buffer) => {
+                if (!sourceStderr.push(chunk)) terminate(makeError("stderr_overflow"));
+            });
+            destination.stderr.on("data", (chunk: Buffer) => {
+                if (!destinationStderr.push(chunk)) terminate(makeError("stderr_overflow"));
+            });
+            destination.stdout.on("data", (chunk: Buffer) => {
+                if (!destinationStdout.push(chunk)) terminate(makeError("stdout_overflow"));
+            });
+            source.stdout.on("data", (chunk: Buffer) => {
+                packBytes += chunk.length;
+                if (packBytes > options.maxPackBytes) {
+                    terminate(makeError("stdout_overflow"));
+                    return;
+                }
+                if (!destination!.stdin.write(chunk)) source!.stdout.pause();
+            });
+            destination.stdin.on("drain", () => source!.stdout.resume());
+            source.stdout.on("end", () => destination!.stdin.end());
+            onAbort = () => terminate(makeError("aborted"));
+            options.signal?.addEventListener("abort", onAbort, { once: true });
+            if (options.signal?.aborted) onAbort();
+            timer = setTimeout(() => terminate(makeError("timeout")), remainingTimeout(deadline));
+            source.stdin.on("error", (cause: NodeJS.ErrnoException) => {
+                if (cause.code !== "EPIPE")
+                    terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+            });
+            destination.stdin.on("error", (cause: NodeJS.ErrnoException) => {
+                if (cause.code !== "EPIPE")
+                    terminate(makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause));
+            });
+            source.stdin.end(Buffer.from(`${options.sourceTree}\n`));
+            const settled = await Promise.allSettled([sourceDone, destinationDone]);
             if (terminalError) throw terminalError;
             const rejected = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
             if (rejected) {
@@ -314,9 +319,26 @@ export class WorkspaceGitRunner {
                 throw cause;
             }
             return { packBytes, pack };
+        } catch (cause) {
+            if (cause instanceof WorkspaceGitRunnerError) throw cause;
+            throw makeError("spawn_failed", Buffer.alloc(0), Buffer.alloc(0), undefined, cause);
         } finally {
-            clearTimeout(timer);
-            options.signal?.removeEventListener("abort", onAbort);
+            if (timer) clearTimeout(timer);
+            if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+            if (source && source.exitCode == null && source.signalCode == null) source.kill("SIGKILL");
+            if (destination && destination.exitCode == null && destination.signalCode == null)
+                destination.kill("SIGKILL");
+            await Promise.allSettled(
+                [sourceDone, destinationDone].filter((value): value is Promise<number> => !!value)
+            );
+            source?.stdin.removeAllListeners("error");
+            source?.stdout.removeAllListeners("data");
+            source?.stdout.removeAllListeners("end");
+            source?.stderr.removeAllListeners("data");
+            destination?.stdin.removeAllListeners("error");
+            destination?.stdin.removeAllListeners("drain");
+            destination?.stdout.removeAllListeners("data");
+            destination?.stderr.removeAllListeners("data");
             rmSync(stagingObjectDirectory, { recursive: true, force: true });
         }
     }

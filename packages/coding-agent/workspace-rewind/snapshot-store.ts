@@ -82,7 +82,10 @@ const CandidateLookupMaxArgumentBytes = 128 * 1024;
 const StagedHashMaxPaths = 512;
 const StagedHashMaxInputBytes = 128 * 1024;
 const StagedCaptureMaxBytes = 64 * 1024 ** 2;
-const GitUnsafeAttributes = new Set(["text", "eol", "filter", "ident", "working-tree-encoding"]);
+// Keep room for the concurrently written pack staging file, its index/rev metadata, and filesystem overhead.
+const ObjectClosureOverlayReserveBytes = 64 * 1024 ** 2;
+const ColdIndexPrefix = "workspace-cold-baseline-";
+const GitUnsafeAttributes = new Set(["text", "eol", "crlf", "filter", "ident", "working-tree-encoding"]);
 
 export interface CaptureWorkspaceOptions {
     profile: "pre-turn" | "terminal" | "safety";
@@ -310,7 +313,14 @@ export class WorkspaceSnapshotStore {
             generation: quotaGeneration(input.processOwner),
             measureExactUsage: () => measureExactStoreUsage(storeRoot, input.git),
         });
-        return new WorkspaceSnapshotStore({ ...input, storeRoot, quotaAccounting });
+        const store = new WorkspaceSnapshotStore({ ...input, storeRoot, quotaAccounting });
+        await store.withWorkspaceLock(async () => {
+            await removeAbandonedObjectImports(storeRoot);
+            await removeIncompletePublishedPacks(storeRoot);
+            await removeStaleColdIndexes(storeRoot);
+            quotaAccounting.markNeedsReconcile();
+        });
+        return store;
     }
 
     capture(options: CaptureWorkspaceOptions): Promise<{
@@ -570,7 +580,6 @@ export class WorkspaceSnapshotStore {
                     quotaStatus,
                 });
             }
-            await assertFreeSpace(this.storeRoot, runtime);
             const scope = await discoverWorkspaceScope({
                 identity: this.identity,
                 git: this.git,
@@ -597,7 +606,13 @@ export class WorkspaceSnapshotStore {
                 ...attributePaths,
             ]);
             if (!projection) return undefined;
-            const maxPackBytes = Math.max(1, quotaStatus.softQuotaBytes - quotaStatus.usedBytes);
+            const freeSpace = await assertFreeSpace(this.storeRoot, runtime);
+            const maxPackBytes = calculateObjectClosurePackBudget(
+                quotaStatus.softQuotaBytes - quotaStatus.usedBytes,
+                freeSpace.availableBytes,
+                freeSpace.requiredBytes
+            );
+            if (maxPackBytes == null) return undefined;
             try {
                 await options.sourceGit.importObjectClosure({
                     sourceRoot: options.sourceRoot,
@@ -619,14 +634,31 @@ export class WorkspaceSnapshotStore {
                 runtime
             );
             const mutations = [...captured.entries, ...projection.absentEntries];
-            const index = new ShadowWorkspaceIndex({
-                git: this.git,
-                gitDir: this.storeRoot,
-                indexFile: join(this.storeRoot, "journal", "workspace-cold-baseline.index"),
-            });
-            await index.load(options.sourceTree);
-            await index.apply(mutations);
-            const tree = await index.writeTree();
+            await removeStaleColdIndexes(this.storeRoot);
+            const indexFile = join(
+                this.storeRoot,
+                "journal",
+                `${ColdIndexPrefix}${randomBytes(16).toString("hex")}.index`
+            );
+            let tree: string;
+            try {
+                const index = new ShadowWorkspaceIndex({ git: this.git, gitDir: this.storeRoot, indexFile });
+                const indexOptions = {
+                    timeoutMs: remainingTimeout(deadline),
+                    signal: controller.signal,
+                };
+                await index.load(options.sourceTree, indexOptions);
+                await index.apply(mutations, {
+                    timeoutMs: remainingTimeout(deadline),
+                    signal: controller.signal,
+                });
+                tree = await index.writeTree({
+                    timeoutMs: remainingTimeout(deadline),
+                    signal: controller.signal,
+                });
+            } finally {
+                await removeColdIndex(indexFile);
+            }
             const validatedAttributePaths = await this.readGitBaselineAttributePaths(
                 options.sourceRoot,
                 sourceEntries,
@@ -1950,8 +1982,6 @@ async function initializePrivateStoreImpl(input: {
             await assertSafeExistingTree(input.storeRoot, join(input.storeRoot, "journal", "restores"));
             await initializeBareRepository(input.storeRoot, input.git);
         }
-        await removeAbandonedObjectImports(input.storeRoot);
-        await removeIncompletePublishedPacks(input.storeRoot);
         await repairStorePermissions(input.storeRoot);
         await verifyPrivateStore(input.storeRoot, input.git);
     } finally {
@@ -1999,6 +2029,21 @@ async function removeIncompletePublishedPacks(storeRoot: string): Promise<void> 
         removed = true;
     }
     if (removed) await syncDirectory(packRoot);
+}
+
+async function removeStaleColdIndexes(storeRoot: string): Promise<void> {
+    const journal = join(storeRoot, "journal");
+    const entries = await readdir(journal, { withFileTypes: true });
+    for (const entry of entries) {
+        if (!new RegExp(`^${ColdIndexPrefix}[0-9a-f]{32}\\.index(?:\\.lock)?$`).test(entry.name)) continue;
+        if (!entry.isFile() && !entry.isSymbolicLink()) throw new Error("Unsafe stale cold index path");
+        await unlink(join(journal, entry.name));
+    }
+}
+
+async function removeColdIndex(indexFile: string): Promise<void> {
+    await unlink(indexFile).catch(ignoreMissing);
+    await unlink(`${indexFile}.lock`).catch(ignoreMissing);
 }
 
 async function initializeBareRepository(
@@ -2606,7 +2651,12 @@ async function syncTree(root: string): Promise<void> {
     await syncDirectory(root);
 }
 
-async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<void> {
+interface WorkspaceFreeSpaceEvidence {
+    availableBytes: bigint;
+    requiredBytes: bigint;
+}
+
+async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<WorkspaceFreeSpaceEvidence> {
     assertCaptureActive(runtime.deadline, runtime.signal);
     const value = await statfs(path, { bigint: true });
     assertCaptureActive(runtime.deadline, runtime.signal);
@@ -2620,6 +2670,20 @@ async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<v
     if (availableBytes < requiredBytes) {
         throw new WorkspaceSnapshotStoreError("enospc", "Insufficient free space for workspace checkpoint");
     }
+    return { availableBytes, requiredBytes };
+}
+
+export function calculateObjectClosurePackBudget(
+    quotaRemainingBytes: number,
+    availableBytes: bigint,
+    requiredFreeBytes: bigint
+): number | undefined {
+    if (!Number.isSafeInteger(quotaRemainingBytes) || quotaRemainingBytes < 0) return undefined;
+    const reserve = BigInt(ObjectClosureOverlayReserveBytes);
+    const quotaBudget = BigInt(quotaRemainingBytes) - reserve;
+    const filesystemBudget = availableBytes - requiredFreeBytes - reserve;
+    const budget = quotaBudget < filesystemBudget ? quotaBudget : filesystemBudget;
+    return budget > 0n ? Number(budget) : undefined;
 }
 
 function makeMaintenanceRuntime(): CaptureRuntime {

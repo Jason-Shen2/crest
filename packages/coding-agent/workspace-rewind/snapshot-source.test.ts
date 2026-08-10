@@ -9,6 +9,7 @@ import {
     mkdir,
     mkdtemp,
     readFile,
+    readdir,
     realpath,
     rm,
     symlink,
@@ -720,6 +721,7 @@ describe("Workspace checkpoint snapshot source", () => {
     }, 20_000);
 
     it("matches an independent full capture for executable, symlink, and type-mode states", async () => {
+        if (process.platform === "win32") return;
         const root = await mkdtemp(join(tmpdir(), "crest-git-cold-mode-equivalence-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
@@ -786,6 +788,7 @@ describe("Workspace checkpoint snapshot source", () => {
     }, 30_000);
 
     it("matches an independent full capture for scope exclusions and a sparse absent path", async () => {
+        if (process.platform === "win32") return;
         const root = await mkdtemp(join(tmpdir(), "crest-git-cold-scope-equivalence-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
@@ -915,6 +918,9 @@ describe("Workspace checkpoint snapshot source", () => {
             git,
             processOwner: { pid: process.pid, processStartToken: "git-cold-directory-race", nonce: "0".repeat(64) },
         });
+        const staleIndex = join(store.storeRoot, "journal", `workspace-cold-baseline-${"a".repeat(32)}.index`);
+        await writeFile(staleIndex, "stale index");
+        await writeFile(`${staleIndex}.lock`, "stale lock");
         const run = git.run.bind(git);
         let attributeReads = 0;
         vi.spyOn(git, "run").mockImplementation(async (args, options) => {
@@ -941,6 +947,13 @@ describe("Workspace checkpoint snapshot source", () => {
         expect(captureGitBaseline).toHaveBeenCalledTimes(2);
         expect(fullReconcile).not.toHaveBeenCalled();
         expect(raced).toMatchObject({ state: "file" });
+        await expect(lstat(staleIndex)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(`${staleIndex}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
+        expect(
+            (await readdir(join(store.storeRoot, "journal"))).some((name) =>
+                name.startsWith("workspace-cold-baseline-")
+            )
+        ).toBe(false);
         await expect(store.readBlob((raced as { oid: string }).oid)).resolves.toEqual(
             Buffer.from("created during final validation\n")
         );
@@ -1108,6 +1121,8 @@ describe("Workspace checkpoint snapshot source", () => {
             [
                 "text.txt text",
                 "eol.txt eol=lf",
+                "legacy-crlf.txt crlf",
+                "legacy-crlf-input.txt crlf=input",
                 "filter.txt filter=crest-test",
                 "ident.txt ident",
                 "encoding.txt working-tree-encoding=UTF-8",
@@ -1123,6 +1138,8 @@ describe("Workspace checkpoint snapshot source", () => {
         const liveBytes = new Map<string, Buffer>([
             ["text.txt", Buffer.from("text route\n")],
             ["eol.txt", Buffer.from("eol route\n")],
+            ["legacy-crlf.txt", Buffer.from("legacy crlf route\r\n")],
+            ["legacy-crlf-input.txt", Buffer.from("legacy crlf input route\r\n")],
             ["filter.txt", Buffer.from("WORKTREE filter route\n")],
             ["ident.txt", Buffer.from("$Id$ ident route\n")],
             ["encoding.txt", Buffer.from("encoding route ✓\n")],

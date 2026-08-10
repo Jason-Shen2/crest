@@ -31,6 +31,11 @@ interface ValidatedMutation {
     addition?: IndexEntry;
 }
 
+export interface ShadowWorkspaceIndexOperationOptions {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+}
+
 export class ShadowWorkspaceIndex {
     readonly git: WorkspaceGitRunner;
     readonly gitDir: string;
@@ -52,14 +57,16 @@ export class ShadowWorkspaceIndex {
         this.indexFile = input.indexFile;
     }
 
-    async load(tree?: string): Promise<void> {
+    async load(tree?: string, options: ShadowWorkspaceIndexOperationOptions = {}): Promise<void> {
+        const runtime = operationRuntime(options);
         this.loaded = false;
         if (tree != null) {
             validateOid(tree);
             const type = await this.git.run(["cat-file", "-t", tree], {
                 gitDir: this.gitDir,
-                timeoutMs: GitTimeoutMs,
+                timeoutMs: remainingTimeout(runtime.deadline),
                 maxStdoutBytes: 16,
+                signal: runtime.signal,
             });
             if (!type.stdout.equals(Buffer.from("tree\n"))) {
                 throw new Error("Shadow Workspace index base must be a tree");
@@ -68,21 +75,30 @@ export class ShadowWorkspaceIndex {
         await this.git.run(["read-tree", tree ?? "--empty"], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
-            timeoutMs: GitTimeoutMs,
+            timeoutMs: remainingTimeout(runtime.deadline),
             maxStdoutBytes: 0,
+            signal: runtime.signal,
         });
         this.loaded = true;
     }
 
-    async apply(states: ReadonlyArray<{ path: string; state: CapturedPathStateV1 }>): Promise<void> {
+    async apply(
+        states: ReadonlyArray<{ path: string; state: CapturedPathStateV1 }>,
+        options: ShadowWorkspaceIndexOperationOptions = {}
+    ): Promise<void> {
+        const runtime = operationRuntime(options);
         this.requireLoaded();
         if (!Array.isArray(states)) throw new Error("Invalid Shadow Workspace index mutations");
         const mutations = validateMutations(states);
         if (mutations.length === 0) return;
         await this.requireBlobObjects(
-            mutations.flatMap((mutation) => (mutation.addition ? [mutation.addition.oid] : []))
+            mutations.flatMap((mutation) => (mutation.addition ? [mutation.addition.oid] : [])),
+            runtime
         );
-        const existing = await this.readCandidateEntries(mutations.map((mutation) => mutation.path));
+        const existing = await this.readCandidateEntries(
+            mutations.map((mutation) => mutation.path),
+            runtime
+        );
         const removals = collectRemovals(existing, mutations);
         const additions = mutations
             .flatMap((mutation) => (mutation.addition ? [mutation.addition] : []))
@@ -90,18 +106,20 @@ export class ShadowWorkspaceIndex {
         const updates = [...removals.map((path) => ({ path, mode: "0", oid: ZeroOid })), ...additions];
         if (updates.length === 0) return;
         this.loaded = false;
-        await this.updateIndex(updates);
+        await this.updateIndex(updates, runtime);
         this.loaded = true;
     }
 
-    async writeTree(): Promise<string> {
+    async writeTree(options: ShadowWorkspaceIndexOperationOptions = {}): Promise<string> {
+        const runtime = operationRuntime(options);
         this.requireLoaded();
         this.loaded = false;
         const result = await this.git.run(["write-tree"], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
-            timeoutMs: GitTimeoutMs,
+            timeoutMs: remainingTimeout(runtime.deadline),
             maxStdoutBytes: 128,
+            signal: runtime.signal,
         });
         const match = /^([0-9a-f]{40})\n$/.exec(result.stdout.toString("ascii"));
         if (!match) throw new Error("Git returned an invalid Shadow Workspace tree id");
@@ -113,13 +131,14 @@ export class ShadowWorkspaceIndex {
         if (!this.loaded) throw new Error("Shadow Workspace index must be loaded first");
     }
 
-    async requireBlobObjects(oids: string[]): Promise<void> {
+    async requireBlobObjects(oids: string[], runtime: ShadowWorkspaceIndexRuntime): Promise<void> {
         const unique = [...new Set(oids)];
         if (unique.length === 0) return;
         const result = await this.git.run(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
             gitDir: this.gitDir,
             stdin: Buffer.from(`${unique.join("\n")}\n`),
-            timeoutMs: GitTimeoutMs,
+            timeoutMs: remainingTimeout(runtime.deadline),
+            signal: runtime.signal,
         });
         const lines = result.stdout.toString("ascii").trimEnd().split("\n");
         if (lines.length !== unique.length || lines.some((line, index) => line !== `${unique[index]} blob`)) {
@@ -127,17 +146,21 @@ export class ShadowWorkspaceIndex {
         }
     }
 
-    async readCandidateEntries(paths: string[]): Promise<IndexEntry[]> {
+    async readCandidateEntries(paths: string[], runtime: ShadowWorkspaceIndexRuntime): Promise<IndexEntry[]> {
         const pathspecs = collectPathspecs(paths);
         const result = await this.git.run(["ls-files", "--stage", "-z", "--", ...pathspecs], {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
-            timeoutMs: GitTimeoutMs,
+            timeoutMs: remainingTimeout(runtime.deadline),
+            signal: runtime.signal,
         });
         return parseIndexEntries(result.stdout);
     }
 
-    async updateIndex(entries: Array<{ path: string; mode: string; oid: string }>): Promise<void> {
+    async updateIndex(
+        entries: Array<{ path: string; mode: string; oid: string }>,
+        runtime: ShadowWorkspaceIndexRuntime
+    ): Promise<void> {
         const input = Buffer.concat(
             entries.map((entry) =>
                 Buffer.concat([Buffer.from(`${entry.mode} ${entry.oid}\t${entry.path}`), Buffer.of(0)])
@@ -147,10 +170,31 @@ export class ShadowWorkspaceIndex {
             gitDir: this.gitDir,
             indexFile: this.indexFile,
             stdin: input,
-            timeoutMs: GitTimeoutMs,
+            timeoutMs: remainingTimeout(runtime.deadline),
             maxStdoutBytes: 0,
+            signal: runtime.signal,
         });
     }
+}
+
+interface ShadowWorkspaceIndexRuntime {
+    deadline: number;
+    signal?: AbortSignal;
+}
+
+function operationRuntime(options: ShadowWorkspaceIndexOperationOptions): ShadowWorkspaceIndexRuntime {
+    const timeoutMs = options.timeoutMs ?? GitTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > GitTimeoutMs) {
+        throw new Error("Invalid Shadow Workspace index timeout");
+    }
+    options.signal?.throwIfAborted();
+    return { deadline: Date.now() + timeoutMs, signal: options.signal };
+}
+
+function remainingTimeout(deadline: number): number {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error("Shadow Workspace index operation timed out");
+    return remaining;
 }
 
 function validateMutations(states: ReadonlyArray<{ path: string; state: CapturedPathStateV1 }>): ValidatedMutation[] {

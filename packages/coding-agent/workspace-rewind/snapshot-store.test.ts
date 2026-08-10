@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { makeProcessOwnerIdentity } from "./process-owner";
-import { initializePrivateStore, WorkspaceSnapshotStore } from "./snapshot-store";
+import { calculateObjectClosurePackBudget, initializePrivateStore, WorkspaceSnapshotStore } from "./snapshot-store";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
 
 const TemporaryRoots: string[] = [];
@@ -22,6 +22,24 @@ afterEach(async () => {
 });
 
 describe("WorkspaceSnapshotStore V3 authority", () => {
+    it("reserves quota and filesystem headroom when budgeting a cold object closure", () => {
+        const mib = 1024 ** 2;
+        const requiredFree = 1024n ** 3n;
+
+        expect(calculateObjectClosurePackBudget(100 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree)).toBe(
+            36 * mib
+        );
+        expect(calculateObjectClosurePackBudget(5 * 1024 ** 3, requiredFree + 80n * BigInt(mib), requiredFree)).toBe(
+            16 * mib
+        );
+        expect(
+            calculateObjectClosurePackBudget(5 * 1024 ** 3, requiredFree + 64n * BigInt(mib), requiredFree)
+        ).toBeUndefined();
+        expect(
+            calculateObjectClosurePackBudget(64 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree)
+        ).toBeUndefined();
+    });
+
     it("full-reconciles directly to a raw workspace tree with scope and coverage", async () => {
         const fixture = await makeFixture();
         const reconciled = await fixture.store.captureFullReconcile({ profile: "terminal" });
@@ -574,44 +592,65 @@ describe("private V3 bare-store bootstrap safety", () => {
         expect((await stat(storeRoot)).isDirectory()).toBe(true);
     });
 
-    it("removes abandoned object-import staging directories during bootstrap", async () => {
-        const root = await temporaryBootstrapRoot("object-import");
-        const storeRoot = join(root, "repo.git");
-        const input = {
-            storeRoot,
-            git: new WorkspaceGitRunner(),
-            processOwner: await makeProcessOwnerIdentity(),
-        };
-        await initializePrivateStore(input);
-        const abandoned = join(storeRoot, "objects", "crest-object-import-abandoned");
+    it("removes an abandoned object-import directory under the workspace mutation lock", async () => {
+        const fixture = await runtimeCleanupFixture("object-import");
+        const abandoned = join(fixture.store.storeRoot, "objects", "crest-object-import-abandoned");
         await mkdir(join(abandoned, "pack"), { recursive: true });
         await writeFile(join(abandoned, "pack", "seed.pack"), "partial");
 
-        await initializePrivateStore(input);
+        await fixture.reopen();
 
         await expect(lstat(abandoned)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
-    it("removes a partially published object-import pack family during bootstrap", async () => {
-        const root = await temporaryBootstrapRoot("partial-object-pack");
-        const storeRoot = join(root, "repo.git");
-        const input = {
-            storeRoot,
-            git: new WorkspaceGitRunner(),
-            processOwner: await makeProcessOwnerIdentity(),
-        };
-        await initializePrivateStore(input);
+    it("removes a partially published object-import pack family under the workspace mutation lock", async () => {
+        const fixture = await runtimeCleanupFixture("partial-object-pack");
         const pack = "e".repeat(40);
-        const packRoot = join(storeRoot, "objects", "pack");
+        const packRoot = join(fixture.store.storeRoot, "objects", "pack");
         const packPath = join(packRoot, `pack-${pack}.pack`);
         const revPath = join(packRoot, `pack-${pack}.rev`);
         await writeFile(packPath, "partial pack");
         await writeFile(revPath, "partial rev");
 
-        await initializePrivateStore(input);
+        await fixture.reopen();
 
         await expect(lstat(packPath)).rejects.toMatchObject({ code: "ENOENT" });
         await expect(lstat(revPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("does not remove active import or pack artifacts while another store holds the mutation lock", async () => {
+        const fixture = await runtimeCleanupFixture("active-object-import");
+        const abandoned = join(fixture.store.storeRoot, "objects", "crest-object-import-active");
+        const packRoot = join(fixture.store.storeRoot, "objects", "pack");
+        const pack = "d".repeat(40);
+        const packPath = join(packRoot, `pack-${pack}.pack`);
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered!: () => void;
+        const active = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const mutation = fixture.store.withWorkspaceLock(async () => {
+            await mkdir(join(abandoned, "pack"), { recursive: true });
+            await writeFile(join(abandoned, "pack", "seed.pack"), "active");
+            await writeFile(packPath, "active pack");
+            entered();
+            await gate;
+        });
+        await active;
+
+        const reopening = fixture.reopen();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await expect(lstat(abandoned)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+        await expect(lstat(packPath)).resolves.toMatchObject({ isFile: expect.any(Function) });
+
+        release();
+        await mutation;
+        await reopening;
+        await expect(lstat(abandoned)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(packPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it("repairs every repository directory and file to owner-only permissions", async () => {
@@ -648,6 +687,32 @@ describe("private V3 bare-store bootstrap safety", () => {
         expect(await readdir(outside)).toEqual([]);
     });
 });
+
+async function runtimeCleanupFixture(label: string) {
+    const root = await mkdtemp(join(tmpdir(), `crest-runtime-cleanup-${label}-`));
+    TemporaryRoots.push(root);
+    const workspace = join(root, "workspace");
+    const dataRoot = join(root, "data");
+    await mkdir(workspace);
+    const identity = await resolveCanonicalWorkspaceIdentity(workspace);
+    const git = new WorkspaceGitRunner();
+    const store = await WorkspaceSnapshotStore.open({
+        dataRoot,
+        identity,
+        git,
+        processOwner: await makeProcessOwnerIdentity(),
+    });
+    return {
+        store,
+        reopen: async () =>
+            WorkspaceSnapshotStore.open({
+                dataRoot,
+                identity,
+                git,
+                processOwner: await makeProcessOwnerIdentity(),
+            }),
+    };
+}
 
 async function makeFixture() {
     const root = await mkdtemp(join(tmpdir(), "crest-snapshot-store-v3-"));

@@ -5,7 +5,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
@@ -263,6 +263,47 @@ describe.sequential("ShadowWorkspaceIndex", () => {
 
         await fixture.index.load(baseTree);
         await expect(fixture.index.writeTree()).resolves.toBe(baseTree);
+    });
+
+    test("propagates an abort signal through internal apply Git calls", async () => {
+        const fixture = await makeFixture(roots);
+        await fixture.index.load();
+        const candidate = await rawState(fixture, "candidate.txt", Buffer.from("candidate"));
+        const controller = new AbortController();
+        const run = fixture.git.run.bind(fixture.git);
+        const calls: Array<{ args: readonly string[]; signal?: AbortSignal }> = [];
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            calls.push({ args, signal: options.signal });
+            if (args[0] === "cat-file" && args[1]?.startsWith("--batch-check")) controller.abort();
+            return await run(args, options);
+        });
+
+        await expect(
+            fixture.index.apply([candidate], { signal: controller.signal, timeoutMs: 5_000 })
+        ).rejects.toMatchObject({ code: "aborted" });
+        expect(calls.find((call) => call.args[0] === "cat-file")?.signal).toBe(controller.signal);
+    });
+
+    test("enforces one deadline across every internal apply Git call", async () => {
+        const fixture = await makeFixture(roots);
+        await fixture.index.load();
+        const candidate = await rawState(fixture, "candidate.txt", Buffer.from("candidate"));
+        const run = fixture.git.run.bind(fixture.git);
+        let delayed = false;
+        const commands: string[] = [];
+        vi.spyOn(fixture.git, "run").mockImplementation(async (args, options) => {
+            commands.push(args[0]!);
+            const result = await run(args, options);
+            if (!delayed && args[0] === "cat-file" && args[1]?.startsWith("--batch-check")) {
+                delayed = true;
+                await new Promise((resolve) => setTimeout(resolve, 120));
+            }
+            return result;
+        });
+
+        await expect(fixture.index.apply([candidate], { timeoutMs: 100 })).rejects.toThrow(/timed out/i);
+        expect(commands).toEqual(["cat-file"]);
+        expect(fixture.index.loaded).toBe(true);
     });
 
     test.each(["invalid-oid", "blob"] as const)(
