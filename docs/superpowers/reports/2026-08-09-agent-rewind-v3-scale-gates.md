@@ -75,6 +75,18 @@ dirty100 相比旧实现的 60–90 秒/轮降至 2.84–3.30 秒 p95，约改�
 ]
 ```
 
+## 历史基线：Git-native cold 前的 50k blocker
+
+Git-native cold baseline 落地前，50k deep 与 wide 的 cold authority 都在原 terminal 30 秒预算下
+`timeout`。每个 shape 后续 10 行均因 cold authority 未建立而明确返回 `unavailable`，p50/p95 为
+`null`，没有把未执行的 warm、dirty、contention、overlap 或 restore 伪装成零延迟。按分级门禁顺序，
+当时的 200k 被标记为 `gate-dependent paused`，没有通过提高 timeout 或减少 iterations 绕过 50k blocker。
+
+分阶段 profile 将 blocker 定位在 cold full reconcile：deep 约 13.04 秒用于 scope discovery，随后
+stable reader/hash 运行约 19.39 秒后超时；wide 约 10.76 秒完成 discovery，随后 reader/hash 运行约
+22.16 秒后超时。两种 shape 都尚未进入 tree materialization。当前正式门禁的 50k/200k 结果因此是
+Git-native clean baseline 替换该 cold 全量内容读取后的前后对照，不覆盖或删除这段失败历史。
+
 ## 正式门禁结果
 
 50k 和 200k 均先完成 deep，再完成 wide；只有 50k 的 22 行全部通过后才启动 200k。合计 44 行全部
@@ -117,6 +129,10 @@ scanned-entry budget 计数：50k deep/wide 分别包含 49,983/49,999 个 eligi
 | session4 | 4000 | 55600 | 240 |
 | overlap | 2000 | 27800 | 220 |
 | restore | 1000 | 13950 | 350 |
+
+`session1/2/4` 按同一 fixture 的固定场景顺序运行在 `dirty100` 之后，因此继承当时 100 个 dirty
+candidates。表中的 `dirtyPathCount=0` 只表示 contention 场景本身没有再写新路径，不表示它是 clean/no-op
+contention；candidateCount 与 bytesRead 是每个 Session、每轮处理这 100 个候选后的累计值。
 
 clean Git cold 通过 source-object pack + metadata projection 建立 private authority，`bytesRead=0` 表示没有读取
 clean tracked Workspace 内容作为 overlay；它不表示 Git pack 为 0 bytes。benchmark row 记录的是 Workspace

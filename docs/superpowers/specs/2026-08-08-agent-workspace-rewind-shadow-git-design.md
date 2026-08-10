@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-08
 
-**状态：** 已实施；200k 合成 Git Workspace 生产规模门禁通过
+**状态：** 实施中；200k 合成 Git Workspace 生产规模门禁已通过，correctness/tsc 与 closeout 待完成
 
 **上游设计：**
 
@@ -11,7 +11,8 @@
 - `2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`
 
 本文是 2026-08-04 增量快照设计的后继方案。旧设计和 benchmark 保留为问题发现、
-优化过程和历史证据；本文替代其下一阶段目标架构，不表示当前代码已经完成迁移。
+优化过程和历史证据；本文替代其下一阶段目标架构，最终完成状态以实施计划中的 correctness/tsc
+与 closeout 门禁为准。
 
 ## 结论
 
