@@ -128,7 +128,7 @@ describe("agent rewind V3 production benchmark contract", () => {
         ).toBe(true);
         expect(rows.filter((item) => item.scenario === "cold").every((item) => item.fallbackCount === 0)).toBe(true);
         expect(rows.filter((item) => item.scenario === "cold").every((item) => item.outcome === "pass")).toBe(true);
-        expect(rows.filter((item) => item.scenario === "cold").every((item) => item.bytesRead > 0)).toBe(true);
+        expect(rows.filter((item) => item.scenario === "cold").every((item) => item.bytesRead === 0)).toBe(true);
         expect(
             rows
                 .filter((item) => item.scenario === "dirty-paths")
@@ -156,20 +156,41 @@ describe("agent rewind V3 production benchmark contract", () => {
             },
             authority: {
                 registryInitializeMs: expect.any(Number),
-                captureTotalMs: expect.any(Number),
-                discoverScopeMs: expect.any(Number),
-                stableReaderAndHashMs: expect.any(Number),
-                treeMaterializeMs: expect.any(Number),
+                gitBaseline: {
+                    totalMs: expect.any(Number),
+                    sourceTreeReadMs: expect.any(Number),
+                    sourceEntryCount: 11,
+                    sourceProjectionMs: expect.any(Number),
+                    packImportMs: expect.any(Number),
+                    packBytes: expect.any(Number),
+                    metadataScopeEntryCount: 11,
+                    overlayCaptureMs: expect.any(Number),
+                    overlayNewlyHashedBytes: 0,
+                    postBaselineInitializeMs: expect.any(Number),
+                },
+                captureTotalMs: null,
+                scopeEnumeratedMs: null,
+                discoverScopeMs: null,
+                stableReaderAndHashMs: null,
+                treeMaterializeMs: null,
+                postCaptureInitializeMs: null,
             },
         });
-        expect(profile.scopeEntryCount).toBeGreaterThanOrEqual(12);
+        expect(profile.scopeEntryCount).toBeNull();
         expect(profile.gitCommands.init).toMatchObject({ calls: 1, durationMs: expect.any(Number) });
-        expect(profile.authority.captureTotalMs).toBeLessThanOrEqual(30_000 + 1_000);
-        expect(profile.authority.scopeEnumeratedMs).toBeLessThanOrEqual(profile.authority.discoverScopeMs!);
-        expect(profile.authority.discoverScopeMs).toBeLessThan(profile.authority.captureTotalMs!);
-        expect(profile.authority.stableReaderAndHashMs).toBeLessThan(profile.authority.captureTotalMs!);
-        expect(profile.authority.treeMaterializeMs).toBeLessThan(profile.authority.captureTotalMs!);
-        expect(profile.authority.postCaptureInitializeMs).toBeGreaterThanOrEqual(0);
+        expect(profile.authority.gitBaseline.packBytes).toBeGreaterThan(0);
+        expect(profile.authority.gitBaseline.totalMs).toBeLessThanOrEqual(30_000 + 1_000);
+        expect(profile.authority.gitBaseline.sourceTreeReadMs).toBeLessThanOrEqual(
+            profile.authority.gitBaseline.totalMs!
+        );
+        expect(profile.authority.gitBaseline.sourceProjectionMs).toBeLessThanOrEqual(
+            profile.authority.gitBaseline.totalMs!
+        );
+        expect(profile.authority.gitBaseline.packImportMs).toBeLessThanOrEqual(profile.authority.gitBaseline.totalMs!);
+        expect(profile.authority.gitBaseline.overlayCaptureMs).toBeLessThanOrEqual(
+            profile.authority.gitBaseline.totalMs!
+        );
+        expect(profile.authority.gitBaseline.postBaselineInitializeMs).toBeGreaterThanOrEqual(0);
         expect(profile).not.toHaveProperty("captureStartedAt");
         expect(profile).not.toHaveProperty("captureFinishedAt");
     }, 30_000);

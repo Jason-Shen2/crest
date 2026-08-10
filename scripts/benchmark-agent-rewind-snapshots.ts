@@ -90,6 +90,18 @@ export interface ColdBaselineProfile {
     authority: {
         storeOpenMs: number;
         registryInitializeMs: number;
+        gitBaseline: {
+            totalMs: number | null;
+            sourceTreeReadMs: number | null;
+            sourceEntryCount: number | null;
+            sourceProjectionMs: number | null;
+            packImportMs: number | null;
+            packBytes: number | null;
+            metadataScopeEntryCount: number | null;
+            overlayCaptureMs: number | null;
+            overlayNewlyHashedBytes: number | null;
+            postBaselineInitializeMs: number | null;
+        };
         captureTotalMs: number | null;
         scopeEnumeratedMs: number | null;
         discoverScopeMs: number | null;
@@ -236,6 +248,18 @@ export async function profileAgentRewindColdBaseline(
         authority: {
             storeOpenMs: 0,
             registryInitializeMs: 0,
+            gitBaseline: {
+                totalMs: null,
+                sourceTreeReadMs: null,
+                sourceEntryCount: null,
+                sourceProjectionMs: null,
+                packImportMs: null,
+                packBytes: null,
+                metadataScopeEntryCount: null,
+                overlayCaptureMs: null,
+                overlayNewlyHashedBytes: null,
+                postBaselineInitializeMs: null,
+            },
             captureTotalMs: null,
             scopeEnumeratedMs: null,
             discoverScopeMs: null,
@@ -262,12 +286,68 @@ export async function profileAgentRewindColdBaseline(
         profile.fixture.totalMs = elapsedMs(fixtureStarted);
         const metrics = makeMetrics();
         const git = new ObservedWorkspaceGitRunner(metrics, profile.gitCommands);
+        let gitBaselineStartedAt: number | undefined;
+        let gitBaselineFinishedAt: number | undefined;
+        let projectionStartedAt: number | undefined;
+        const importObjectClosure = git.importObjectClosure.bind(git);
+        git.importObjectClosure = async (options) => {
+            if (projectionStartedAt != null) {
+                profile.authority.gitBaseline.sourceProjectionMs = elapsedMs(projectionStartedAt);
+                projectionStartedAt = undefined;
+            }
+            const importStarted = performance.now();
+            try {
+                const imported = await importObjectClosure(options);
+                profile.authority.gitBaseline.packBytes = imported.packBytes;
+                return imported;
+            } finally {
+                profile.authority.gitBaseline.packImportMs = elapsedMs(importStarted);
+            }
+        };
         const feed = new DeterministicChangeFeed();
         const registry = new WorkspaceTrackerRegistry({
             openStore: async (input) => {
                 const openStarted = performance.now();
                 const store = await WorkspaceSnapshotStore.open(input);
                 profile.authority.storeOpenMs = elapsedMs(openStarted);
+                const captureGitBaseline = store.captureGitBaseline.bind(store);
+                store.captureGitBaseline = async (...args: Parameters<typeof captureGitBaseline>) => {
+                    const baselineStarted = performance.now();
+                    gitBaselineStartedAt = baselineStarted;
+                    try {
+                        const captured = await captureGitBaseline(...args);
+                        if (captured) {
+                            profile.authority.gitBaseline.metadataScopeEntryCount =
+                                captured.coverage.eligibleEntryCount;
+                            profile.authority.gitBaseline.overlayNewlyHashedBytes = captured.coverage.newlyHashedBytes;
+                        }
+                        return captured;
+                    } finally {
+                        gitBaselineFinishedAt = performance.now();
+                        profile.authority.gitBaseline.totalMs = roundMs(gitBaselineFinishedAt - baselineStarted);
+                        gitBaselineStartedAt = undefined;
+                    }
+                };
+                const readGitBaselineEntries = store.readGitBaselineEntries.bind(store);
+                store.readGitBaselineEntries = async (...args: Parameters<typeof readGitBaselineEntries>) => {
+                    const sourceTreeStarted = performance.now();
+                    try {
+                        const entries = await readGitBaselineEntries(...args);
+                        if (entries) profile.authority.gitBaseline.sourceEntryCount = entries.length;
+                        return entries;
+                    } finally {
+                        profile.authority.gitBaseline.sourceTreeReadMs = elapsedMs(sourceTreeStarted);
+                    }
+                };
+                const readGitBaselineAttributePaths = store.readGitBaselineAttributePaths.bind(store);
+                let attributeReadCount = 0;
+                store.readGitBaselineAttributePaths = async (
+                    ...args: Parameters<typeof readGitBaselineAttributePaths>
+                ) => {
+                    const paths = await readGitBaselineAttributePaths(...args);
+                    if (attributeReadCount++ === 0 && paths) projectionStartedAt = performance.now();
+                    return paths;
+                };
                 const captureEntries = store.captureEntries.bind(store);
                 store.captureEntries = async (...args: Parameters<typeof captureEntries>) => {
                     const captureEntriesStarted = performance.now();
@@ -275,9 +355,18 @@ export async function profileAgentRewindColdBaseline(
                         profile.authority.discoverScopeMs = roundMs(captureEntriesStarted - profile.captureStartedAt);
                     }
                     try {
-                        return await captureEntries(...args);
+                        const captured = await captureEntries(...args);
+                        if (gitBaselineStartedAt != null) {
+                            profile.authority.gitBaseline.overlayNewlyHashedBytes = captured.newlyHashedBytes;
+                        }
+                        return captured;
                     } finally {
-                        profile.authority.stableReaderAndHashMs = elapsedMs(captureEntriesStarted);
+                        const durationMs = elapsedMs(captureEntriesStarted);
+                        if (gitBaselineStartedAt != null) {
+                            profile.authority.gitBaseline.overlayCaptureMs = durationMs;
+                        } else {
+                            profile.authority.stableReaderAndHashMs = durationMs;
+                        }
                     }
                 };
                 const writeWorkspaceTree = store.writeWorkspaceTree.bind(store);
@@ -345,6 +434,10 @@ export async function profileAgentRewindColdBaseline(
             profile.authority.registryInitializeMs = roundMs(registryFinished - registryStarted);
             if (profile.captureFinishedAt != null) {
                 profile.authority.postCaptureInitializeMs = roundMs(registryFinished - profile.captureFinishedAt);
+            } else if (gitBaselineFinishedAt != null) {
+                profile.authority.gitBaseline.postBaselineInitializeMs = roundMs(
+                    registryFinished - gitBaselineFinishedAt
+                );
             }
         }
         delete profile.captureStartedAt;
