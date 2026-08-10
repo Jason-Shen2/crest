@@ -10,6 +10,10 @@
 - `2026-08-02-agent-rewind-recovery-simplification-design.md`
 - `2026-08-04-agent-workspace-rewind-incremental-snapshot-design.md`
 
+**完整优化复盘：**
+
+- `../reports/2026-08-10-agent-workspace-rewind-optimization-retrospective.md`
+
 本文是 2026-08-04 增量快照设计的后继方案。旧设计和 benchmark 保留为问题发现、
 优化过程和历史证据；本文替代其下一阶段目标架构，最终完成状态以实施计划中的 correctness/tsc
 与 closeout 门禁为准。
