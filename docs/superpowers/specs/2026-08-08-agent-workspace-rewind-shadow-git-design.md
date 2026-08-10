@@ -387,3 +387,15 @@ profiling 的小步优化。除非新的测量证明必要，不因此增加 pat
 该结果只证明合成 Git fixture 在 200k scanned-entry 硬上限内通过。真实 monorepo 的 attributes、partial clone、
 nested repository、超大 blob、磁盘压力和持续外部写入仍由专项 correctness/环境验证覆盖，不能从本次容量门禁
 外推为无条件支持。
+
+### macOS watcher 与 Workspace identity 补强（2026-08-10）
+
+真实 Parcel/FSEvents 验证表明，macOS 会随子路径变化上报 Workspace root 的非 `delete` 元数据事件。旧逻辑
+将其当成 unsafe path 并触发全量 fallback；`8dcae962` 改为忽略该元数据事件，同时保留 root `delete` 的
+fail-closed 语义。
+
+由于 root replacement 也可能只上报 `update`，watcher 类型本身不足以证明 Workspace 未被替换。
+`609dd36a` 在每次 candidate publish 前复用 canonical Workspace identity，以 O(path depth) 的 `lstat` 链
+重新验证 root identity；因此正常子变化保持增量，replacement 仍 fail closed，而不需要新增 watcher 状态或
+全仓扫描。相关 51 项专项 tests 与 warm non-Git root replacement E2E 已通过。总体 correctness/tsc 与
+closeout 仍按实施计划保持未完成状态。

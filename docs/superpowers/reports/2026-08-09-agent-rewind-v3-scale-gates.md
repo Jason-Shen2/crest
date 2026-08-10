@@ -138,6 +138,17 @@ clean Git cold 通过 source-object pack + metadata projection 建立 private au
 clean tracked Workspace 内容作为 overlay；它不表示 Git pack 为 0 bytes。benchmark row 记录的是 Workspace
 新读取字节与 commit traversal，不记录所有 Git child process 总数，因此本轮不从这些 rows 推导未观测的进程数。
 
+## macOS 增量正确性补充
+
+规模门禁后的真实 watcher 验证发现，macOS 上 Parcel/FSEvents 会在子路径变化时额外上报 Workspace root
+的非 `delete` 元数据事件。旧 feed 把该事件误判为 unsafe path，导致本可增量处理的 turn 进入全量 fallback；
+`8dcae962` 忽略这类 root 元数据事件，同时继续把 root `delete` 视为不可信。
+
+独立复审随后发现 Workspace root replacement 也可能只表现为 `update`，不能只依赖 watcher event type。
+`609dd36a` 因此在每次 candidate publish 前复用 canonical Workspace identity 校验，以 O(path depth) 的
+`lstat` 链验证 root 未被替换，replacement 继续 fail closed。相关 51 项专项 tests 与 warm non-Git root
+replacement E2E 均通过；这些是增量边界的后续正确性证据，不代表总体 correctness/tsc 或 closeout 已完成。
+
 ## 生产判断
 
 本轮证明：在当前合成 Git fixture 和原 production limits 下，Shared Shadow Git 可以在 200,000 scanned-entry
