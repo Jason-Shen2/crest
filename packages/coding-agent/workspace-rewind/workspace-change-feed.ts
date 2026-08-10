@@ -162,6 +162,8 @@ function drainState(state: FeedState): WorkspaceChangeDrain {
 function addEvents(state: FeedState, events: readonly WorkspaceChangeEvent[]): void {
     if (!state.trusted && state.started) return;
     for (const event of events) {
+        // FSEvents reports the watched directory with child changes; only its deletion invalidates the feed.
+        if (event.path === state.workspaceRoot && event.type !== "delete") continue;
         let path: string;
         try {
             path = normalizeEventPath(state.workspaceRoot, event.path);

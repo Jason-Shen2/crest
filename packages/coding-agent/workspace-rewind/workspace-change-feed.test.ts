@@ -105,6 +105,25 @@ describe("ParcelWorkspaceChangeFeed", () => {
         expect(feed.isTrusted()).toBe(true);
     });
 
+    test("ignores the native watcher root directory event while retaining child paths", async () => {
+        await feed.start();
+        watcher.emit(
+            { path: workspaceRoot, type: "create" },
+            { path: join(workspaceRoot, "source.ts"), type: "update" }
+        );
+
+        await expect(feed.drain()).resolves.toEqual({ status: "complete", changedPaths: ["source.ts"] });
+        expect(feed.isTrusted()).toBe(true);
+    });
+
+    test("loses trust when the native watcher reports deletion of the workspace root", async () => {
+        await feed.start();
+        watcher.emit({ path: workspaceRoot, type: "delete" });
+
+        await expect(feed.drain()).resolves.toEqual({ status: "unavailable", reason: "unsafe-path" });
+        expect(feed.isTrusted()).toBe(false);
+    });
+
     test("ignores callbacks from a subscription replaced by restart", async () => {
         await feed.start();
         const staleCallback = [...watcher.callbacks][0]!;
