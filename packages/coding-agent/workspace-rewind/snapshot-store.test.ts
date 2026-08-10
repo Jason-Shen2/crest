@@ -60,31 +60,46 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
     it("saturates live overlay reserve before reducing both closure budgets", () => {
         const mib = 1024 ** 2;
         const requiredFree = 1024n ** 3n;
-        const overlayReserve = calculateObjectClosureOverlayReserveBytes([
-            {
-                kind: "file",
-                size: WorkspaceCheckpointLimits.maxNewlyHashedBytes - 1,
-            },
-            {
-                kind: "symlink",
-                size: Number.MAX_SAFE_INTEGER,
-            },
-            {
-                kind: "excluded",
-                size: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
-            },
-        ]);
+        const overlayReserve = calculateObjectClosureOverlayReserveBytes(
+            [
+                {
+                    path: "large.bin",
+                    kind: "file",
+                    size: WorkspaceCheckpointLimits.maxNewlyHashedBytes - 1,
+                },
+                {
+                    path: "link",
+                    kind: "symlink",
+                    size: Number.MAX_SAFE_INTEGER,
+                },
+                {
+                    path: "ignored",
+                    kind: "excluded",
+                    size: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+                },
+            ],
+            [],
+            4096n
+        );
 
         expect(overlayReserve).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib);
-        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "excluded", size: Number.MAX_VALUE }])).toBe(
-            64 * mib
-        );
-        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "file" }])).toBe(
+        expect(
+            calculateObjectClosureOverlayReserveBytes(
+                [{ path: "ignored", kind: "excluded", size: Number.MAX_VALUE }],
+                [],
+                4096n
+            )
+        ).toBe(64 * mib + 4096);
+        expect(calculateObjectClosureOverlayReserveBytes([{ path: "unknown", kind: "file" }], [], 4096n)).toBe(
             WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib
         );
-        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "symlink", size: Number.MAX_VALUE }])).toBe(
-            WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib
-        );
+        expect(
+            calculateObjectClosureOverlayReserveBytes(
+                [{ path: "unsafe", kind: "symlink", size: Number.MAX_VALUE }],
+                [],
+                4096n
+            )
+        ).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib);
         expect(
             calculateObjectClosurePackBudget(
                 overlayReserve + 32 * mib,
@@ -117,6 +132,37 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
                 overlayReserve
             )
         ).toBeUndefined();
+    });
+
+    it("reserves allocation blocks only for projected blobs and affected trees", () => {
+        const mib = 1024 ** 2;
+        const allocationUnit = 4096n;
+        const rootEntries = Array.from({ length: 200_000 }, (_, index) => ({
+            path: `tiny-${index}`,
+            kind: "file" as const,
+            size: 16,
+        }));
+
+        expect(calculateObjectClosureOverlayReserveBytes(rootEntries, [], allocationUnit)).toBe(
+            64 * mib + 200_001 * Number(allocationUnit)
+        );
+        expect(
+            calculateObjectClosureOverlayReserveBytes(
+                [{ path: "src/dirty.ts", kind: "file", size: 16 }],
+                [],
+                allocationUnit
+            )
+        ).toBe(64 * mib + 3 * Number(allocationUnit));
+        expect(
+            calculateObjectClosureOverlayReserveBytes(
+                [
+                    { path: "a/b/c/one", kind: "file", size: 16 },
+                    { path: "a/b/c/two", kind: "symlink", size: 16 },
+                ],
+                [{ path: "a/b/d/gone" }],
+                allocationUnit
+            )
+        ).toBe(64 * mib + 7 * Number(allocationUnit));
     });
 
     it("full-reconciles directly to a raw workspace tree with scope and coverage", async () => {

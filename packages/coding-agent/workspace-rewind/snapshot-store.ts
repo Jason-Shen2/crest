@@ -607,7 +607,11 @@ export class WorkspaceSnapshotStore {
             ]);
             if (!projection) return undefined;
             const freeSpace = await assertFreeSpace(this.storeRoot, runtime);
-            const overlayReserveBytes = calculateObjectClosureOverlayReserveBytes(projection.captureEntries);
+            const overlayReserveBytes = calculateObjectClosureOverlayReserveBytes(
+                projection.captureEntries,
+                projection.absentEntries,
+                freeSpace.allocationUnit
+            );
             const maxPackBytes = calculateObjectClosurePackBudget(
                 quotaStatus.softQuotaBytes - quotaStatus.usedBytes,
                 freeSpace.availableBytes,
@@ -2656,6 +2660,7 @@ async function syncTree(root: string): Promise<void> {
 interface WorkspaceFreeSpaceEvidence {
     availableBytes: bigint;
     requiredBytes: bigint;
+    allocationUnit: bigint;
 }
 
 async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<WorkspaceFreeSpaceEvidence> {
@@ -2672,7 +2677,7 @@ async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<W
     if (availableBytes < requiredBytes) {
         throw new WorkspaceSnapshotStoreError("enospc", "Insufficient free space for workspace checkpoint");
     }
-    return { availableBytes, requiredBytes };
+    return { availableBytes, requiredBytes, allocationUnit: value.bsize };
 }
 
 export function calculateObjectClosurePackBudget(
@@ -2697,25 +2702,45 @@ export function calculateObjectClosurePackBudget(
 }
 
 export function calculateObjectClosureOverlayReserveBytes(
-    entries: readonly Pick<WorkspaceScopeEntry, "kind" | "size">[]
+    entries: readonly Pick<WorkspaceScopeEntry, "path" | "kind" | "size">[],
+    absentEntries: readonly { path: string }[],
+    allocationUnit: bigint
 ): number {
-    const captureLimit = WorkspaceCheckpointLimits.maxNewlyHashedBytes;
-    let captureBytes = 0;
+    const captureLimit = BigInt(WorkspaceCheckpointLimits.maxNewlyHashedBytes);
+    let rawContentReserve = 0n;
+    let newBlobCount = 0n;
+    const affectedAncestors = new Set<string>();
     for (const entry of entries) {
-        if (entry.kind === "excluded") continue;
-        const size = entry.size;
-        if (size == null || !Number.isSafeInteger(size) || size < 0) {
-            captureBytes = captureLimit;
-            break;
+        addAffectedAncestorPaths(affectedAncestors, entry.path);
+        if (entry.kind !== "excluded") {
+            newBlobCount++;
+            const size = entry.size;
+            if (size == null || !Number.isSafeInteger(size) || size < 0) {
+                rawContentReserve = captureLimit;
+                continue;
+            }
+            rawContentReserve += BigInt(size);
+            if (rawContentReserve > captureLimit) rawContentReserve = captureLimit;
         }
-        const remaining = captureLimit - captureBytes;
-        if (size >= remaining) {
-            captureBytes = captureLimit;
-            break;
-        }
-        captureBytes += size;
     }
-    return ObjectClosureFixedReserveBytes + captureBytes;
+    for (const entry of absentEntries) addAffectedAncestorPaths(affectedAncestors, entry.path);
+    const allocationReserve =
+        allocationUnit > 0n
+            ? (newBlobCount + BigInt(affectedAncestors.size) + 1n) * allocationUnit
+            : BigInt(Number.MAX_SAFE_INTEGER);
+    const variableReserve = rawContentReserve > allocationReserve ? rawContentReserve : allocationReserve;
+    const totalReserve = BigInt(ObjectClosureFixedReserveBytes) + variableReserve;
+    const saturated = totalReserve > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : totalReserve;
+    return Number(saturated);
+}
+
+function addAffectedAncestorPaths(ancestors: Set<string>, path: string | undefined): void {
+    if (!path) return;
+    let separator = path.indexOf("/");
+    while (separator > 0) {
+        ancestors.add(path.slice(0, separator));
+        separator = path.indexOf("/", separator + 1);
+    }
 }
 
 function makeMaintenanceRuntime(): CaptureRuntime {
