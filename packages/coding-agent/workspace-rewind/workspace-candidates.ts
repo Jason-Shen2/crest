@@ -1,6 +1,7 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, sep } from "node:path";
 
@@ -19,6 +20,7 @@ export interface GitWorkspaceCandidateBoundary {
     // Discovery stays read-only, so lifecycle code must first make both trees readable from shadowGitDir.
     sourceHeadTree: string;
     shadowTree: string;
+    indexFingerprint?: string;
 }
 
 export interface NonGitWorkspaceCandidateBoundary {
@@ -56,6 +58,7 @@ export class WorkspaceCandidates {
     gitBaseline = false;
     nonGitBaseline = false;
     observedGeneration = 0;
+    gitEvidence = "";
 
     constructor(options: WorkspaceCandidatesOptions) {
         if (!isAbsolute(options.workspaceRoot) || normalize(options.workspaceRoot) !== options.workspaceRoot) {
@@ -79,6 +82,10 @@ export class WorkspaceCandidates {
 
     observationToken(): number {
         return this.observedGeneration;
+    }
+
+    evidenceToken(): string {
+        return this.gitEvidence;
     }
 
     async startNonGitBaselineObservation(): Promise<boolean> {
@@ -168,6 +175,11 @@ export class WorkspaceCandidates {
                 }
                 const paths = canonicalPaths([...gitPaths, ...eligibleWatcherPaths]);
                 this.gitBaseline = true;
+                this.gitEvidence = createHash("sha256")
+                    .update(status.stdout)
+                    .update(Buffer.of(0))
+                    .update(shadowDifference.stdout)
+                    .digest("hex");
                 return { status: "complete", paths, reconciled };
             }
             return { status: "unavailable", reason: "watcher-error" };
@@ -210,7 +222,8 @@ function validGitBoundary(boundary: GitWorkspaceCandidateBoundary, workspaceRoot
         typeof boundary.workspacePrefix !== "string" ||
         typeof boundary.shadowGitDir !== "string" ||
         typeof boundary.sourceHeadTree !== "string" ||
-        typeof boundary.shadowTree !== "string"
+        typeof boundary.shadowTree !== "string" ||
+        (boundary.indexFingerprint != null && !/^[0-9a-f]{64}$/.test(boundary.indexFingerprint))
     ) {
         return false;
     }

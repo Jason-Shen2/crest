@@ -162,12 +162,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         const after = await fixture.store.capture({ profile: "terminal" });
 
         const changes = await fixture.store.diff(before.ref, after.ref);
-        expect(changes.map((change) => change.path)).toEqual([
-            "link",
-            "new-link",
-            "plain.txt",
-            "tool.sh",
-        ]);
+        expect(changes.map((change) => change.path)).toEqual(["link", "new-link", "plain.txt", "tool.sh"]);
         expect(changes.find((change) => change.path === "link")).toMatchObject({
             before: { state: "symlink" },
             after: { state: "file", executable: false },
@@ -595,6 +590,28 @@ describe("private V3 bare-store bootstrap safety", () => {
         await initializePrivateStore(input);
 
         await expect(lstat(abandoned)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+
+    it("removes a partially published object-import pack family during bootstrap", async () => {
+        const root = await temporaryBootstrapRoot("partial-object-pack");
+        const storeRoot = join(root, "repo.git");
+        const input = {
+            storeRoot,
+            git: new WorkspaceGitRunner(),
+            processOwner: await makeProcessOwnerIdentity(),
+        };
+        await initializePrivateStore(input);
+        const pack = "e".repeat(40);
+        const packRoot = join(storeRoot, "objects", "pack");
+        const packPath = join(packRoot, `pack-${pack}.pack`);
+        const revPath = join(packRoot, `pack-${pack}.rev`);
+        await writeFile(packPath, "partial pack");
+        await writeFile(revPath, "partial rev");
+
+        await initializePrivateStore(input);
+
+        await expect(lstat(packPath)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(lstat(revPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
 
     it("repairs every repository directory and file to owner-only permissions", async () => {

@@ -47,6 +47,11 @@ export interface GitRunOptions {
     signal?: AbortSignal;
     fsmonitor?: "builtin";
     pathspecMode?: "literal-magic";
+    effectiveConfig?: true;
+}
+
+export interface WorkspaceGitRunnerOptions {
+    effectiveGlobalConfigPath?: string;
 }
 
 export interface GitRunResult {
@@ -138,7 +143,10 @@ const SecureGitStateKey = Symbol.for("crest.workspace-rewind.git-runner.secure-p
 const SecureGitState = getSecureGitProcessState();
 
 export class WorkspaceGitRunner {
-    constructor(readonly executable = "git") {}
+    constructor(
+        readonly executable = "git",
+        readonly options: WorkspaceGitRunnerOptions = {}
+    ) {}
 
     async importObjectClosure(options: GitObjectClosureImportOptions): Promise<{ packBytes: number; pack: string }> {
         validateObjectClosureImportOptions(options);
@@ -332,19 +340,20 @@ export class WorkspaceGitRunner {
             `core.fsmonitor=${options.fsmonitor === "builtin" ? "true" : "false"}`,
             "-c",
             `core.hooksPath=${securePaths.hooks}`,
-            "-c",
-            "core.autocrlf=false",
+            ...(options.effectiveConfig ? [] : ["-c", "core.autocrlf=false"]),
             ...(options.gitDir == null ? [] : [`--git-dir=${options.gitDir}`]),
             ...(options.workTree == null ? [] : [`--work-tree=${options.workTree}`]),
             ...args,
         ];
-        const env = makeIsolatedEnv(
-            options.gitDir == null,
-            securePaths.globalConfig,
-            !checkIgnoreStdin && !checkAttrStdin && options.pathspecMode !== "literal-magic",
-            options.indexFile,
-            args[0] === "commit-tree"
-        );
+        const env = options.effectiveConfig
+            ? makeEffectiveReadOnlyEnv(!checkAttrStdin, options.indexFile, this.options.effectiveGlobalConfigPath)
+            : makeIsolatedEnv(
+                  options.gitDir == null,
+                  securePaths.globalConfig,
+                  !checkIgnoreStdin && !checkAttrStdin && options.pathspecMode !== "literal-magic",
+                  options.indexFile,
+                  args[0] === "commit-tree"
+              );
         let child;
 
         try {
@@ -506,6 +515,8 @@ function validateOptions(
     if (options.pathspecMode != null && (options.pathspecMode !== "literal-magic" || args[0] !== "ls-tree")) {
         throw makeError("invalid_options");
     }
+    if (options.effectiveConfig != null && options.effectiveConfig !== true) throw makeError("invalid_options");
+    if (options.effectiveConfig && !isSafeEffectiveConfigRead(args)) throw makeError("invalid_options");
     if ((isCheckIgnoreStdin(args) || isCheckAttrStdin(args)) && !isValidNulDelimitedPaths(options.stdin)) {
         throw makeError("invalid_options");
     }
@@ -656,6 +667,13 @@ function isCheckAttrStdin(args: readonly string[]): boolean {
         args[1] === "-z" &&
         args[2] === "--stdin" &&
         args[3] === "--all"
+    );
+}
+
+function isSafeEffectiveConfigRead(args: readonly string[]): boolean {
+    return (
+        isCheckAttrStdin(args) ||
+        (args.length === 3 && args[0] === "config" && args[1] === "--get-all" && args[2] === "core.autocrlf")
     );
 }
 
@@ -876,6 +894,8 @@ function makeIsolatedEnv(
     return {
         ...env,
         GIT_TERMINAL_PROMPT: "0",
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_NO_REPLACE_OBJECTS: "1",
         ...(literalPathspecs ? { GIT_LITERAL_PATHSPECS: "1" } : {}),
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: globalConfigPath,
@@ -883,6 +903,28 @@ function makeIsolatedEnv(
         ...(indexFile == null ? {} : { GIT_INDEX_FILE: indexFile }),
         ...(commitTree ? InternalCommitIdentity : {}),
         ...(discovery ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
+        LC_ALL: "C",
+    };
+}
+
+function makeEffectiveReadOnlyEnv(
+    literalPathspecs: boolean,
+    indexFile: string | undefined,
+    globalConfigPath: string | undefined
+): NodeJS.ProcessEnv {
+    const env = Object.fromEntries(
+        Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))
+    );
+    return {
+        ...env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_NO_LAZY_FETCH: "1",
+        GIT_NO_REPLACE_OBJECTS: "1",
+        ...(literalPathspecs ? { GIT_LITERAL_PATHSPECS: "1" } : {}),
+        ...(globalConfigPath == null
+            ? {}
+            : { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalConfigPath, GIT_ATTR_NOSYSTEM: "1" }),
+        ...(indexFile == null ? {} : { GIT_INDEX_FILE: indexFile }),
         LC_ALL: "C",
     };
 }

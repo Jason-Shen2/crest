@@ -49,6 +49,7 @@ import {
     StablePathReaderError,
     type StablePathReaderEntry,
     type StablePathReaderEntryIdentity,
+    type StablePathReaderResult,
 } from "./workspace-path-reader";
 import {
     discoverWorkspaceScope,
@@ -78,6 +79,9 @@ const QuotaMaxRefOutputBytes = 16 * 1024 ** 2;
 const QuotaMaxObjectOutputBytes = 64 * 1024 ** 2;
 const CandidateLookupMaxPaths = 512;
 const CandidateLookupMaxArgumentBytes = 128 * 1024;
+const StagedHashMaxPaths = 512;
+const StagedHashMaxInputBytes = 128 * 1024;
+const StagedCaptureMaxBytes = 64 * 1024 ** 2;
 const GitUnsafeAttributes = new Set(["text", "eol", "filter", "ident", "working-tree-encoding"]);
 
 export interface CaptureWorkspaceOptions {
@@ -178,6 +182,12 @@ interface GitBaselineTreeEntry {
 interface GitBaselineProjection {
     captureEntries: WorkspaceScopeEntry[];
     absentEntries: Array<{ path: string; pathBytes: Buffer; state: { state: "absent" } }>;
+}
+
+interface CapturedStablePathGroup {
+    stagingRoot: string;
+    entries: Array<{ source: WorkspaceScopeEntry & { path: string }; result: StablePathReaderResult }>;
+    hashedBytes: number;
 }
 
 interface TreeNode {
@@ -623,8 +633,15 @@ export class WorkspaceSnapshotStore {
                 options.sourceGit,
                 runtime
             );
-            if (!validatedAttributePaths || !samePaths(attributePaths, validatedAttributePaths)) return undefined;
-            if (!(await verifyWorkspaceScopeDirectories(scope, controller.signal))) return undefined;
+            if (!validatedAttributePaths || !samePaths(attributePaths, validatedAttributePaths)) {
+                throw new WorkspaceSnapshotStoreError("unstable_file", "Git attributes changed during cold capture");
+            }
+            if (!(await verifyWorkspaceScopeDirectories(scope, controller.signal))) {
+                throw new WorkspaceSnapshotStoreError(
+                    "unstable_file",
+                    "Workspace directories changed during cold capture"
+                );
+            }
             await this.#ensureObjectsDurableUnlocked([...runtime.objectIds], runtime);
             await raceWithAbort(verifyCanonicalWorkspaceIdentity(this.identity), controller.signal);
             SnapshotFingerprints.set(this, captured.fingerprints);
@@ -674,11 +691,12 @@ export class WorkspaceSnapshotStore {
     ): Promise<string[] | undefined> {
         let autocrlf = "false";
         try {
-            const configured = await sourceGit.run(["config", "--local", "--get-all", "core.autocrlf"], {
+            const configured = await sourceGit.run(["config", "--get-all", "core.autocrlf"], {
                 cwd: sourceRoot,
                 timeoutMs: remainingTimeout(runtime.deadline),
                 signal: runtime.signal,
                 maxStdoutBytes: 1024,
+                effectiveConfig: true,
             });
             autocrlf = configured.stdout.toString("utf8").trim().toLowerCase();
         } catch (error) {
@@ -693,6 +711,7 @@ export class WorkspaceSnapshotStore {
                 stdin: Buffer.concat(sourceEntries.map((entry) => Buffer.from(`${entry.path}\0`))),
                 timeoutMs: remainingTimeout(runtime.deadline),
                 signal: runtime.signal,
+                effectiveConfig: true,
             });
             if (attributes.stderr.length !== 0) return undefined;
             return parseUnsafeGitAttributePaths(attributes.stdout, new Set(sourceEntries.map((entry) => entry.path)));
@@ -1422,22 +1441,76 @@ export class WorkspaceSnapshotStore {
         const stagingRoot = await mkdtemp(join(this.storeRoot, "journal", "capture-"));
         await securePathWithHandle(stagingRoot, 0o700, "directory");
         try {
-            for (const [parent, group] of groups) {
-                const captured = await this.captureStablePathGroup(
-                    parent,
-                    group,
-                    stagingRoot,
-                    maxNewlyHashedBytes - newlyHashedBytes,
+            let capturedGroups: CapturedStablePathGroup[] = [];
+            let stagedPathCount = 0;
+            let stagedInputBytes = 0;
+            let stagedBytes = 0;
+            const flush = async () => {
+                if (capturedGroups.length === 0) return;
+                const staged = capturedGroups.flatMap((group) =>
+                    group.entries.filter(
+                        (
+                            entry
+                        ): entry is typeof entry & {
+                            result: StablePathReaderResult & { stagingPath: string };
+                        } => entry.result.stagingPath != null
+                    )
+                );
+                const stagedOids = await this.hashStagedPaths(
+                    staged.map((entry) => entry.result.stagingPath),
                     runtime
                 );
-                newlyHashedBytes += captured.hashedBytes;
-                for (const item of captured.entries) {
-                    states.set(item.path, item.state);
-                    if (item.fingerprint) {
-                        fingerprints.set(item.path, item.fingerprint);
+                const oidByStagingPath = new Map(
+                    staged.map((entry, index) => [entry.result.stagingPath, stagedOids[index]!])
+                );
+                for (const group of capturedGroups) {
+                    for (const { source, result } of group.entries) {
+                        const oid = result.reusedOid ?? oidByStagingPath.get(result.stagingPath!)!;
+                        const identity = deserializeFingerprint(result.identity, oid);
+                        states.set(
+                            result.path,
+                            source.kind === "symlink"
+                                ? { state: "symlink", oid }
+                                : { state: "file", oid, executable: (identity.mode & 0o111n) !== 0n }
+                        );
+                        if (source.kind === "file") fingerprints.set(result.path, identity);
                     }
+                    await rm(group.stagingRoot, { recursive: true, force: true });
+                }
+                capturedGroups = [];
+                stagedPathCount = 0;
+                stagedInputBytes = 0;
+                stagedBytes = 0;
+            };
+            for (const [parent, group] of groups) {
+                for (const entryChunk of chunkStableCaptureEntries(group)) {
+                    const captured = await this.captureStablePathGroup(
+                        parent,
+                        entryChunk,
+                        stagingRoot,
+                        maxNewlyHashedBytes - newlyHashedBytes,
+                        runtime
+                    );
+                    const stagedPaths = captured.entries.flatMap((entry) =>
+                        entry.result.stagingPath == null ? [] : [entry.result.stagingPath]
+                    );
+                    const inputBytes = stagedPaths.reduce((total, path) => total + Buffer.byteLength(path) + 1, 0);
+                    if (
+                        capturedGroups.length > 0 &&
+                        (stagedPathCount + stagedPaths.length > StagedHashMaxPaths ||
+                            stagedInputBytes + inputBytes > StagedHashMaxInputBytes ||
+                            stagedBytes + captured.hashedBytes > StagedCaptureMaxBytes)
+                    ) {
+                        await flush();
+                    }
+                    newlyHashedBytes += captured.hashedBytes;
+                    capturedGroups.push(captured);
+                    stagedPathCount += stagedPaths.length;
+                    stagedInputBytes += inputBytes;
+                    stagedBytes += captured.hashedBytes;
                 }
             }
+            await flush();
         } finally {
             await rm(stagingRoot, { recursive: true, force: true });
         }
@@ -1457,34 +1530,27 @@ export class WorkspaceSnapshotStore {
         stagingRoot: string,
         remainingByteBudget: number,
         runtime: CaptureRuntime
-    ): Promise<{
-        entries: Array<{ path: string; state: CapturedPathStateV1; fingerprint?: FileFingerprint }>;
-        hashedBytes: number;
-    }> {
+    ): Promise<CapturedStablePathGroup> {
         let currentEntries = entries;
         for (let attempt = 0; attempt < 2; attempt++) {
             assertCaptureActive(runtime.deadline, runtime.signal);
             const attemptRoot = await mkdtemp(join(stagingRoot, "group-"));
             await securePathWithHandle(attemptRoot, 0o700, "directory");
-            let captured:
-                | {
-                      entries: Array<{ path: string; state: CapturedPathStateV1; fingerprint?: FileFingerprint }>;
-                      hashedBytes: number;
-                  }
-                | undefined;
+            let captured: CapturedStablePathGroup | undefined;
             let failure: unknown;
             try {
-                captured = await this.captureStablePathGroupAttempt(
+                const result = await this.captureStablePathGroupAttempt(
                     parent,
                     currentEntries,
                     attemptRoot,
                     remainingByteBudget,
                     runtime
                 );
+                captured = { ...result, stagingRoot: attemptRoot };
             } catch (error) {
                 failure = error;
             } finally {
-                await rm(attemptRoot, { recursive: true, force: true });
+                if (!captured) await rm(attemptRoot, { recursive: true, force: true });
             }
             if (captured) {
                 return captured;
@@ -1505,7 +1571,7 @@ export class WorkspaceSnapshotStore {
         remainingByteBudget: number,
         runtime: CaptureRuntime
     ): Promise<{
-        entries: Array<{ path: string; state: CapturedPathStateV1; fingerprint?: FileFingerprint }>;
+        entries: Array<{ source: WorkspaceScopeEntry & { path: string }; result: StablePathReaderResult }>;
         hashedBytes: number;
     }> {
         const parentIdentity = entries[0]?.parentIdentity;
@@ -1545,34 +1611,13 @@ export class WorkspaceSnapshotStore {
             timeoutMs: remainingTimeout(runtime.deadline),
             signal: runtime.signal,
         });
-        const staged = results.filter(
-            (result): result is typeof result & { stagingPath: string } => result.stagingPath != null
-        );
-        const oids = await this.hashStagedPaths(
-            staged.map((result) => result.stagingPath),
-            runtime
-        );
         const sources = new Map(entries.map((entry) => [entry.path!, entry]));
-        let oidIndex = 0;
         return {
             hashedBytes: results.reduce((total, result) => total + result.hashedBytes, 0),
-            entries: results.map((result) => {
-                const oid = result.reusedOid ?? oids[oidIndex++]!;
-                const source = sources.get(result.path)!;
-                const identity = deserializeFingerprint(result.identity, oid);
-                return {
-                    path: result.path,
-                    state:
-                        source.kind === "symlink"
-                            ? { state: "symlink" as const, oid }
-                            : {
-                                  state: "file" as const,
-                                  oid,
-                                  executable: (identity.mode & 0o111n) !== 0n,
-                              },
-                    ...(source.kind === "file" ? { fingerprint: identity } : {}),
-                };
-            }),
+            entries: results.map((result) => ({
+                source: sources.get(result.path)! as WorkspaceScopeEntry & { path: string },
+                result,
+            })),
         };
     }
 
@@ -1639,19 +1684,23 @@ export class WorkspaceSnapshotStore {
         if (paths.some((path) => path.includes("\n") || path.includes("\0"))) {
             throw new Error("Invalid snapshot staging path");
         }
-        const result = await this.git.run(["hash-object", "-w", "--stdin-paths", "--no-filters"], {
-            gitDir: this.storeRoot,
-            stdin: Buffer.from(`${paths.join("\n")}\n`),
-            timeoutMs: remainingTimeout(runtime.deadline),
-            signal: runtime.signal,
-        });
-        const oids = splitLines(result.stdout);
-        if (oids.length !== paths.length) {
-            throw new Error("Git returned an invalid staged object count");
-        }
-        for (const oid of oids) {
-            validateOid(oid);
-            runtime.objectIds.add(oid);
+        const oids: string[] = [];
+        for (const chunk of chunkStagedHashPaths(paths)) {
+            const result = await this.git.run(["hash-object", "-w", "--stdin-paths", "--no-filters"], {
+                gitDir: this.storeRoot,
+                stdin: Buffer.from(`${chunk.join("\n")}\n`),
+                timeoutMs: remainingTimeout(runtime.deadline),
+                signal: runtime.signal,
+            });
+            const chunkOids = splitLines(result.stdout);
+            if (chunkOids.length !== chunk.length) {
+                throw new Error("Git returned an invalid staged object count");
+            }
+            for (const oid of chunkOids) {
+                validateOid(oid);
+                runtime.objectIds.add(oid);
+            }
+            oids.push(...chunkOids);
         }
         return oids;
     }
@@ -1902,6 +1951,7 @@ async function initializePrivateStoreImpl(input: {
             await initializeBareRepository(input.storeRoot, input.git);
         }
         await removeAbandonedObjectImports(input.storeRoot);
+        await removeIncompletePublishedPacks(input.storeRoot);
         await repairStorePermissions(input.storeRoot);
         await verifyPrivateStore(input.storeRoot, input.git);
     } finally {
@@ -1924,6 +1974,31 @@ async function removeAbandonedObjectImports(storeRoot: string): Promise<void> {
         removed = true;
     }
     if (removed) await syncDirectory(objects);
+}
+
+async function removeIncompletePublishedPacks(storeRoot: string): Promise<void> {
+    const packRoot = join(storeRoot, "objects", "pack");
+    const entries = await readdir(packRoot, { withFileTypes: true });
+    const families = new Map<string, Map<string, string>>();
+    for (const entry of entries) {
+        const match = /^pack-([0-9a-f]{40})\.(pack|idx|rev)$/.exec(entry.name);
+        if (!match) continue;
+        const path = join(packRoot, entry.name);
+        const state = await lstat(path);
+        if (!entry.isFile() || state.isSymbolicLink()) throw new Error("Unsafe published pack path");
+        const family = families.get(match[1]!) ?? new Map<string, string>();
+        family.set(match[2]!, path);
+        families.set(match[1]!, family);
+    }
+    let removed = false;
+    for (const family of families.values()) {
+        const hasPack = family.has("pack");
+        const hasIndex = family.has("idx");
+        if (hasPack && hasIndex) continue;
+        for (const path of family.values()) await unlink(path);
+        removed = true;
+    }
+    if (removed) await syncDirectory(packRoot);
 }
 
 async function initializeBareRepository(
@@ -2666,6 +2741,7 @@ function planGitBaselineProjection(
         }
     }
     for (const entry of physical.values()) {
+        if (entry.size == null || entry.size > WorkspaceCheckpointInternalLimits.maxSingleFileBytes) return undefined;
         const sourceEntry = source.get(entry.path!);
         const expectedMode = entry.kind === "symlink" ? "120000" : entry.executable === true ? "100755" : "100644";
         if (
@@ -3338,6 +3414,43 @@ function chunkCandidateLookupPaths(paths: readonly string[]): string[][] {
         }
         chunk.push(path);
         bytes += pathBytes;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+    return chunks;
+}
+
+function chunkStagedHashPaths(paths: readonly string[]): string[][] {
+    const chunks: string[][] = [];
+    let chunk: string[] = [];
+    let bytes = 0;
+    for (const path of paths) {
+        const pathBytes = Buffer.byteLength(path) + 1;
+        if (chunk.length > 0 && (chunk.length >= StagedHashMaxPaths || bytes + pathBytes > StagedHashMaxInputBytes)) {
+            chunks.push(chunk);
+            chunk = [];
+            bytes = 0;
+        }
+        if (pathBytes > StagedHashMaxInputBytes) throw new Error("Snapshot staging path exceeds its input budget");
+        chunk.push(path);
+        bytes += pathBytes;
+    }
+    if (chunk.length > 0) chunks.push(chunk);
+    return chunks;
+}
+
+function chunkStableCaptureEntries(entries: readonly WorkspaceScopeEntry[]): WorkspaceScopeEntry[][] {
+    const chunks: WorkspaceScopeEntry[][] = [];
+    let chunk: WorkspaceScopeEntry[] = [];
+    let bytes = 0;
+    for (const entry of entries) {
+        const entryBytes = entry.size ?? StagedCaptureMaxBytes;
+        if (chunk.length > 0 && (chunk.length >= StagedHashMaxPaths || bytes + entryBytes > StagedCaptureMaxBytes)) {
+            chunks.push(chunk);
+            chunk = [];
+            bytes = 0;
+        }
+        chunk.push(entry);
+        bytes += entryBytes;
     }
     if (chunk.length > 0) chunks.push(chunk);
     return chunks;

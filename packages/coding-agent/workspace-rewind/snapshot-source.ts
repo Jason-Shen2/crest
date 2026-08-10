@@ -1,11 +1,14 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { isAbsolute, join, normalize, relative, sep } from "node:path";
+import { createHash } from "node:crypto";
+import { lstat } from "node:fs/promises";
+import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import {
     WorkspaceCheckpointLimits,
+    WorkspaceSnapshotStoreError,
     type CaptureWorkspaceOptions,
     type ReconciledWorkspaceState,
     type WorkspaceSnapshotStore,
@@ -134,13 +137,24 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             if (discovered.status !== "complete") return undefined;
             paths = mergeCandidatePaths(paths, discovered.paths);
             const observationToken = this.candidates.observationToken();
-            const captured = await this.store.captureGitBaseline({
-                sourceRoot: this.store.identity.canonicalRoot,
-                sourceTree: boundary.sourceHeadTree,
-                sourceGit: this.candidates.userGit,
-                candidatePaths: paths,
-                signal,
-            });
+            const evidenceToken = this.candidates.evidenceToken();
+            let captured: CapturedWorkspaceState | undefined;
+            try {
+                captured = await this.store.captureGitBaseline({
+                    sourceRoot: this.store.identity.canonicalRoot,
+                    sourceTree: boundary.sourceHeadTree,
+                    sourceGit: this.candidates.userGit,
+                    candidatePaths: paths,
+                    signal,
+                });
+            } catch (error) {
+                if (!(error instanceof WorkspaceSnapshotStoreError) || error.code !== "unstable_file") throw error;
+                if (attempt === 1) throw error;
+                const nextBoundary = await this.readCandidateBoundary(undefined, signal);
+                if (nextBoundary.kind !== "git") return undefined;
+                boundary = nextBoundary;
+                continue;
+            }
             if (!captured) return undefined;
             const collectionBoundary = await this.readCandidateBoundary(undefined, signal);
             const validation = await this.candidates.collect(collectionBoundary, signal);
@@ -152,7 +166,8 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                 !candidateBoundariesEqual(boundary, collectionBoundary) ||
                 !candidateBoundariesEqual(collectionBoundary, validationBoundary) ||
                 nextPaths.length !== paths.length ||
-                this.candidates.observationToken() !== observationToken;
+                this.candidates.observationToken() !== observationToken ||
+                this.candidates.evidenceToken() !== evidenceToken;
             if (!changed) return captured;
             if (attempt === 1) throw new Error("Workspace changed during Git baseline capture");
             boundary = validationBoundary;
@@ -431,6 +446,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         let sourceHeadTree: string;
         let repositoryRoot: string;
         let workspacePrefix: string;
+        let indexFingerprint: string;
         try {
             const inside = await userGit.run(["rev-parse", "--is-inside-work-tree"], {
                 cwd: this.store.identity.canonicalRoot,
@@ -456,6 +472,22 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
                 maxStdoutBytes: 128,
             });
             sourceHeadTree = parseOid(head.stdout);
+            const index = await userGit.run(["rev-parse", "--git-path", "index"], {
+                cwd: repositoryRoot,
+                timeoutMs: WorkspaceCheckpointLimits.terminalTimeoutMs,
+                signal,
+                maxStdoutBytes: 16 * 1024,
+            });
+            const indexPath = parseGitPath(index.stdout, index.stderr);
+            const indexState = await lstat(isAbsolute(indexPath) ? indexPath : resolve(repositoryRoot, indexPath), {
+                bigint: true,
+            });
+            indexFingerprint = createHash("sha256")
+                .update(
+                    [indexState.dev, indexState.ino, indexState.size, indexState.mtimeNs, indexState.ctimeNs].join(":"),
+                    "utf8"
+                )
+                .digest("hex");
         } catch {
             signal?.throwIfAborted();
             return { kind: "non-git" };
@@ -470,6 +502,7 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
             shadowGitDir: this.store.storeRoot,
             sourceHeadTree,
             shadowTree: shadowTree ?? sourceHeadTree,
+            indexFingerprint,
         };
     }
 
@@ -576,8 +609,18 @@ function candidateBoundariesEqual(left: WorkspaceCandidateBoundary, right: Works
         left.repositoryRoot === right.repositoryRoot &&
         left.workspacePrefix === right.workspacePrefix &&
         left.sourceHeadTree === right.sourceHeadTree &&
-        left.shadowTree === right.shadowTree
+        left.shadowTree === right.shadowTree &&
+        left.indexFingerprint === right.indexFingerprint
     );
+}
+
+function parseGitPath(stdout: Buffer, stderr: Buffer): string {
+    if (stderr.length !== 0 || stdout.length === 0 || stdout.at(-1) !== 0x0a)
+        throw new Error("Invalid Git path output");
+    const bytes = stdout.subarray(0, -1);
+    const path = bytes.toString("utf8");
+    if (!path || path.includes("\0") || !Buffer.from(path).equals(bytes)) throw new Error("Invalid Git path output");
+    return path;
 }
 
 function parseGitTopLevel(stdout: Buffer, stderr: Buffer): string {

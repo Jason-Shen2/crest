@@ -172,6 +172,8 @@ describe.sequential("WorkspaceGitRunner", () => {
             expect(report.gitEnv.GIT_CUSTOM_PATHSPECS).toBeUndefined();
             expect(report.gitEnv.Git_MIXED_PATHSPECS).toBeUndefined();
             expect(report.gitEnv.GIT_TERMINAL_PROMPT).toBe("0");
+            expect(report.gitEnv.GIT_NO_LAZY_FETCH).toBe("1");
+            expect(report.gitEnv.GIT_NO_REPLACE_OBJECTS).toBe("1");
             expect(report.gitEnv.GIT_LITERAL_PATHSPECS).toBe("1");
             expect(report.lcAll).toBe("C");
             await expect(stat(shellMarker)).rejects.toMatchObject({ code: "ENOENT" });
@@ -647,13 +649,18 @@ describe.sequential("WorkspaceGitRunner", () => {
         const pidPath = join(root, "abort.pid");
         const controller = new AbortController();
         const runPromise = runner.run(["hash-object", "wait", pidPath], {
-            timeoutMs: 2_000,
+            timeoutMs: 5_000,
             signal: controller.signal,
         });
 
-        await expect(readPidEventually(pidPath)).resolves.toBeGreaterThan(0);
-        controller.abort();
-        await expect(runPromise).rejects.toMatchObject({ code: "aborted" });
+        try {
+            await expect(readPidEventually(pidPath)).resolves.toBeGreaterThan(0);
+            controller.abort();
+            await expect(runPromise).rejects.toMatchObject({ code: "aborted" });
+        } finally {
+            controller.abort();
+            await runPromise.catch(() => undefined);
+        }
 
         const pid = Number(await readFile(pidPath, "utf8"));
         expect(() => process.kill(pid, 0)).toThrow();
@@ -945,14 +952,15 @@ describe.sequential("WorkspaceGitRunner", () => {
 });
 
 async function readPidEventually(path: string): Promise<number> {
-    for (let attempt = 0; attempt < 100; attempt++) {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
         try {
             return Number(await readFile(path, "utf8"));
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
                 throw error;
             }
-            await new Promise((resolve) => setTimeout(resolve, 5));
+            await new Promise((resolve) => setTimeout(resolve, 10));
         }
     }
     throw new Error("fake Git did not write its pid");
