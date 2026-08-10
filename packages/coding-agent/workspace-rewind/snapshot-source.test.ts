@@ -27,7 +27,7 @@ import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import { ShadowWorkspaceIndex } from "./shadow-workspace-index";
 import { initializeWorkspaceCheckpointSnapshotSource, type WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
-import { WorkspaceSnapshotStore } from "./snapshot-store";
+import { WorkspaceCheckpointLimits, WorkspaceSnapshotStore } from "./snapshot-store";
 import type { WorkspaceSnapshotCoverage, WorkspaceSnapshotRefV1 } from "./types";
 import { WorkspaceCandidates } from "./workspace-candidates";
 import type { WorkspaceChangeDrain, WorkspaceChangeFeed } from "./workspace-change-feed";
@@ -673,6 +673,7 @@ describe("Workspace checkpoint snapshot source", () => {
             processOwner: { pid: process.pid, processStartToken: "git-cold-projection", nonce: "8".repeat(64) },
         });
         const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const importObjectClosure = vi.spyOn(git, "importObjectClosure");
         const run = git.run.bind(git);
         let recursiveTreeListings = 0;
         let individualTreeReads = 0;
@@ -709,6 +710,10 @@ describe("Workspace checkpoint snapshot source", () => {
 
         expect(fullReconcile).not.toHaveBeenCalled();
         expect(newlyHashedBytes).toBe(dirtyBytes.length + untrackedBytes.length + distributedBytes.length * 16);
+        expect(importObjectClosure).toHaveBeenCalledOnce();
+        expect(importObjectClosure.mock.calls[0]![0].maxPackBytes).toBeLessThanOrEqual(
+            WorkspaceCheckpointLimits.softQuotaBytes - 64 * 1024 ** 2 - newlyHashedBytes
+        );
         expect(clean).toMatchObject({ state: "file" });
         expect(dirty).toMatchObject({ state: "file" });
         expect(untracked).toMatchObject({ state: "file" });

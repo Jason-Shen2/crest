@@ -9,7 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { makeProcessOwnerIdentity } from "./process-owner";
-import { calculateObjectClosurePackBudget, initializePrivateStore, WorkspaceSnapshotStore } from "./snapshot-store";
+import {
+    calculateObjectClosureOverlayReserveBytes,
+    calculateObjectClosurePackBudget,
+    initializePrivateStore,
+    WorkspaceCheckpointLimits,
+    WorkspaceSnapshotStore,
+} from "./snapshot-store";
 import { resolveCanonicalWorkspaceIdentity } from "./workspace-identity";
 
 const TemporaryRoots: string[] = [];
@@ -25,18 +31,91 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
     it("reserves quota and filesystem headroom when budgeting a cold object closure", () => {
         const mib = 1024 ** 2;
         const requiredFree = 1024n ** 3n;
+        const fixedReserve = 64 * mib;
 
-        expect(calculateObjectClosurePackBudget(100 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree)).toBe(
-            36 * mib
-        );
-        expect(calculateObjectClosurePackBudget(5 * 1024 ** 3, requiredFree + 80n * BigInt(mib), requiredFree)).toBe(
-            16 * mib
-        );
         expect(
-            calculateObjectClosurePackBudget(5 * 1024 ** 3, requiredFree + 64n * BigInt(mib), requiredFree)
+            calculateObjectClosurePackBudget(100 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree, fixedReserve)
+        ).toBe(36 * mib);
+        expect(
+            calculateObjectClosurePackBudget(
+                5 * 1024 ** 3,
+                requiredFree + 80n * BigInt(mib),
+                requiredFree,
+                fixedReserve
+            )
+        ).toBe(16 * mib);
+        expect(
+            calculateObjectClosurePackBudget(
+                5 * 1024 ** 3,
+                requiredFree + 64n * BigInt(mib),
+                requiredFree,
+                fixedReserve
+            )
         ).toBeUndefined();
         expect(
-            calculateObjectClosurePackBudget(64 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree)
+            calculateObjectClosurePackBudget(64 * mib, requiredFree + 10n * 1024n ** 3n, requiredFree, fixedReserve)
+        ).toBeUndefined();
+    });
+
+    it("saturates live overlay reserve before reducing both closure budgets", () => {
+        const mib = 1024 ** 2;
+        const requiredFree = 1024n ** 3n;
+        const overlayReserve = calculateObjectClosureOverlayReserveBytes([
+            {
+                kind: "file",
+                size: WorkspaceCheckpointLimits.maxNewlyHashedBytes - 1,
+            },
+            {
+                kind: "symlink",
+                size: Number.MAX_SAFE_INTEGER,
+            },
+            {
+                kind: "excluded",
+                size: WorkspaceCheckpointLimits.maxNewlyHashedBytes,
+            },
+        ]);
+
+        expect(overlayReserve).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib);
+        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "excluded", size: Number.MAX_VALUE }])).toBe(
+            64 * mib
+        );
+        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "file" }])).toBe(
+            WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib
+        );
+        expect(calculateObjectClosureOverlayReserveBytes([{ kind: "symlink", size: Number.MAX_VALUE }])).toBe(
+            WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib
+        );
+        expect(
+            calculateObjectClosurePackBudget(
+                overlayReserve + 32 * mib,
+                requiredFree + BigInt(overlayReserve + 128 * mib),
+                requiredFree,
+                overlayReserve
+            )
+        ).toBe(32 * mib);
+        expect(
+            calculateObjectClosurePackBudget(
+                overlayReserve + 128 * mib,
+                requiredFree + BigInt(overlayReserve + 16 * mib),
+                requiredFree,
+                overlayReserve
+            )
+        ).toBe(16 * mib);
+        expect(
+            calculateObjectClosurePackBudget(
+                overlayReserve,
+                requiredFree + BigInt(overlayReserve + 128 * mib),
+                requiredFree,
+                overlayReserve
+            )
+        ).toBeUndefined();
+        expect(
+            calculateObjectClosurePackBudget(
+                overlayReserve + 128 * mib,
+                requiredFree + BigInt(overlayReserve),
+                requiredFree,
+                overlayReserve
+            )
         ).toBeUndefined();
     });
 

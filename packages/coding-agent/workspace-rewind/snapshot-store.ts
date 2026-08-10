@@ -83,7 +83,7 @@ const StagedHashMaxPaths = 512;
 const StagedHashMaxInputBytes = 128 * 1024;
 const StagedCaptureMaxBytes = 64 * 1024 ** 2;
 // Keep room for the concurrently written pack staging file, its index/rev metadata, and filesystem overhead.
-const ObjectClosureOverlayReserveBytes = 64 * 1024 ** 2;
+const ObjectClosureFixedReserveBytes = 64 * 1024 ** 2;
 const ColdIndexPrefix = "workspace-cold-baseline-";
 const GitUnsafeAttributes = new Set(["text", "eol", "crlf", "filter", "ident", "working-tree-encoding"]);
 
@@ -607,10 +607,12 @@ export class WorkspaceSnapshotStore {
             ]);
             if (!projection) return undefined;
             const freeSpace = await assertFreeSpace(this.storeRoot, runtime);
+            const overlayReserveBytes = calculateObjectClosureOverlayReserveBytes(projection.captureEntries);
             const maxPackBytes = calculateObjectClosurePackBudget(
                 quotaStatus.softQuotaBytes - quotaStatus.usedBytes,
                 freeSpace.availableBytes,
-                freeSpace.requiredBytes
+                freeSpace.requiredBytes,
+                overlayReserveBytes
             );
             if (maxPackBytes == null) return undefined;
             try {
@@ -2676,14 +2678,44 @@ async function assertFreeSpace(path: string, runtime: CaptureRuntime): Promise<W
 export function calculateObjectClosurePackBudget(
     quotaRemainingBytes: number,
     availableBytes: bigint,
-    requiredFreeBytes: bigint
+    requiredFreeBytes: bigint,
+    overlayReserveBytes: number
 ): number | undefined {
-    if (!Number.isSafeInteger(quotaRemainingBytes) || quotaRemainingBytes < 0) return undefined;
-    const reserve = BigInt(ObjectClosureOverlayReserveBytes);
+    if (
+        !Number.isSafeInteger(quotaRemainingBytes) ||
+        quotaRemainingBytes < 0 ||
+        !Number.isSafeInteger(overlayReserveBytes) ||
+        overlayReserveBytes < 0
+    ) {
+        return undefined;
+    }
+    const reserve = BigInt(overlayReserveBytes);
     const quotaBudget = BigInt(quotaRemainingBytes) - reserve;
     const filesystemBudget = availableBytes - requiredFreeBytes - reserve;
     const budget = quotaBudget < filesystemBudget ? quotaBudget : filesystemBudget;
     return budget > 0n ? Number(budget) : undefined;
+}
+
+export function calculateObjectClosureOverlayReserveBytes(
+    entries: readonly Pick<WorkspaceScopeEntry, "kind" | "size">[]
+): number {
+    const captureLimit = WorkspaceCheckpointLimits.maxNewlyHashedBytes;
+    let captureBytes = 0;
+    for (const entry of entries) {
+        if (entry.kind === "excluded") continue;
+        const size = entry.size;
+        if (size == null || !Number.isSafeInteger(size) || size < 0) {
+            captureBytes = captureLimit;
+            break;
+        }
+        const remaining = captureLimit - captureBytes;
+        if (size >= remaining) {
+            captureBytes = captureLimit;
+            break;
+        }
+        captureBytes += size;
+    }
+    return ObjectClosureFixedReserveBytes + captureBytes;
 }
 
 function makeMaintenanceRuntime(): CaptureRuntime {
