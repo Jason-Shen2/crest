@@ -1,10 +1,16 @@
-# Agent Rewind V3 生产规模门禁（草稿）
+# Agent Rewind V3 生产规模门禁
 
-日期：2026-08-09
+日期：2026-08-10
 
 平台：macOS arm64，Node.js v22.22.3
 
-命令：`npm run benchmark:agent-rewind-snapshots -- --entries=10000 --iterations=10`
+正式门禁命令：
+
+- `npm run benchmark:agent-rewind-snapshots -- --entries=50000 --iterations=10`
+- `npm run benchmark:agent-rewind-snapshots -- --entries=200000 --iterations=10`
+
+两档均使用原样 production limits：terminal capture 30 秒、最多 200,000 个 scanned entries、每个非 cold
+场景 10 iterations。没有提高 timeout、减少 iterations 或预构建 authority。
 
 ## 本轮优化
 
@@ -22,7 +28,10 @@ Git 子进程调用：逐级读取候选 node kind、逐路径重建 coverage、
 复杂度从“路径数 × 深度 × 多阶段 Git 进程”降为“固定元数据调用 + 路径深度批次数 + OID batch”。没有
 增加常驻数据库、第二套 journal 或新的全仓扫描器。
 
-## 10k × 10 结果
+## 历史基线：10k × 10
+
+本节是 Git-native cold baseline 落地前的历史数据，用于说明 candidate/diff 查询优化收益；其中 cold
+`bytesRead > 0` 不再代表当前算法。当前 Git-native clean cold 的 Workspace overlay bytes 为 0。
 
 22 个场景全部 `pass`，`fallbackCount` 全部为 0。
 
@@ -66,62 +75,67 @@ dirty100 相比旧实现的 60–90 秒/轮降至 2.84–3.30 秒 p95，约改�
 ]
 ```
 
-## 当前判断
+## 正式门禁结果
 
-10k 门禁已经证明 dirty100 不再发生进程数爆炸，但还不能单凭这一档宣布 200k 生产可用。下一步必须用相同
-10 iterations 与生产 limits 运行 50k、200k；同时观察 cold 是否落在 terminal 30 秒预算内、4-session 是否
-只是安全串行带来的线性等待，以及 candidateCount/bytesRead/fallback 是否保持与本次相同的边界关系。
+50k 和 200k 均先完成 deep，再完成 wide；只有 50k 的 22 行全部通过后才启动 200k。合计 44 行全部
+`outcome=pass`、`fallbackCount=0`，没有 `timeout`、`budget` 或 `unavailable`。fixture 已按 production
+scanned-entry budget 计数：50k deep/wide 分别包含 49,983/49,999 个 eligible files；200k deep/wide 分别包含
+199,981/199,999 个 eligible files，剩余预算是目录与根 `.git` repository boundary。
 
-## 50k × 10 结果
+### 50k × 10 p95
 
-命令：`npm run benchmark:agent-rewind-snapshots -- --entries=50000 --iterations=10`
+| shape | cold | no-tool | warm | dirty1 | dirty10 | dirty100 | session1 | session2 | session4 | overlap | restore |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep | 2902.01 | 780.73 | 693.91 | 1561.17 | 1636.13 | 3293.15 | 2647.98 | 6080.19 | 11405.18 | 6738.62 | 8443.55 |
+| wide | 3044.93 | 973.21 | 741.80 | 1618.26 | 1537.31 | 2928.22 | 2201.68 | 4490.52 | 8867.56 | 5436.70 | 5655.49 |
 
-deep 与 wide 的 cold authority 都在原样生产 terminal 30 秒预算下返回：
+### 200k × 10 p95
 
-```json
-[
-  {"shape":"deep","scenario":"cold","outcome":"timeout","entryCount":50000,"iterations":1,"candidateCount":0,"bytesRead":0,"commitsTraversed":0,"fallbackCount":0,"p50Ms":null,"p95Ms":null,"reason":"WorkspaceSnapshotStoreError: Workspace snapshot capture timed out"},
-  {"shape":"wide","scenario":"cold","outcome":"timeout","entryCount":50000,"iterations":1,"candidateCount":0,"bytesRead":0,"commitsTraversed":0,"fallbackCount":0,"p50Ms":null,"p95Ms":null,"reason":"WorkspaceSnapshotStoreError: Workspace snapshot capture timed out"}
-]
-```
+| shape | cold | no-tool | warm | dirty1 | dirty10 | dirty100 | session1 | session2 | session4 | overlap | restore |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| deep | 8296.67 | 1279.02 | 1164.42 | 2158.33 | 2382.25 | 4253.76 | 3353.12 | 6575.87 | 19628.61 | 8357.02 | 9798.50 |
+| wide | 7730.49 | 1263.36 | 1176.66 | 2123.48 | 2274.87 | 3930.94 | 3007.74 | 6029.03 | 11933.03 | 6944.59 | 7523.95 |
 
-每个 shape 的其余 10 个场景均按门禁契约返回 `unavailable`，`p50Ms/p95Ms` 为 `null`，原因统一为
-`cold authority unavailable: WorkspaceSnapshotStoreError: Workspace snapshot capture timed out`。这不是增量算法回归；
-它证明在 50k 下，产品尚未建立可供 warm/dirty/restore 使用的初始 authority，benchmark 因而没有伪造后续
-成功数据。
+单位均为毫秒。cold 只有一次 iteration，因此 p50=p95；其余值来自 10 iterations。fixture 文件生成与初始
+`git add/commit` 不包含在 row latency 内，不能把整条 CLI 的 wall time 当成产品 cold latency。
 
-因此当前生产容量结论是：**10k 合成 deep/wide 已通过完整矩阵；50k cold 未通过 30 秒生产门禁。** 在 50k
-已经无法建立 authority 的前提下，直接运行 200k 只能再次验证同一个已知 cold timeout，不会提供有效的
-增量容量数据。后续若要验证 50k/200k warm 算法，应先单独解决或预构建 cold authority，并把“后台 baseline
-容量”和“authority ready 后的增量边界容量”拆成两个不互相掩盖的门禁。
+## 增量边界与 Git traversal 指标
 
-200k 本轮状态明确记为 **gate-dependent paused**，不是“未执行所以未知”：50k 是 200k 的前置生产门禁，且
-两种 shape 都以同一 `capture_timeout` 失败。先运行 200k 会额外创建约 200k 文件并等待同一个 30 秒 deadline，
-却无法进入任何 warm/dirty/restore 场景。待 cold fast path 使 50k deep/wide 都能建立 authority 后，再按
-50k×10 → 200k×10 的顺序恢复验证，不能通过提高 timeout 或减少 iterations 绕过门禁。
+下表在 50k/200k、deep/wide 四组结果中完全一致，说明增量读取量由实际候选变化决定，没有随仓库总 entry
+数放大。数值是每个场景 10 iterations 的累计值；cold 除外。
 
-### 50k cold 分阶段 profile
+| scenario | candidateCount | bytesRead | commitsTraversed |
+| --- | ---: | ---: | ---: |
+| cold | 0 | 0 | 1 |
+| no-tool-fresh | 0 | 0 | 70 |
+| warm-no-change | 0 | 0 | 50 |
+| dirty1 | 10 | 110 | 100 |
+| dirty10 | 100 | 1200 | 100 |
+| dirty100 | 1000 | 13900 | 100 |
+| session1 | 1000 | 13900 | 60 |
+| session2 | 2000 | 27800 | 120 |
+| session4 | 4000 | 55600 | 240 |
+| overlap | 2000 | 27800 | 220 |
+| restore | 1000 | 13950 | 350 |
 
-profiling 复用相同生产 `WorkspaceSnapshotStore.captureFullReconcile({ profile: "terminal" })`，没有放宽 30 秒
-deadline。fixture 构造单独计时，不混入产品 authority 初始化。
+clean Git cold 通过 source-object pack + metadata projection 建立 private authority，`bytesRead=0` 表示没有读取
+clean tracked Workspace 内容作为 overlay；它不表示 Git pack 为 0 bytes。benchmark row 记录的是 Workspace
+新读取字节与 commit traversal，不记录所有 Git child process 总数，因此本轮不从这些 rows 推导未观测的进程数。
 
-deep 50k：
+## 生产判断
 
-```json
-{
-  "outcome": "timeout",
-  "fixture": {"createEntriesMs":28039.80,"initializeGitMs":36725.29,"identityMs":0.31,"totalMs":64766.62},
-  "authority": {"storeOpenMs":2693.12,"registryInitializeMs":35219.20,"captureTotalMs":32459.05,"scopeEnumeratedMs":12200.20,"discoverScopeMs":13044.95,"stableReaderAndHashMs":19390.19,"treeMaterializeMs":null,"postCaptureInitializeMs":0.54},
-  "scopeEntryCount": 50001
-}
-```
+本轮证明：在当前合成 Git fixture 和原 production limits 下，Shared Shadow Git 可以在 200,000 scanned-entry
+硬上限建立 cold authority，并完成 warm/no-op、1/10/100 dirty、1/2/4 Session contention、overlap 和 exact
+restore；没有依赖 full-reconcile fallback，也没有把失败行伪装成零延迟。
 
-Git command tracing在 capture 超时前只看到初始化/发现命令，没有 `hash-object`。也就是说 13.04 秒 scope
-discovery 后，剩余约 19.39 秒耗在单个大 parent group 的 anchored stable reader，reader 尚未返回就触发
-deadline；tree/materialize、对象 durability 和 snapshot publish 根本没有执行。50k blocker 因此不是本轮已修复
-的 candidate lookup/coverage/raw diff，而是 cold full reconcile 的文件发现与大组 stable read 路径。
+这是一项容量与正确性门禁通过，不是“所有延迟都理想”的结论：
 
-wide 50k 得到相同结论：fixture 构造 54.80 秒（不计入产品 capture）；registry initialize 35.73 秒，其中
-store open 2.72 秒、capture 32.94 秒。scope enumeration 9.55 秒，discover 总计 10.76 秒，随后
-stable reader/hash 运行 22.16 秒后 abort，仍未到达 `hash-object` 或 tree/materialize。两种拓扑的差异只改变
-discovery 与 reader 的时间分配，没有改变 blocker 所在阶段。
+- 200k cold p95 为 7.73–8.30 秒，低于 30 秒安全预算，但仍是明显的首次初始化等待；
+- 200k warm no-change p95 为 1.16–1.18 秒，读取字节为 0，但固定 Git metadata/commit 操作仍有成本；
+- 200k 4-Session p95 为 11.93 秒（wide）和 19.63 秒（deep），符合 writer lease 安全串行语义，但交互体验需要
+  后续独立优化或明确排队反馈；
+- 合成 fixture 不能替代真实 monorepo 的 attributes、partial clone、submodule/nested repo、超大 blob、磁盘压力和
+  持续外部写入验证；这些路径仍依赖现有 fail-closed coverage 与专项 correctness tests。
+
+因此当前可陈述的生产边界是：**合成 Git Workspace 在 200k scanned entries 内通过完整 Rewind V3 规模矩阵；
+多 Session 高并发延迟和真实仓库异质性仍是上线前需要单独评估的体验/环境风险。**

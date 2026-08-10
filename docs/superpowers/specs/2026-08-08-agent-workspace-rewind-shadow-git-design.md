@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-08
 
-**状态：** 已批准，待实施
+**状态：** 已实施；200k 合成 Git Workspace 生产规模门禁通过
 
 **上游设计：**
 
@@ -362,3 +362,27 @@ checkpoint-manager、engine、multi-Session 与 tool-independent 七文件 75/75
 `snapshot-source` 一项触发既有 5 秒并发 timeout，三文件 focused 为 45/45 PASS。A/B/C 后没有
 把该旧基线表述成 latest-HEAD full run，也没有提高 timeout 或伪报零延迟；Task 10 的 correctness
 gate 将负责重新执行完整门禁。
+
+## 实现记录：Task 10A Git-native cold 与规模门禁（2026-08-10）
+
+Git-native cold baseline 已按本文最小方案落地：clean tracked path 复用 source tree OID，受限 pack closure 导入
+private store，只对 dirty、untracked 或证据不安全的路径读取 live Workspace bytes。没有新增 durable cache、数据库、
+watcher WAL 或 recovery phase；full reconcile 仍是无法证明 source authority 时的 fail-closed fallback。
+
+正式规模门禁严格使用原 production limits（terminal 30 秒、最多 200,000 scanned entries）和 10 iterations，按
+50k 通过后再运行 200k 的顺序执行。50k 与 200k 的 deep/wide 共 44 rows 全部 `pass`，`fallbackCount=0`，没有
+timeout、budget 或 unavailable。200k cold p95 为 8.30 秒（deep）/7.73 秒（wide），warm no-change 为
+1.16/1.18 秒，dirty100 为 4.25/3.93 秒，restore 为 9.80/7.52 秒。
+
+增量边界符合设计：50k/200k 四组的 dirty1/10/100 十轮累计 candidateCount 均为 10/100/1000，Workspace
+bytesRead 均为 110/1200/13900；clean cold 和 warm no-change 的 Workspace bytesRead 为 0。仓库规模没有进入
+增量内容读取量。完整命令、逐场景 p95 和 traversal 指标见
+`docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`。
+
+门禁也暴露了没有必要用新架构掩盖的体验成本：200k 4-Session p95 为 19.63 秒（deep）/11.93 秒（wide）。
+这来自 writer lease 下的安全串行和每次 commit/candidate 操作；它不构成正确性失败，但需要排队反馈或后续基于
+profiling 的小步优化。除非新的测量证明必要，不因此增加 path MVCC、持久 cursor 或第二 authority。
+
+该结果只证明合成 Git fixture 在 200k scanned-entry 硬上限内通过。真实 monorepo 的 attributes、partial clone、
+nested repository、超大 blob、磁盘压力和持续外部写入仍由专项 correctness/环境验证覆盖，不能从本次容量门禁
+外推为无条件支持。

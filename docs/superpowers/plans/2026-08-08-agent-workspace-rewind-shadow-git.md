@@ -553,21 +553,21 @@ Task 9 did not raise timeouts, report zero latency, or claim that pre-closeout b
 - Test: `packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts`
 - Regression: `packages/coding-agent/workspace-rewind/snapshot-equivalence.integration.test.ts`
 
-- [ ] **Step 1: RED for a bounded private Git object closure import**
+- [x] **Step 1: RED for a bounded private Git object closure import**
 
 Require a SHA-1 source subtree pack to become independently readable from the private store. Prove abort,
 quota, missing partial-clone object, replace-object and nested-prefix boundaries fail closed without publishing
 a head or leaving a trusted temporary object source. A generic fetch, remote, durable cache or second state file
 is forbidden.
 
-- [ ] **Step 2: RED for Git-native cold projection**
+- [x] **Step 2: RED for Git-native cold projection**
 
 Require initialization with a clean Git Workspace to reuse source OIDs without stable-reading clean contents.
 Dirty/staged/deleted/untracked, CRLF/EOL, filter/ident/working-tree-encoding, executable, symlink and type ambiguity
 must capture the exact live bytes. Ignored, nested repository, hard-linked, special, sparse/absent and non-UTF-8
 coverage remains equivalent to an independent full reconcile.
 
-- [ ] **Step 3: Implement the minimum fast path**
+- [x] **Step 3: Implement the minimum fast path**
 
 Reuse source-boundary resolution, metadata scope discovery, candidate capture, `ShadowWorkspaceIndex` and the
 existing publication CAS. Stream one bounded source subtree pack into the private store, overlay only unsafe or
@@ -575,7 +575,7 @@ changed paths, and validate HEAD/index/status/feed/directory evidence before pub
 continued mutation is unavailable. Non-Git, unborn HEAD, non-SHA-1 and ambiguous source authority retain the full
 reconcile fallback. Do not add a database, watcher WAL, persistent cursor, pack cache or recovery phase.
 
-- [ ] **Step 4: Focused correctness and performance GREEN**
+- [x] **Step 4: Focused correctness and performance GREEN**
 
 ```bash
 npx vitest run packages/coding-agent/workspace-rewind/git-runner.test.ts packages/coding-agent/workspace-rewind/shadow-workspace-index.test.ts packages/coding-agent/workspace-rewind/snapshot-store.test.ts packages/coding-agent/workspace-rewind/snapshot-source.test.ts packages/coding-agent/workspace-rewind/snapshot-equivalence.integration.test.ts
@@ -594,11 +594,11 @@ all failure paths preserve the existing fail-closed result.
 - Modify: `docs/superpowers/specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md`
 - Create: `docs/superpowers/reports/2026-08-08-agent-rewind-shadow-git-validation.md`
 
-- [ ] **Step 1: Write failing benchmark contract tests**
+- [x] **Step 1: Write failing benchmark contract tests**
 
 Require cold, no-tool, warm no-change, 1/10/100 dirty paths, 1/2/4 Session contention, overlap, and restore rows with candidate count, bytes read, commits traversed, p50/p95, and pass/fallback/unavailable.
 
-- [ ] **Step 2: Run RED then update scripts**
+- [x] **Step 2: Run RED then update scripts**
 
 ```bash
 npx vitest run scripts/benchmark-agent-rewind-snapshots.test.ts
@@ -612,7 +612,7 @@ npx tsc --noEmit
 git diff --check
 ```
 
-- [ ] **Step 4: Run scale gates without raising limits**
+- [x] **Step 4: Run scale gates without raising limits**
 
 ```bash
 npm run benchmark:agent-rewind-snapshots -- --entries=10000 --iterations=10
@@ -621,6 +621,11 @@ npm run benchmark:agent-rewind-snapshots -- --entries=200000 --iterations=10
 ```
 
 Record timeout/fallback as a failure or explicit limitation; never replace it with zero latency.
+
+2026-08-10 evidence：50k 与 200k 的 deep/wide 共 44 rows 全部 pass，fallbackCount 为 0；原 terminal
+30 秒、200,000 scanned-entry 上限与 10 iterations 均未修改。完整结果见
+`docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`。Step 3 的 latest-HEAD 全量 correctness/tsc
+门禁尚未在本轮完成，因此保持未勾选，Step 5 也不提前宣告 closeout。
 
 - [ ] **Step 5: Close docs and commit evidence**
 
