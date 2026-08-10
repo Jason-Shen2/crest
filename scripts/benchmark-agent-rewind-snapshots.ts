@@ -69,7 +69,7 @@ export interface BenchmarkRow {
     candidateCount: number;
     bytesRead: number;
     commitsTraversed: number;
-    fullReconcileCount: number;
+    fallbackCount: number;
     p50Ms: number | null;
     p95Ms: number | null;
     reason?: string;
@@ -127,7 +127,7 @@ interface BenchmarkMetrics {
     candidateCount: number;
     bytesRead: number;
     commitsTraversed: number;
-    fallbackCount: number;
+    fullReconcileCount: number;
     reset(): void;
 }
 
@@ -830,7 +830,7 @@ function makeMeasuredRow(
         error?: unknown;
     }
 ): BenchmarkRow {
-    const fallbackCount = input.scenario === "cold" ? 0 : fixture.metrics.fullReconcileCount;
+    const fallbackCount = fixture.metrics.fullReconcileCount;
     const outcome = classifyOutcome(input.error, fallbackCount);
     return {
         scenario: input.scenario,
