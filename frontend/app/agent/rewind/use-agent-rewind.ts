@@ -141,7 +141,7 @@ export function useAgentRewind(options: UseAgentRewindOptions): AgentRewindContr
     const lifetimeRef = useRef(0);
     const selectorEpochRef = useRef(0);
     const selectionEpochRef = useRef(0);
-    const revealAbortRef = useRef<AbortController>();
+    const revealAbortRef = useRef<AbortController>(undefined);
     const previewEpochRef = useRef(0);
     const applyEpochRef = useRef(0);
     const applyInFlightRef = useRef(false);

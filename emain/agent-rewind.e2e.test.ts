@@ -29,8 +29,8 @@ vi.mock("electron", () => {
             const result = await handler(...args);
             if (!result || typeof result !== "object" || !Object.hasOwn(result, "ok")) return result;
             const envelope = result as { ok: true; value: unknown } | { ok: false; error: { message: string } };
-            if (envelope.ok) return envelope.value;
-            throw new Error(envelope.error.message);
+            if ("error" in envelope) throw new Error(envelope.error.message);
+            return envelope.value;
         };
         const call = handle.mock.calls.at(-1);
         if (call?.[0] === channel) call[1] = wrapped;
@@ -277,7 +277,6 @@ function TurnChangesE2EUi(props: {
             selectedPath: controller.dialog.selectedPath,
             loading: controller.dialog.phase === "loading",
             errorMessage: controller.dialog.errorMessage,
-            warnings: controller.dialog.preview?.coverageWarnings,
             locked: controller.dialog.phase === "applying",
             footer:
                 controller.dialog.kind === "review"
@@ -1371,10 +1370,12 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 eligibleTurnIds: [turnId],
             },
         });
-        expect((await value.session.getEntries()).map((entry) => [entry.type, entry.customType])).toContainEqual([
-            "custom",
-            WorkspaceControlCustomTypes.checkpoint,
-        ]);
+        expect(
+            (await value.session.getEntries()).map((entry) => [
+                entry.type,
+                entry.type === "custom" ? entry.customType : undefined,
+            ])
+        ).toContainEqual(["custom", WorkspaceControlCustomTypes.checkpoint]);
         expect(
             (await value.session.getEntries()).map(decodeWorkspaceCheckpointEntry).filter((entry) => entry != null)
         ).toEqual([expect.objectContaining({ status: "available", turnId })]);
