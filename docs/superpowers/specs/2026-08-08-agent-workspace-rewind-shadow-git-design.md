@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-08
 
-**状态：** 实施中；200k 合成 Git Workspace 生产规模门禁已通过，correctness/tsc 与 closeout 待完成
+**状态：** 功能实现完成，验证/closeout 中；200k 合成规模门禁已通过，repo-wide baseline gate 尚未闭合
 
 **上游设计：**
 
@@ -399,3 +399,15 @@ fail-closed 语义。
 重新验证 root identity；因此正常子变化保持增量，replacement 仍 fail closed，而不需要新增 watcher 状态或
 全仓扫描。相关 51 项专项 tests 与 warm non-Git root replacement E2E 已通过。总体 correctness/tsc 与
 closeout 仍按实施计划保持未完成状态。
+
+### Latest-HEAD 验证边界（2026-08-10）
+
+`0b013b07` 修复了本分支引入的两个 TypeScript 诊断；production validator 集成测试 1/1 通过。随后在真实
+Crest worktree（测试时 HEAD `0b013b07`，1,975 个 tracked files）执行生产 validator：cold 18,769.79 ms，
+warm 861.93 ms，4-Session 3,383.67 ms，fallback 为 0；Shadow refs 一致，source Workspace 未被改动，
+private store 为 14,524,416 bytes，cleanup 成功。
+
+最新 full correctness 结果为 913 pass、2 skip、1 个 suite aggregate timing failure；同一 E2E isolated
+运行通过。全仓 `tsc` 仍有 40 个文件、131 条既有 baseline diagnostics，而本分支目标文件
+`emain/agent-rewind.e2e.test.ts` 与 `frontend/app/agent/rewind/use-agent-rewind.ts` 为 0。由此可确认本功能实现
+完成并通过专项与真实 worktree 验证，但不能把 repo-wide exact gate 或全项目 production-ready 标为完成。

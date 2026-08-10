@@ -149,6 +149,20 @@ clean tracked Workspace 内容作为 overlay；它不表示 Git pack 为 0 bytes
 `lstat` 链验证 root 未被替换，replacement 继续 fail closed。相关 51 项专项 tests 与 warm non-Git root
 replacement E2E 均通过；这些是增量边界的后续正确性证据，不代表总体 correctness/tsc 或 closeout 已完成。
 
+## 真实 Crest worktree 验证
+
+`0b013b07` 先修复本分支引入的 TypeScript 诊断，production validator 集成测试 1/1 通过。真实 Crest
+worktree 验证在测试时 HEAD `0b013b07`、1,975 个 tracked files 上运行，结果如下：
+
+| cold | warm | 4 sessions | fallback | store |
+| ---: | ---: | ---: | ---: | ---: |
+| 18,769.79 ms | 861.93 ms | 3,383.67 ms | 0 | 14,524,416 bytes |
+
+验证同时确认 Shadow refs 一致、source Workspace 未被修改、cleanup 成功。full correctness 汇总为 913 pass、
+2 skip、1 个 aggregate suite timing failure，且该 E2E isolated 运行通过。全仓 `tsc` 仍有 40 个文件、
+131 条既有 baseline diagnostics；本分支目标两个 rewind 文件为 0。因此这些数据补足真实仓库专项证据，
+但不关闭 repo-wide exact gate，也不构成全项目 production-ready 声明。
+
 ## 生产判断
 
 本轮证明：在当前合成 Git fixture 和原 production limits 下，Shared Shadow Git 可以在 200,000 scanned-entry

@@ -612,6 +612,13 @@ npx tsc --noEmit
 git diff --check
 ```
 
+2026-08-10 latest evidence：`0b013b07` 已消除本分支目标两个 rewind 文件的 TypeScript 诊断，production
+validator 集成测试 1/1 通过；真实 Crest worktree（测试时 HEAD `0b013b07`，1,975 tracked files）得到
+cold 18,769.79 ms、warm 861.93 ms、4-Session 3,383.67 ms、fallback 0，且 refs 一致、source 未变、
+store 14,524,416 bytes、cleanup 成功。full correctness 为 913 pass、2 skip、1 个 aggregate suite timing
+failure，该 E2E isolated 通过；全仓 `tsc` 仍有 40 个文件、131 条 baseline diagnostics，目标两个文件为 0。
+因此功能实现与专项验证完成，但 Step 3 的 repo-wide exact gate 保持未勾选。
+
 - [x] **Step 4: Run scale gates without raising limits**
 
 ```bash
