@@ -2728,7 +2728,7 @@ export function calculateObjectClosureOverlayReserveBytes(
         allocationUnit > 0n
             ? (newBlobCount + BigInt(affectedAncestors.size) + 1n) * allocationUnit
             : BigInt(Number.MAX_SAFE_INTEGER);
-    const variableReserve = rawContentReserve > allocationReserve ? rawContentReserve : allocationReserve;
+    const variableReserve = rawContentReserve + allocationReserve;
     const totalReserve = BigInt(ObjectClosureFixedReserveBytes) + variableReserve;
     const saturated = totalReserve > BigInt(Number.MAX_SAFE_INTEGER) ? BigInt(Number.MAX_SAFE_INTEGER) : totalReserve;
     return Number(saturated);

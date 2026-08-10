@@ -82,7 +82,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
             4096n
         );
 
-        expect(overlayReserve).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib);
+        expect(overlayReserve).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib + 3 * 4096);
         expect(
             calculateObjectClosureOverlayReserveBytes(
                 [{ path: "ignored", kind: "excluded", size: Number.MAX_VALUE }],
@@ -91,7 +91,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
             )
         ).toBe(64 * mib + 4096);
         expect(calculateObjectClosureOverlayReserveBytes([{ path: "unknown", kind: "file" }], [], 4096n)).toBe(
-            WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib
+            WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib + 2 * 4096
         );
         expect(
             calculateObjectClosureOverlayReserveBytes(
@@ -99,7 +99,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
                 [],
                 4096n
             )
-        ).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib);
+        ).toBe(WorkspaceCheckpointLimits.maxNewlyHashedBytes + 64 * mib + 2 * 4096);
         expect(
             calculateObjectClosurePackBudget(
                 overlayReserve + 32 * mib,
@@ -144,7 +144,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         }));
 
         expect(calculateObjectClosureOverlayReserveBytes(rootEntries, [], allocationUnit)).toBe(
-            64 * mib + 200_001 * Number(allocationUnit)
+            64 * mib + 200_000 * 16 + 200_001 * Number(allocationUnit)
         );
         expect(
             calculateObjectClosureOverlayReserveBytes(
@@ -152,7 +152,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
                 [],
                 allocationUnit
             )
-        ).toBe(64 * mib + 3 * Number(allocationUnit));
+        ).toBe(64 * mib + 16 + 3 * Number(allocationUnit));
         expect(
             calculateObjectClosureOverlayReserveBytes(
                 [
@@ -162,7 +162,17 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
                 [{ path: "a/b/d/gone" }],
                 allocationUnit
             )
-        ).toBe(64 * mib + 7 * Number(allocationUnit));
+        ).toBe(64 * mib + 32 + 7 * Number(allocationUnit));
+        expect(
+            calculateObjectClosureOverlayReserveBytes(
+                [
+                    { path: "five-kib", kind: "file", size: 5 * 1024 },
+                    { path: "four-kib-plus-one", kind: "file", size: 4097 },
+                ],
+                [],
+                allocationUnit
+            )
+        ).toBe(64 * mib + 5 * 1024 + 4097 + 3 * Number(allocationUnit));
     });
 
     it("full-reconciles directly to a raw workspace tree with scope and coverage", async () => {
