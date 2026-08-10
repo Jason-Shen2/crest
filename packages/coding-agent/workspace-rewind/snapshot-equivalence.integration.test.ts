@@ -40,6 +40,19 @@ describe("V3 snapshot equivalence regressions", () => {
         }
     }, 30_000);
 
+    test("warm non-Git no-change capture rejects a replaced workspace root", async () => {
+        const fixture = await makeFreshNonGitFixture("fresh-non-git-root-replaced");
+        try {
+            await fixture.lease.snapshotSource.synchronizeExternal();
+            await rename(fixture.workspace, `${fixture.workspace}-replaced`);
+            await mkdir(fixture.workspace);
+
+            await expect(fixture.lease.snapshotSource.synchronizeExternal()).rejects.toThrow(/identity chain changed/i);
+        } finally {
+            await fixture.lease.release();
+        }
+    }, 30_000);
+
     test("fresh non-Git initialization retains an event observed during full capture", async () => {
         const fixture = await makeFreshNonGitFixture("fresh-non-git-observed", {
             onStart: async ({ feed, workspace }) => {

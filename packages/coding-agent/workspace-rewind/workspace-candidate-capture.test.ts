@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -95,6 +95,15 @@ describe("WorkspaceCandidateCapture", () => {
         controller.abort(reason);
         await expect(fixture.capture.capture([], controller.signal)).rejects.toBe(reason);
         await fixture.capture.dispose();
+    });
+
+    it("rejects an empty candidate capture after the workspace root is replaced", async () => {
+        const fixture = await makeFixture();
+        await rename(fixture.workspace, join(fixture.root, "replaced-workspace"));
+        await mkdir(fixture.workspace);
+
+        await expect(fixture.capture.capture([])).rejects.toThrow(/identity chain changed/i);
+        expect(fixture.capture.pendingBatches.size).toBe(0);
     });
 
     it("gives one concurrent consume or discard operation exclusive ownership", async () => {

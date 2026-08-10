@@ -10,7 +10,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { WorkspaceGitRunner, WorkspaceGitRunnerError } from "./git-runner";
 import { WorkspaceCheckpointInternalLimits } from "./internal-limits";
 import type { CapturedPathStateV1 } from "./types";
-import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import { verifyCanonicalWorkspaceIdentity, type CanonicalWorkspaceIdentity } from "./workspace-identity";
 import {
     StablePathReaderError,
     runStablePathReaderBatch,
@@ -168,6 +168,8 @@ export class WorkspaceCandidateCapture {
     ): Promise<WorkspaceCandidateCaptureResult> {
         assertCaptureDeadline(deadline, signal);
         if (paths.length === 0) {
+            await verifyCanonicalWorkspaceIdentity(this.identity);
+            assertCaptureDeadline(deadline, signal);
             const result: WorkspaceCandidateCaptureResult = {
                 status: "captured",
                 entries: [],
@@ -214,6 +216,8 @@ export class WorkspaceCandidateCapture {
                 entry.kind === "file" || entry.kind === "symlink"
         );
         if (readable.length === 0) {
+            assertCaptureDeadline(deadline, signal);
+            await verifyCanonicalWorkspaceIdentity(this.identity);
             assertCaptureDeadline(deadline, signal);
             const result: WorkspaceCandidateCaptureResult = {
                 status: "captured",
@@ -268,6 +272,8 @@ export class WorkspaceCandidateCapture {
                 entries: normalizeWorkspaceCandidateEntries(entries),
                 newlyHashedBytes,
             };
+            assertCaptureDeadline(deadline, signal);
+            await verifyCanonicalWorkspaceIdentity(this.identity);
             assertCaptureDeadline(deadline, signal);
             const rootIdentity = serializeEntryIdentity(await lstat(stagingRoot, { bigint: true }));
             this.registerPendingCapture(result, {
