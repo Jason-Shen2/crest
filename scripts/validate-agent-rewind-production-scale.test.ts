@@ -51,7 +51,7 @@ describe("agent rewind V3 production repository validation", () => {
         expect(observation.refsconsistent, JSON.stringify(observation)).toBe(true);
         expect(observation.cold.outcome).toBe("pass");
         expect(observation.cold.fallbackcount).toBe(0);
-        expect(observation.cold.bytesread).toBeGreaterThan(0);
+        expect(observation.cold.bytesread).toBe(0);
         expect(observation.warmnochange.outcome).toBe("pass");
         expect(observation.warmnochange.bytesread).toBe(0);
         expect(observation.warmfoursessions.outcome).toBe("pass");

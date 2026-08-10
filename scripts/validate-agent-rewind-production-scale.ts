@@ -251,22 +251,22 @@ export async function measureAgentRewindProductionRepository(rootInput: string):
         try {
             keeper = await registry.acquire(registryInput);
             cold = {
-                outcome: "pass",
+                outcome: classifyOutcome(undefined, metrics.fullreconcilecount),
                 durationms: Number((performance.now() - coldStarted).toFixed(2)),
                 snapshot: (await keeper.snapshotSource.readHead()).ref.id,
                 candidatecount: metrics.candidatecount,
                 bytesread: metrics.bytesread,
                 commitstraversed: metrics.commitstraversed,
-                fallbackcount: 0,
+                fallbackcount: metrics.fullreconcilecount,
             };
         } catch (error) {
             cold = {
-                outcome: classifyOutcome(error, 0),
+                outcome: classifyOutcome(error, metrics.fullreconcilecount),
                 durationms: Number((performance.now() - coldStarted).toFixed(2)),
                 candidatecount: metrics.candidatecount,
                 bytesread: metrics.bytesread,
                 commitstraversed: metrics.commitstraversed,
-                fallbackcount: 0,
+                fallbackcount: metrics.fullreconcilecount,
                 message: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
             };
         }
