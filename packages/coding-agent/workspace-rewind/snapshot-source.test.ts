@@ -2,9 +2,22 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { execFile } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, truncate, writeFile } from "node:fs/promises";
+import {
+    chmod,
+    link,
+    lstat,
+    mkdir,
+    mkdtemp,
+    readFile,
+    realpath,
+    rm,
+    symlink,
+    truncate,
+    writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -272,6 +285,24 @@ function parseTestOid(output: Buffer): string {
     const oid = output.toString("ascii").trim();
     if (!/^[0-9a-f]{40}$/.test(oid)) throw new Error("invalid test oid");
     return oid;
+}
+
+async function readRawTreeEntry(
+    git: WorkspaceGitRunner,
+    gitDir: string,
+    tree: string,
+    path: string
+): Promise<{ mode: string; bytes: Buffer } | undefined> {
+    const result = await git.run(["ls-tree", "-z", "--full-tree", tree, "--", `:(literal)${path}`], {
+        gitDir,
+        timeoutMs: 5_000,
+        pathspecMode: "literal-magic",
+    });
+    if (result.stdout.length === 0) return undefined;
+    const match = /^(100644|100755|120000) blob ([0-9a-f]{40})\t/.exec(result.stdout.toString("utf8"));
+    if (!match || result.stdout.at(-1) !== 0) throw new Error("invalid test tree entry");
+    const blob = await git.run(["cat-file", "blob", match[2]!], { gitDir, timeoutMs: 5_000 });
+    return { mode: match[1]!, bytes: blob.stdout };
 }
 
 describe("Workspace checkpoint snapshot source", () => {
@@ -688,6 +719,234 @@ describe("Workspace checkpoint snapshot source", () => {
         await source.dispose?.();
     }, 20_000);
 
+    it("matches an independent full capture for executable, symlink, and type-mode states", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-mode-equivalence-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        const executableBytes = Buffer.from("#!/bin/sh\nexit 7\n");
+        await writeFile(join(workspaceRoot, "executable.sh"), executableBytes);
+        await chmod(join(workspaceRoot, "executable.sh"), 0o755);
+        await symlink("executable.sh", join(workspaceRoot, "tracked-link"));
+        await writeFile(join(workspaceRoot, "file-to-link"), "committed file\n");
+        await symlink("executable.sh", join(workspaceRoot, "link-to-file"));
+        await commitAll(git, workspaceRoot, "base modes");
+        await rm(join(workspaceRoot, "file-to-link"));
+        await symlink("tracked-link", join(workspaceRoot, "file-to-link"));
+        await rm(join(workspaceRoot, "link-to-file"));
+        const replacementBytes = Buffer.from("live regular bytes\0\xff", "latin1");
+        await writeFile(join(workspaceRoot, "link-to-file"), replacementBytes);
+        const identity = await testIdentity(workspaceRoot);
+        const coldStore = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "cold-data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-mode", nonce: "3".repeat(64) },
+        });
+        const fullStore = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "full-data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-full-mode", nonce: "4".repeat(64) },
+        });
+        const sourceTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD^{tree}"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+
+        const cold = await coldStore.captureGitBaseline({
+            sourceRoot: identity.canonicalRoot,
+            sourceTree,
+            sourceGit: git,
+            candidatePaths: ["file-to-link", "link-to-file"],
+        });
+        const full = await fullStore.captureFullReconcile({ profile: "terminal" });
+
+        expect(cold).toBeDefined();
+        expect(cold!.tree).toBe(full.tree);
+        expect(cold!.scope).toEqual(full.scope);
+        expect({ ...cold!.coverage, newlyHashedBytes: 0 }).toEqual({ ...full.coverage, newlyHashedBytes: 0 });
+        await expect(readRawTreeEntry(git, coldStore.storeRoot, cold!.tree, "executable.sh")).resolves.toEqual({
+            mode: "100755",
+            bytes: executableBytes,
+        });
+        await expect(readRawTreeEntry(git, coldStore.storeRoot, cold!.tree, "tracked-link")).resolves.toEqual({
+            mode: "120000",
+            bytes: Buffer.from("executable.sh"),
+        });
+        await expect(readRawTreeEntry(git, coldStore.storeRoot, cold!.tree, "file-to-link")).resolves.toEqual({
+            mode: "120000",
+            bytes: Buffer.from("tracked-link"),
+        });
+        await expect(readRawTreeEntry(git, coldStore.storeRoot, cold!.tree, "link-to-file")).resolves.toEqual({
+            mode: "100644",
+            bytes: replacementBytes,
+        });
+    }, 30_000);
+
+    it("matches an independent full capture for scope exclusions and a sparse absent path", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-scope-equivalence-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(workspaceRoot);
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, ".gitignore"), "ignored/\n");
+        await writeFile(join(workspaceRoot, "sparse.txt"), "tracked but absent\n");
+        await commitAll(git, workspaceRoot, "base scope");
+        await execFileAsync("git", ["update-index", "--skip-worktree", "sparse.txt"], { cwd: workspaceRoot });
+        await rm(join(workspaceRoot, "sparse.txt"));
+        await mkdir(join(workspaceRoot, "ignored"));
+        await writeFile(join(workspaceRoot, "ignored", "cache.txt"), "ignored\n");
+        const nestedRoot = join(workspaceRoot, "vendor", "nested");
+        await mkdir(nestedRoot, { recursive: true });
+        await git.run(["init"], { cwd: nestedRoot, timeoutMs: 5_000 });
+        await writeFile(join(nestedRoot, "child.txt"), "nested boundary\n");
+        await writeFile(join(workspaceRoot, "hardlink-a"), "linked bytes\n");
+        await link(join(workspaceRoot, "hardlink-a"), join(workspaceRoot, "hardlink-b"));
+        await execFileAsync("mkfifo", [join(workspaceRoot, "named-pipe")]);
+        const identity = await testIdentity(workspaceRoot);
+        const coldStore = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "cold-data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-scope", nonce: "5".repeat(64) },
+        });
+        const fullStore = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "full-data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-full-scope", nonce: "6".repeat(64) },
+        });
+        const sourceTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD^{tree}"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+
+        const cold = await coldStore.captureGitBaseline({
+            sourceRoot: identity.canonicalRoot,
+            sourceTree,
+            sourceGit: git,
+            candidatePaths: [],
+        });
+        const full = await fullStore.captureFullReconcile({ profile: "terminal" });
+
+        expect(cold).toBeDefined();
+        expect(cold!.tree).toBe(full.tree);
+        expect(cold!.scope).toEqual(full.scope);
+        expect({ ...cold!.coverage, newlyHashedBytes: 0 }).toEqual({ ...full.coverage, newlyHashedBytes: 0 });
+        expect(cold!.coverage.complete).toBe(false);
+        await expect(readRawTreeEntry(git, coldStore.storeRoot, cold!.tree, "sparse.txt")).resolves.toBeUndefined();
+    }, 30_000);
+
+    it("does not lazy-fetch a missing promisor blob while projecting a cold Git baseline", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-promisor-"));
+        TemporaryRoots.push(root);
+        const originRoot = join(root, "origin");
+        const workspaceRoot = join(root, "workspace");
+        await mkdir(originRoot);
+        await writeFile(join(originRoot, "tracked.txt"), "promisor source bytes\n");
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: originRoot, timeoutMs: 5_000 });
+        await commitAll(git, originRoot, "base");
+        await execFileAsync("git", ["config", "uploadpack.allowFilter", "true"], { cwd: originRoot });
+        const sourceBlob = (
+            await execFileAsync("git", ["rev-parse", "HEAD:tracked.txt"], { cwd: originRoot })
+        ).stdout.trim();
+        await execFileAsync(
+            "git",
+            ["clone", "--filter=blob:none", "--no-checkout", pathToFileURL(originRoot).href, workspaceRoot],
+            { cwd: root }
+        );
+        await execFileAsync("git", ["read-tree", "HEAD"], { cwd: workspaceRoot });
+        await writeFile(join(workspaceRoot, "tracked.txt"), "promisor source bytes\n");
+        await expect(
+            execFileAsync("git", ["cat-file", "-e", sourceBlob], {
+                cwd: workspaceRoot,
+                env: { ...process.env, GIT_NO_LAZY_FETCH: "1" },
+            })
+        ).rejects.toBeDefined();
+
+        const remoteMarker = join(root, "remote-invoked");
+        const sshCommand = join(root, "reject-remote.sh");
+        await writeFile(sshCommand, `#!/bin/sh\nprintf invoked > "${remoteMarker}"\nexit 1\n`, { mode: 0o700 });
+        await execFileAsync("git", ["config", "remote.origin.url", "ssh://invalid.example/crest.git"], {
+            cwd: workspaceRoot,
+        });
+        await execFileAsync("git", ["config", "core.sshCommand", sshCommand], { cwd: workspaceRoot });
+
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-promisor", nonce: "f".repeat(64) },
+        });
+        const sourceTree = parseTestOid(
+            (await git.run(["rev-parse", "HEAD^{tree}"], { cwd: workspaceRoot, timeoutMs: 5_000 })).stdout
+        );
+
+        await expect(
+            store.captureGitBaseline({
+                sourceRoot: identity.canonicalRoot,
+                sourceTree,
+                sourceGit: git,
+                candidatePaths: [],
+            })
+        ).resolves.toBeUndefined();
+        await expect(lstat(remoteMarker)).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(store.mutationLog.readHead()).resolves.toBeUndefined();
+    }, 30_000);
+
+    it("retries one cold capture when final directory evidence changes and publishes the recaptured path", async () => {
+        const root = await mkdtemp(join(tmpdir(), "crest-git-cold-directory-race-"));
+        TemporaryRoots.push(root);
+        const workspaceRoot = join(root, "workspace");
+        const nestedRoot = join(workspaceRoot, "nested");
+        await mkdir(nestedRoot, { recursive: true });
+        await writeFile(join(nestedRoot, "tracked.txt"), "tracked\n");
+        const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await commitAll(git, workspaceRoot, "base");
+        const identity = await testIdentity(workspaceRoot);
+        const store = await WorkspaceSnapshotStore.open({
+            dataRoot: join(root, "data"),
+            identity,
+            git,
+            processOwner: { pid: process.pid, processStartToken: "git-cold-directory-race", nonce: "0".repeat(64) },
+        });
+        const run = git.run.bind(git);
+        let attributeReads = 0;
+        vi.spyOn(git, "run").mockImplementation(async (args, options) => {
+            const result = await run(args, options);
+            if (args[0] === "check-attr" && ++attributeReads === 2) {
+                await writeFile(join(nestedRoot, "raced.txt"), "created during final validation\n");
+            }
+            return result;
+        });
+        const captureGitBaseline = vi.spyOn(store, "captureGitBaseline");
+        const fullReconcile = vi.fn((options) => store.captureFullReconcile(options));
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed: new TestCandidateFeed(),
+            userGit: git,
+            shadowGit: git,
+        });
+
+        const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
+        const head = await source.readHead();
+        const raced = await store.readPathState(head.ref, "nested/raced.txt");
+
+        expect(attributeReads).toBe(4);
+        expect(captureGitBaseline).toHaveBeenCalledTimes(2);
+        expect(fullReconcile).not.toHaveBeenCalled();
+        expect(raced).toMatchObject({ state: "file" });
+        await expect(store.readBlob((raced as { oid: string }).oid)).resolves.toEqual(
+            Buffer.from("created during final validation\n")
+        );
+        await source.dispose?.();
+    }, 30_000);
+
     it("retries one cold capture when the Git index changes and publishes the recaptured bytes", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-git-cold-index-race-"));
         TemporaryRoots.push(root);
@@ -837,24 +1096,40 @@ describe("Workspace checkpoint snapshot source", () => {
         await source.dispose?.();
     }, 20_000);
 
-    it("stable-captures clean tracked bytes when Git attributes transform their index representation", async () => {
+    it("routes every unsafe Git attribute family through stable live-byte capture", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-git-cold-attributes-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
         await mkdir(workspaceRoot);
         const git = new WorkspaceGitRunner();
         await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
-        await writeFile(join(workspaceRoot, ".gitattributes"), "*.txt filter=crest-test\n");
+        await writeFile(
+            join(workspaceRoot, ".gitattributes"),
+            [
+                "text.txt text",
+                "eol.txt eol=lf",
+                "filter.txt filter=crest-test",
+                "ident.txt ident",
+                "encoding.txt working-tree-encoding=UTF-8",
+                "",
+            ].join("\n")
+        );
         await execFileAsync("git", ["config", "filter.crest-test.clean", "sed s/WORKTREE/INDEX/g"], {
             cwd: workspaceRoot,
         });
         await execFileAsync("git", ["config", "filter.crest-test.smudge", "sed s/INDEX/WORKTREE/g"], {
             cwd: workspaceRoot,
         });
-        const liveBytes = Buffer.from("WORKTREE bytes\n");
-        await writeFile(join(workspaceRoot, "transformed.txt"), liveBytes);
+        const liveBytes = new Map<string, Buffer>([
+            ["text.txt", Buffer.from("text route\n")],
+            ["eol.txt", Buffer.from("eol route\n")],
+            ["filter.txt", Buffer.from("WORKTREE filter route\n")],
+            ["ident.txt", Buffer.from("$Id$ ident route\n")],
+            ["encoding.txt", Buffer.from("encoding route ✓\n")],
+        ]);
+        await Promise.all([...liveBytes].map(([path, bytes]) => writeFile(join(workspaceRoot, path), bytes)));
         await commitAll(git, workspaceRoot, "attributes");
-        expect(await readFile(join(workspaceRoot, "transformed.txt"))).toEqual(liveBytes);
+        for (const [path, bytes] of liveBytes) expect(await readFile(join(workspaceRoot, path))).toEqual(bytes);
         await expect(
             git.run(["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
                 cwd: workspaceRoot,
@@ -885,12 +1160,14 @@ describe("Workspace checkpoint snapshot source", () => {
 
         const source = await initializeWorkspaceCheckpointSnapshotSource({ store, fullReconcile, candidates });
         const head = await source.readHead();
-        const transformed = await store.readPathState(head.ref, "transformed.txt");
 
         expect(fullReconcile).not.toHaveBeenCalled();
-        expect(newlyHashedBytes).toBe(liveBytes.length);
-        expect(transformed).toMatchObject({ state: "file" });
-        await expect(store.readBlob((transformed as { oid: string }).oid)).resolves.toEqual(liveBytes);
+        expect(newlyHashedBytes).toBe([...liveBytes.values()].reduce((total, bytes) => total + bytes.length, 0));
+        for (const [path, bytes] of liveBytes) {
+            const state = await store.readPathState(head.ref, path);
+            expect(state).toMatchObject({ state: "file" });
+            await expect(store.readBlob((state as { oid: string }).oid)).resolves.toEqual(bytes);
+        }
         await source.dispose?.();
     }, 20_000);
 
