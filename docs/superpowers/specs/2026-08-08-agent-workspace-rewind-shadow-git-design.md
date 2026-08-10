@@ -407,7 +407,8 @@ Crest worktree（测试时 HEAD `0b013b07`，1,975 个 tracked files）执行生
 warm 861.93 ms，4-Session 3,383.67 ms，fallback 为 0；Shadow refs 一致，source Workspace 未被改动，
 private store 为 14,524,416 bytes，cleanup 成功。
 
-最新 full correctness 结果为 913 pass、2 skip、1 个 suite aggregate timing failure；同一 E2E isolated
-运行通过。全仓 `tsc` 仍有 40 个文件、131 条既有 baseline diagnostics，而本分支目标文件
-`emain/agent-rewind.e2e.test.ts` 与 `frontend/app/agent/rewind/use-agent-rewind.ts` 为 0。由此可确认本功能实现
-完成并通过专项与真实 worktree 验证，但不能把 repo-wide exact gate 或全项目 production-ready 标为完成。
+最终 HEAD 的 full correctness 在 603.62 秒内完成 57 个 files：914 pass、2 skip、0 failed。全仓 `tsc`
+最终仍以 exit 2 结束，但所有包含 `workspace-rewind`、`agent-rewind`、`frontend/app/agent/rewind` 以及
+validator/benchmark 路径的 diagnostics 均为 0；剩余均为无关的 repo-wide baseline diagnostics。由此可确认
+本功能实现完成并通过专项与真实 worktree 验证，但不能把 repo-wide exact gate 或全项目 production-ready
+标为完成。

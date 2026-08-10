@@ -615,9 +615,10 @@ git diff --check
 2026-08-10 latest evidence：`0b013b07` 已消除本分支目标两个 rewind 文件的 TypeScript 诊断，production
 validator 集成测试 1/1 通过；真实 Crest worktree（测试时 HEAD `0b013b07`，1,975 tracked files）得到
 cold 18,769.79 ms、warm 861.93 ms、4-Session 3,383.67 ms、fallback 0，且 refs 一致、source 未变、
-store 14,524,416 bytes、cleanup 成功。full correctness 为 913 pass、2 skip、1 个 aggregate suite timing
-failure，该 E2E isolated 通过；全仓 `tsc` 仍有 40 个文件、131 条 baseline diagnostics，目标两个文件为 0。
-因此功能实现与专项验证完成，但 Step 3 的 repo-wide exact gate 保持未勾选。
+store 14,524,416 bytes、cleanup 成功。最终 HEAD 的 full correctness 在 603.62 秒内完成 57 个 files：
+914 pass、2 skip、0 failed。全仓 `tsc` 仍以 exit 2 结束，但所有 rewind、Agent rewind、前端 rewind 与
+validator/benchmark 相关路径的 diagnostics 均为 0，剩余均为无关 baseline diagnostics。因此功能实现与
+专项 correctness 已完成，但 Step 3 因 repo-wide `tsc` 非零保持未勾选。
 
 - [x] **Step 4: Run scale gates without raising limits**
 
@@ -631,8 +632,9 @@ Record timeout/fallback as a failure or explicit limitation; never replace it wi
 
 2026-08-10 evidence：50k 与 200k 的 deep/wide 共 44 rows 全部 pass，fallbackCount 为 0；原 terminal
 30 秒、200,000 scanned-entry 上限与 10 iterations 均未修改。完整结果见
-`docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`。Step 3 的 latest-HEAD 全量 correctness/tsc
-门禁尚未在本轮完成，因此保持未勾选，Step 5 也不提前宣告 closeout。
+`docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`。latest-HEAD full correctness 已通过；
+全仓 `tsc` 仍因无关 baseline diagnostics 以 exit 2 结束，相关功能路径 diagnostics 为 0。因此 Step 3
+保持未勾选，Step 5 也不提前宣告 closeout。
 
 - [ ] **Step 5: Close docs and commit evidence**
 

@@ -158,10 +158,11 @@ worktree 验证在测试时 HEAD `0b013b07`、1,975 个 tracked files 上运行�
 | ---: | ---: | ---: | ---: | ---: |
 | 18,769.79 ms | 861.93 ms | 3,383.67 ms | 0 | 14,524,416 bytes |
 
-验证同时确认 Shadow refs 一致、source Workspace 未被修改、cleanup 成功。full correctness 汇总为 913 pass、
-2 skip、1 个 aggregate suite timing failure，且该 E2E isolated 运行通过。全仓 `tsc` 仍有 40 个文件、
-131 条既有 baseline diagnostics；本分支目标两个 rewind 文件为 0。因此这些数据补足真实仓库专项证据，
-但不关闭 repo-wide exact gate，也不构成全项目 production-ready 声明。
+验证同时确认 Shadow refs 一致、source Workspace 未被修改、cleanup 成功。最终 HEAD 的 full correctness
+在 603.62 秒内完成 57 个 files：914 pass、2 skip、0 failed。全仓 `tsc` 最终仍以 exit 2 结束，但所有包含
+`workspace-rewind`、`agent-rewind`、`frontend/app/agent/rewind` 以及 validator/benchmark 路径的 diagnostics
+均为 0；剩余均为无关的 repo-wide baseline diagnostics。因此功能专项正确性已闭合，但 repo-wide exact gate
+仍不关闭，也不构成全项目 production-ready 声明。
 
 ## 生产判断
 
