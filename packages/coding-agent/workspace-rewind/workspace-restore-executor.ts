@@ -178,10 +178,7 @@ export class WorkspaceRestoreExecutor {
                 data: derived.markerState,
             };
             await input.session.appendEntries([entry], { expectedLeafId: pending.expectedSemanticLeafId });
-            const decision = await this.recovery.resolvePendingUnderLease(pending);
-            if (decision.state !== "committed") {
-                throw this.recoveryRequired(pending, decision);
-            }
+            await this.store.withWorkspaceLock(() => this.pending.removeLocked(pending.operationId));
             return { sessionMetadata, operationId };
         } catch (error) {
             if (!pendingVisible) {

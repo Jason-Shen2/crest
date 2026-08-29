@@ -74,6 +74,19 @@ test("executes a result-commit restore without any restore-time workspace captur
     expect(onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
 }, 30_000);
 
+test("clears a committed pending record without entering Recovery on the normal path", async () => {
+    const fixture = await makeFixture();
+    const resolvePendingUnderLease = vi.fn(async () => {
+        throw new Error("normal completion must not enter Recovery");
+    });
+    const executor = makeExecutor(fixture, { recovery: { resolvePendingUnderLease } });
+
+    await expect(execute(executor, fixture, fixture.plan)).resolves.toBeDefined();
+
+    expect(resolvePendingUnderLease).not.toHaveBeenCalled();
+    await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
+}, 30_000);
+
 test.each([
     { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
     {
@@ -265,6 +278,7 @@ function makeExecutor(
     options: {
         verifyPath?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["verifyPath"];
         onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
+        recovery?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["recovery"];
     } = {}
 ): WorkspaceRestoreExecutor {
     const pending = new PendingWorkspaceRestoreStore(fixture.store);
@@ -277,7 +291,7 @@ function makeExecutor(
     return new WorkspaceRestoreExecutor({
         store: fixture.store,
         pending,
-        recovery,
+        recovery: options.recovery ?? recovery,
         createOperationId: () => "operation-1",
         now: () => new Date("2026-08-08T00:00:01.000Z"),
         ...(options.verifyPath ? { verifyPath: options.verifyPath } : {}),
