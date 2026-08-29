@@ -13,7 +13,6 @@ import type {
     AgentTurnFileDiffView,
 } from "./api-types";
 import {
-    assertRestorePlanMatchesConfirmation,
     type ConfirmedRestorePlanV1,
     type RewindConfirmationRegistry,
 } from "./confirmation-token";
@@ -29,6 +28,7 @@ import {
     type RestorePlanV1,
     type RestoreTargetV1,
 } from "./restore-plan";
+import { assertConfirmedRestoreFresh } from "./restore-freshness";
 import { countRevertedMessages, foldWorkspaceSessionState } from "./session-state";
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
@@ -224,6 +224,42 @@ function warningText(plan: RestorePlanV1): string[] {
     );
 }
 
+function assertApplyInputMatchesConfirmation(
+    input:
+        | ApplyRestoreInput
+        | ApplyTurnUndoInput
+        | (ApplyTurnRedoInput & { mode: "normal" }),
+    plan: RestorePlanV1
+): void {
+    if (
+        plan.sessionId !== input.sessionId ||
+        plan.workspaceIdentity !== input.workspace.workspaceIdentity ||
+        plan.workspaceIncarnation !== input.workspace.workspaceIncarnation ||
+        plan.semanticLeafId !== input.semanticLeafId
+    ) {
+        throw new Error("Rewind confirmation is stale");
+    }
+    if ("kind" in input) {
+        if (input.kind === "rewind" && plan.target.kind === "rewind" && plan.target.targetTurnId === input.targetTurnId) {
+            return;
+        }
+        if (input.kind === "redo" && plan.target.kind === "redo") return;
+        throw new Error("Rewind confirmation target is stale");
+    }
+    if (
+        "undoOperationId" in input &&
+        plan.target.kind === "turn-redo" &&
+        plan.target.sourceTurnId === input.sourceTurnId &&
+        plan.target.undoOperationId === input.undoOperationId
+    ) {
+        return;
+    }
+    if (!("undoOperationId" in input) && plan.target.kind === "turn-undo" && plan.target.sourceTurnId === input.sourceTurnId) {
+        return;
+    }
+    throw new Error("Rewind confirmation target is stale");
+}
+
 export class WorkspaceRewindEngine {
     private readonly store: WorkspaceSnapshotStore;
     private readonly pending: PendingWorkspaceRestoreStore;
@@ -381,13 +417,11 @@ export class WorkspaceRewindEngine {
     }
 
     async applyTurnUndo(input: ApplyTurnUndoInput): Promise<WorkspaceRewindCommitResult> {
-        return this.applyTurn(input, (authorityHead) => this.computeTurnUndo(input, authorityHead));
+        return this.applyTurn(input);
     }
 
     async applyTurnRedo(input: ApplyTurnRedoInput): Promise<WorkspaceRewindCommitResult> {
-        return this.applyTurn({ ...input, mode: "normal" }, (authorityHead) =>
-            this.computeTurnRedo(input, authorityHead)
-        );
+        return this.applyTurn({ ...input, mode: "normal" });
     }
 
     private async projectTurnChanges(input: ReadTurnChangesInput): Promise<{
@@ -581,22 +615,21 @@ export class WorkspaceRewindEngine {
     }
 
     private async applyTurn(
-        input: ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" }),
-        compute: (authorityHead: string) => Promise<PlannedRestore>
+        input: ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" })
     ): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
         return this.withRestoreLease(input.sessionId, async (source) => {
-            const planned = await compute(source.id);
-            assertRestorePlanMatchesConfirmation({
+            const plan = await this.assertFrozenPlanFresh({
+                input,
+                source,
                 confirmation: input.confirmation,
-                plan: planned.plan,
                 mode: input.mode,
             });
             return this.executor.execute({
                 session: input.session,
                 workspace: input.workspace,
                 source,
-                plan: planned.plan,
+                plan,
                 confirmation: input.confirmation,
                 mode: input.mode,
                 assertCurrent: input.assertCurrent,
@@ -614,54 +647,34 @@ export class WorkspaceRewindEngine {
     private async apply(input: ApplyRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
         return this.withRestoreLease(input.sessionId, async (source) => {
-            const planned =
-                input.kind === "rewind"
-                    ? await this.computeRewind(
-                          {
-                              session: input.session,
-                              sessionId: input.sessionId,
-                              workspace: input.workspace,
-                              semanticLeafId: input.semanticLeafId,
-                              targetTurnId: input.targetTurnId!,
-                          },
-                          source.id
-                      )
-                    : await this.computeRedo(
-                          {
-                              session: input.session,
-                              sessionId: input.sessionId,
-                              workspace: input.workspace,
-                              semanticLeafId: input.semanticLeafId,
-                          },
-                          source.id
-                      );
-            assertRestorePlanMatchesConfirmation({
+            const plan = await this.assertFrozenPlanFresh({
+                input,
+                source,
                 confirmation: input.confirmation,
-                plan: planned.plan,
                 mode: input.mode,
             });
-            return this.applyPlanned(input, planned, source);
+            return this.applyPlanned(input, plan, source);
         });
     }
 
     private async applyPlanned(
         input: ApplyRestoreInput,
-        planned: PlannedRestore,
+        plan: RestorePlanV1,
         source: WorkspaceSnapshotRefV1
     ): Promise<WorkspaceRewindCommitResult> {
         return this.executor.execute({
             session: input.session,
             workspace: input.workspace,
             source,
-            plan: planned.plan,
+            plan,
             confirmation: input.confirmation,
             mode: input.mode,
             assertCurrent: input.assertCurrent,
             commit: {
                 makeResult: ({ entries, folded, sessionMetadata }) => {
                     const targetEntry =
-                        input.kind === "rewind"
-                            ? (planned.targetEntry ?? selectedUserEntry(entries, input.targetTurnId))
+                        plan.target.kind === "rewind"
+                            ? selectedUserEntry(entries, plan.target.targetTurnId)
                             : undefined;
                     return {
                         sessionMetadata,
@@ -676,6 +689,28 @@ export class WorkspaceRewindEngine {
                 },
             },
         });
+    }
+
+    private async assertFrozenPlanFresh(input: {
+        input: ApplyRestoreInput | ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" });
+        source: WorkspaceSnapshotRefV1;
+        confirmation: ConfirmedRestorePlanV1;
+        mode: "normal" | "force-drift";
+    }): Promise<RestorePlanV1> {
+        const plan = input.confirmation.plan;
+        assertApplyInputMatchesConfirmation(input.input, plan);
+        await assertConfirmedRestoreFresh({
+            confirmation: input.confirmation,
+            currentHead: input.source.id,
+            mode: input.mode,
+            mutationLog: this.store.mutationLog,
+        });
+        const entries = await input.input.session.getEntries();
+        const folded = foldWorkspaceSessionState(entries, plan.sessionId);
+        if (folded.semanticLeafId !== plan.semanticLeafId) {
+            throw new Error("Rewind confirmation is stale because the Session leaf changed");
+        }
+        return plan;
     }
 
     private async withRestoreLease<T>(

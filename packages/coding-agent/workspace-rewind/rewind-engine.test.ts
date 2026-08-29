@@ -241,6 +241,44 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.confirmations.take(preview.confirmationToken!).authorityHead).toBe(HeadSnapshot.id);
     });
 
+    it("applies the frozen Preview plan without invoking any planner again", async () => {
+        const value = makeHarness({});
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+        const confirmation = value.confirmations.take(preview.confirmationToken!);
+        const committed = {
+            sessionMetadata: value.session.metadata,
+            semanticLeafId: "operation-leaf-1",
+            displayLeafId: "operation-leaf-1",
+        };
+        vi.spyOn(value.engine.executor, "execute").mockResolvedValue(committed);
+        vi.mocked(value.options.planRewind!).mockClear();
+        vi.mocked(value.options.planRedo!).mockClear();
+
+        await expect(
+            value.engine.applyRewind({
+                session: value.session.session,
+                sessionId: "session-1",
+                workspace: Workspace,
+                semanticLeafId: "old-leaf",
+                targetTurnId: "turn-1",
+                mode: "normal",
+                confirmation,
+            })
+        ).resolves.toEqual(committed);
+
+        expect(value.options.planRewind).not.toHaveBeenCalled();
+        expect(value.options.planRedo).not.toHaveBeenCalled();
+        expect(value.engine.executor.execute).toHaveBeenCalledWith(
+            expect.objectContaining({ plan: confirmation.plan, confirmation })
+        );
+    });
+
     it("constructs one pending store and Resolver shared by every restore path", () => {
         const store = {
             storeRoot: "/store",
