@@ -395,3 +395,28 @@ overlap 和 exact restore 矩阵，且没有 full-reconcile fallback；真实 Cr
 - [Shared Shadow Git 最终设计](../specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md)
 - [Shared Shadow Git 实施计划](../plans/2026-08-08-agent-workspace-rewind-shadow-git.md)
 - [V3 生产规模门禁](./2026-08-09-agent-rewind-v3-scale-gates.md)
+- [Apply 快路径设计](../specs/2026-08-29-agent-rewind-apply-fast-path-design.md)
+- [Apply 快路径实施计划](../plans/2026-08-29-agent-rewind-apply-fast-path.md)
+
+## 17. 后续优化：Apply 从数秒收敛到约 1 秒
+
+V3 解决了 turn capture 随 monorepo 总量放大的问题，但用户确认 Undo/Redo 后仍需等待数秒。profile 证明瓶颈不是
+恢复一个文件，而是 Apply 重算 Preview 计划、重复读取 Shadow Git head，并在正常成功后再次运行完整 Recovery
+classifier。
+
+2026-08-29 的快路径保持同一安全底座，只让每项事实证明一次：Preview 冻结 plan 和 authority head；Apply 只验证
+新增 commit suffix、semantic leaf 与 live target paths；CAS 证明 durable publication；Recovery 只处理异常和启动
+残留。正常成功还复用 executor 已知的 source/target facts，批处理 path state 查询，没有新增 durable cache 或状态机。
+
+最终安全回归发现旧 Recovery 还隐含提供了成功后的 live-target 与 exact marker 复核。最终实现没有把整个 classifier
+放回正常路径，而是加入复用可信 planned states 和当前已加锁 Session 的轻量 finalizer；它不重读 commit，也不调用
+可能与 exclusive Session mutation 冲突的 Recovery locator。
+
+修复后 30 轮 Apply-only 门禁中，50k deep/wide p95 为 1,303.33/1,254.96 ms，200k 为
+1,499.51/1,389.94 ms；四组均为 36 个 Git processes/Apply、fallback 0。相较历史包含重复计划和 Recovery 的
+5.6–9.8 秒 restore row，交互等待显著收敛，且 50k → 200k 没有恢复为全量扫描增长。
+
+这次优化也保留了一个明确未完成项：50k `<1,000 ms` 的激进门禁仍差约 25%–30%；200k deep 的 p95 虽低于
+1,500 ms，但只有 0.49 ms 余量。剩余成本主要来自结果 commit、
+pending durability、文件安全应用/验证和 cleanup；它们承担实际安全语义，现阶段没有必要为了几十到一百毫秒引入
+常驻 worker、后台预建 commit 或第二套 cache。完整数据和 phase breakdown 见 V3 规模门禁的 2026-08-29 章节。

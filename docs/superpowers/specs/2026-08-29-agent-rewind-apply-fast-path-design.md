@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-29
 
-**状态：** 待实施
+**状态：** 已实现并完成专项正确性回归；50k `< 1,000 ms` 的激进体验门禁未通过
 
 **范围：** Turn Undo/Redo 与 Conversation Rewind/Redo 在用户确认后的 Apply 热路径
 
@@ -420,3 +420,56 @@ Recovery 状态。
 
 本设计的核心不是“少做安全检查”，而是让每项安全事实只被证明一次：Preview 证明历史计划，Apply 证明增量新变化，
 CAS 证明提交，Recovery 只证明异常结果。
+
+## 最终实现校正（2026-08-29）
+
+实施保持了设计的安全边界，并根据测试结果做了几处必要校正：
+
+1. confirmation 冻结完整 `RestorePlanV1` 和 Preview 的 `authorityHead`。Apply 不再调用任何 planner，只检查
+   `authorityHead → currentHead` 的 commit suffix、当前 semantic leaf 和目标路径实时状态。
+2. Preview 在同一 head 上完成计划；期间 head 变化时只重试一次。这样 token 表示一个明确、不可变的授权事实。
+3. 正常成功直接删除与本次 operation ID 匹配的 pending；只有异常、启动残留或持久化结果不确定时进入 Recovery。
+4. 正常路径使用 executor 已经证明的 source/target 状态构造 marker，不再让 Recovery 风格的 commit/path 重读
+   重新证明相同事实；Recovery 对不可信 durable state 的完整校验保持不变。
+5. 多路径 source state 改为 batched `ls-tree`/object 查询，成本按目标路径和深度批次增长，不按 workspace 总 entry
+   数增长。
+6. mutation `prepare()` 的重复 head 读取已删除；publish 前仍保留一次 exact-ref 读取，因为 symbolic-ref 测试证明
+   单靠后续命令不足以保持现有拒绝语义。executor 写文件前的 source-head 检查也保留，避免用性能换取覆盖风险。
+7. phase timing 仅通过非权威 observer 暴露，不写入 durable state，也不增加新的 cache、worker、WAL 或恢复状态。
+8. 最终回归发现，旧 Recovery 同时承担了正常成功后的 live-target 与 exact marker 复核。删除 classifier 时不能删除
+   这两个安全事实；最终实现改为轻量 finalizer，复用已知 planned states 和当前已持有 mutation lease 的 Session，
+   再检查 planned head/pending 后清理。它不调用 Recovery locator，避免重现 exclusive Session mutation 冲突。
+
+因此最终正常路径是：
+
+```text
+稳定 Preview + 冻结 plan
+  → Writer Lease 下同步外部变化
+  → suffix / leaf / live path freshness
+  → 准备结果 commit 与最小 pending
+  → 应用、验证并 CAS 发布 head
+  → CAS 追加 marker
+  → 精确清理 pending
+```
+
+## 最终性能边界
+
+Node.js 22.22.3、30 次 warm Apply、单目标文件、无 fallback 的最终结果：
+
+| Workspace 规模 | 目录形态 | p50 | p95 | max | Apply 内 Git 进程 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 50k entries | deep | 1,188.28 ms | 1,303.33 ms | 1,304.00 ms | 36 |
+| 50k entries | wide | 1,166.95 ms | 1,254.96 ms | 1,259.05 ms | 36 |
+| 200k entries | deep | 1,399.90 ms | 1,499.51 ms | 1,531.04 ms | 36 |
+| 200k entries | wide | 1,308.11 ms | 1,389.94 ms | 1,398.08 ms | 36 |
+
+所有组均为 `fallbackCount=0`。候选数、读取字节和 Git 进程数没有随 50k → 200k 放大；新增耗时主要在结果
+commit 准备阶段，而不是重新扫描 workspace。
+
+设计中的 200k `< 1,500 ms` p95 门禁通过，但 deep 只有 0.49 ms 余量；50k `< 1,000 ms` 门禁未通过，实际超出
+约 25%–30%。这意味着算法层面的
+全 workspace 放大已消除，但 durable commit、pending publish/cleanup、文件安全写入和验证仍形成约 1 秒固定成本。
+继续删除这些步骤会削弱 crash safety 或文件覆盖保护，因此本轮不引入常驻 worker、后台预建 commit 或新 cache。
+
+最终结论是：快路径已经适合在 200k entry 边界内进行生产候选验证，常见点击延迟从历史 restore 的约 5.6–9.8 秒
+降到约 1.25–1.50 秒；它不是“瞬时完成”，200k 门禁没有宽裕余量，50k 的激进体验门禁也仍需如实保留为未通过。

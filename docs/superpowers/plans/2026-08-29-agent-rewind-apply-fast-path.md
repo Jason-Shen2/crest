@@ -36,7 +36,7 @@
 - Modify: `packages/coding-agent/workspace-rewind/restore-plan.ts`
 - Modify: `packages/coding-agent/workspace-rewind/turn-restore-plan.ts`
 
-- [ ] **Step 1: Write failing fixed-head overlap tests**
+- [x] **Step 1: Write failing fixed-head overlap tests**
 
 Add tests that create `H0`, advance the live ref to `H1`, and explicitly inspect at `H0`:
 
@@ -69,7 +69,7 @@ test("inspects overlap against the explicit authority head", async () => {
 
 Also assert an explicit head outside the `afterCommit` chain fails with `requested mutation boundary is not in the workspace commit chain`.
 
-- [ ] **Step 2: Run the mutation-log test and verify RED**
+- [x] **Step 2: Run the mutation-log test and verify RED**
 
 Run:
 
@@ -79,7 +79,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-mutation-log.
 
 Expected: TypeScript/Vitest fails because `ForeignOverlapInput` has no `head` property.
 
-- [ ] **Step 3: Implement explicit-head traversal**
+- [x] **Step 3: Implement explicit-head traversal**
 
 Extend the input without changing callers that still require internal stability checks:
 
@@ -109,7 +109,7 @@ if (explicitHead == null && (await this.readHead()) !== head) {
 Add `authorityHead?: string` to the planner base inputs. Pass it through `findCrestHistoryBlockers()` to
 `findForeignOverlap({ head: input.authorityHead, ... })`. Existing direct planner tests may omit it; production Preview will always provide it in Task 2.
 
-- [ ] **Step 4: Run focused history tests and verify GREEN**
+- [x] **Step 4: Run focused history tests and verify GREEN**
 
 Run:
 
@@ -119,7 +119,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-mutation-log.
 
 Expected: all focused tests pass.
 
-- [ ] **Step 5: Commit explicit-head traversal**
+- [x] **Step 5: Commit explicit-head traversal**
 
 ```bash
 git add packages/coding-agent/workspace-rewind/workspace-mutation-log.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts packages/coding-agent/workspace-rewind/restore-plan.ts packages/coding-agent/workspace-rewind/turn-restore-plan.ts
@@ -134,7 +134,7 @@ git commit -m "refactor: bind rewind planning to one workspace head"
 - Modify: `packages/coding-agent/workspace-rewind/rewind-engine.ts`
 - Modify: `packages/coding-agent/workspace-rewind/rewind-engine.test.ts`
 
-- [ ] **Step 1: Write failing authority-binding and stable-Preview tests**
+- [x] **Step 1: Write failing authority-binding and stable-Preview tests**
 
 Add a valid OID fixture and require it at issue time:
 
@@ -178,7 +178,7 @@ test("retries Preview once when the workspace head moves while planning", async 
 
 Add a second test where both attempts move and expect `/workspace.*changed.*preview/i`, with no issued token.
 
-- [ ] **Step 2: Run confirmation and engine tests and verify RED**
+- [x] **Step 2: Run confirmation and engine tests and verify RED**
 
 Run:
 
@@ -188,7 +188,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/confirmation-token.test
 
 Expected: `issue()` does not accept/store an authority head, planner lacks `authorityHead`, and Preview does not retry.
 
-- [ ] **Step 3: Implement the required authority binding and stable planning**
+- [x] **Step 3: Implement the required authority binding and stable planning**
 
 Change the registry API to:
 
@@ -222,7 +222,7 @@ Route all four Preview methods through this helper. Pass `authorityHead` to `pla
 
 Update direct registry callers in executor tests and the benchmark to pass the actual fixture mutation head.
 
-- [ ] **Step 4: Run confirmation, engine, planning, and executor tests and verify GREEN**
+- [x] **Step 4: Run confirmation, engine, planning, and executor tests and verify GREEN**
 
 Run:
 
@@ -232,7 +232,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/confirmation-token.test
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Commit stable confirmation authority**
+- [x] **Step 5: Commit stable confirmation authority**
 
 ```bash
 git add packages/coding-agent/workspace-rewind/confirmation-token.ts packages/coding-agent/workspace-rewind/confirmation-token.test.ts packages/coding-agent/workspace-rewind/rewind-engine.ts packages/coding-agent/workspace-rewind/rewind-engine.test.ts packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts scripts/benchmark-agent-rewind-snapshots.ts
@@ -248,7 +248,7 @@ git commit -m "feat: bind rewind previews to stable workspace authority"
 - Modify: `packages/coding-agent/workspace-rewind/rewind-engine.test.ts`
 - Modify: `packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts`
 
-- [ ] **Step 1: Write failing freshness tests**
+- [x] **Step 1: Write failing freshness tests**
 
 Define the wished-for API and cover exact semantics:
 
@@ -284,7 +284,7 @@ await expect(
 Also cover Session-owned ABA, non-ancestor current head, external same-path drift rejected in normal mode, and external same-path
 drift allowed only when the frozen path was already `forceable-drift` and mode is `force-drift`.
 
-- [ ] **Step 2: Run freshness tests and verify RED**
+- [x] **Step 2: Run freshness tests and verify RED**
 
 Run:
 
@@ -294,7 +294,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/restore-freshness.test.
 
 Expected: module/function is missing.
 
-- [ ] **Step 3: Implement minimal suffix validation**
+- [x] **Step 3: Implement minimal suffix validation**
 
 Implement:
 
@@ -329,7 +329,7 @@ export async function assertConfirmedRestoreFresh(input: {
 
 Do not inspect live files here; `WorkspaceRestoreExecutor.verifySourceStates()` remains the single final target-path live validation.
 
-- [ ] **Step 4: Make Apply execute the frozen plan**
+- [x] **Step 4: Make Apply execute the frozen plan**
 
 Change `applyTurn()` and `apply()` so they no longer call any `compute*()` method. Under `withRestoreLease`, call
 `assertConfirmedRestoreFresh()` with the synchronized source head, then pass `confirmation.plan` to the executor.
@@ -343,7 +343,7 @@ For Conversation Rewind result text, derive `targetEntry` from the entries passe
 
 Add a test that spies on all four planner implementations, resets their Preview calls, performs Apply, and asserts none were called.
 
-- [ ] **Step 5: Run RED/GREEN integration scenarios**
+- [x] **Step 5: Run RED/GREEN integration scenarios**
 
 Run:
 
@@ -353,7 +353,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/restore-freshness.test.
 
 Expected: unchanged and unrelated-path Apply pass; same-path and ABA confirmations fail before pending publication.
 
-- [ ] **Step 6: Commit frozen-plan Apply**
+- [x] **Step 6: Commit frozen-plan Apply**
 
 ```bash
 git add packages/coding-agent/workspace-rewind/restore-freshness.ts packages/coding-agent/workspace-rewind/restore-freshness.test.ts packages/coding-agent/workspace-rewind/rewind-engine.ts packages/coding-agent/workspace-rewind/rewind-engine.test.ts packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts
@@ -366,7 +366,7 @@ git commit -m "perf: reuse confirmed rewind plans during apply"
 - Modify: `packages/coding-agent/workspace-rewind/workspace-restore-executor.ts`
 - Modify: `packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts`
 
-- [ ] **Step 1: Write a failing normal-path Recovery test**
+- [x] **Step 1: Write a failing normal-path Recovery test**
 
 Inject a recovery spy through `makeExecutor()`:
 
@@ -384,7 +384,7 @@ test("clears its matching pending intent without classifying Recovery after norm
 });
 ```
 
-- [ ] **Step 2: Run executor tests and verify RED**
+- [x] **Step 2: Run executor tests and verify RED**
 
 Run:
 
@@ -394,7 +394,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-restore-execu
 
 Expected: test fails because successful execution calls the injected Resolver.
 
-- [ ] **Step 3: Implement matching-pending cleanup**
+- [x] **Step 3: Implement matching-pending cleanup**
 
 Add a focused executor helper:
 
@@ -409,12 +409,12 @@ async clearCommittedPending(pending: PendingWorkspaceRestoreV2): Promise<void> {
 After successful `appendEntries`, call this helper and return. Keep the existing `catch` path unchanged: every exception after pending
 publication calls `resolvePendingUnderLease()` and handles committed/not-committed/needs-user exactly as before.
 
-- [ ] **Step 4: Add cleanup-failure Recovery coverage**
+- [x] **Step 4: Add cleanup-failure Recovery coverage**
 
 Spy on `pending.removeLocked()` to throw once, then delegate normally. Assert executor enters Recovery, returns the committed result,
 and leaves no pending intent. Retain the existing marker-CAS failure test to prove abnormal completion still works.
 
-- [ ] **Step 5: Run executor, Recovery, and crash tests and verify GREEN**
+- [x] **Step 5: Run executor, Recovery, and crash tests and verify GREEN**
 
 Run:
 
@@ -424,7 +424,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-restore-execu
 
 Expected: all tests pass, including real child-process crash coverage.
 
-- [ ] **Step 6: Commit normal completion fast path**
+- [x] **Step 6: Commit normal completion fast path**
 
 ```bash
 git add packages/coding-agent/workspace-rewind/workspace-restore-executor.ts packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts
@@ -439,7 +439,7 @@ git commit -m "perf: reserve rewind recovery for exceptional outcomes"
 - Modify: `packages/coding-agent/workspace-rewind/workspace-restore-executor.ts`
 - Modify: `packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts`
 
-- [ ] **Step 1: Write failing Git process-count tests**
+- [x] **Step 1: Write failing Git process-count tests**
 
 Spy on `fixture.git.run` after fixture setup. Preparing and publishing a mutation with a known expected head must execute
 `commit-tree` and `update-ref`, but no `for-each-ref`:
@@ -456,7 +456,7 @@ expect(run.mock.calls.filter(([args]) => args.includes("update-ref"))).toHaveLen
 
 Keep the moved-head and symbolic-ref tests as required safety coverage.
 
-- [ ] **Step 2: Run mutation-log tests and verify RED**
+- [x] **Step 2: Run mutation-log tests and verify RED**
 
 Run:
 
@@ -466,7 +466,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-mutation-log.
 
 Expected: process-count test reports two or more `for-each-ref` calls.
 
-- [ ] **Step 3: Remove pre-CAS reads**
+- [x] **Step 3: Remove pre-CAS reads**
 
 Delete `await this.readHead()` from `prepare()` and `publishPrepared()`. Keep the prepared-token capability check and exact
 `update-ref --no-deref <ref> <new> <expected>` CAS. The existing symbolic-ref test is a mandatory gate: Git must reject the CAS
@@ -476,7 +476,7 @@ read and leave the process-count gate at one `for-each-ref`; do not change symbo
 Remove the initial executor `readHead()` equality check only after its callers pass a source returned while holding the Writer Lease.
 The final `update-ref` CAS remains authoritative, and target live-state validation still runs before the first write.
 
-- [ ] **Step 4: Run mutation/executor correctness tests and verify GREEN**
+- [x] **Step 4: Run mutation/executor correctness tests and verify GREEN**
 
 Run:
 
@@ -486,7 +486,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-mutation-log.
 
 Expected: all tests pass; stale and symbolic heads remain rejected.
 
-- [ ] **Step 5: Commit reduced Git fixed cost**
+- [x] **Step 5: Commit reduced Git fixed cost**
 
 ```bash
 git add packages/coding-agent/workspace-rewind/workspace-mutation-log.ts packages/coding-agent/workspace-rewind/workspace-mutation-log.test.ts packages/coding-agent/workspace-rewind/workspace-restore-executor.ts packages/coding-agent/workspace-rewind/workspace-restore-executor.test.ts
@@ -501,7 +501,7 @@ git commit -m "perf: reduce rewind shadow git head reads"
 - Modify: `scripts/benchmark-agent-rewind-snapshots.ts`
 - Modify: `docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`
 
-- [ ] **Step 1: Write a failing timing observer test**
+- [x] **Step 1: Write a failing timing observer test**
 
 Add an optional executor callback and assert one complete record is emitted:
 
@@ -520,7 +520,7 @@ expect(onTiming).toHaveBeenCalledWith(
 );
 ```
 
-- [ ] **Step 2: Run the timing test and verify RED**
+- [x] **Step 2: Run the timing test and verify RED**
 
 Run:
 
@@ -530,7 +530,7 @@ npm test -- --run packages/coding-agent/workspace-rewind/workspace-restore-execu
 
 Expected: constructor option/type is missing.
 
-- [ ] **Step 3: Implement non-authoritative phase timing**
+- [x] **Step 3: Implement non-authoritative phase timing**
 
 Add `WorkspaceRestoreTiming` and `onTiming?: (timing) => void`. Measure with `performance.now()` around existing awaits; do not add
 new awaits, files, locks, or durable state. Emit the record in `finally`, including failures, with `outcome: "committed" | "failed"`.
@@ -538,13 +538,13 @@ new awaits, files, locks, or durable state. Emit the record in `finally`, includ
 The minimum fields are `totalMs`, `prepareCommitMs`, `pendingPublishMs`, `applyFilesMs`, `verifyFilesMs`, `publishHeadMs`,
 `appendMarkerMs`, `pendingCleanupMs`, `pathCount`, and `outcome`.
 
-- [ ] **Step 4: Extend the benchmark with Apply-only rows**
+- [x] **Step 4: Extend the benchmark with Apply-only rows**
 
 Use the existing restore fixture but start the timer after Preview/confirmation and before executor Apply. Run at least 30 warm
 iterations for 1/10/100 paths and record `p50Ms`, `p95Ms`, `maxMs`, phase p95 values, and Git process count. Preserve existing JSON
 fields and historical rows.
 
-- [ ] **Step 5: Run focused performance gates**
+- [x] **Step 5: Run focused performance gates**
 
 Run:
 
@@ -562,7 +562,11 @@ Expected gates:
 
 If a gate fails, record the actual phase evidence and optimize only the dominant phase before rerunning. Do not loosen the thresholds.
 
-- [ ] **Step 6: Run full feature correctness**
+Final result: 200k p95 passed at 1,389.94–1,499.51 ms; 50k p95 did not pass the `<1,000 ms` target and measured
+1,254.96–1,303.33 ms. All four rows had `fallbackCount=0` and 36 Git processes per Apply. The remaining fixed cost is retained
+because the final live-target, exact marker, head, and pending checks close concrete safety regressions.
+
+- [x] **Step 6: Run full feature correctness**
 
 Run:
 
@@ -575,7 +579,10 @@ git diff --check
 Expected: all Rewind-focused tests pass; Rewind-related TypeScript diagnostics are zero. If repo-wide unrelated baseline diagnostics
 remain, record them separately and do not claim a clean repo-wide TypeScript gate.
 
-- [ ] **Step 7: Record measured results and commit**
+Final result: the single-worker Rewind suite completed 56 files with 912 pass, 2 skip, and 0 fail. Repo-wide TypeScript remained
+exit 2 only on unrelated baseline paths; all Rewind and benchmark target paths had zero diagnostics.
+
+- [x] **Step 7: Record measured results and commit**
 
 Append the exact commands, platform, Node version, p50/p95/max, phase breakdown, fallback count, test totals, and remaining boundary to
 the existing scale report.
@@ -591,17 +598,17 @@ git commit -m "perf: close rewind apply latency gates"
 - Modify: `docs/superpowers/specs/2026-08-29-agent-rewind-apply-fast-path-design.md`
 - Modify: `docs/superpowers/plans/2026-08-29-agent-rewind-apply-fast-path.md`
 
-- [ ] **Step 1: Compare implementation with every design invariant**
+- [x] **Step 1: Compare implementation with every design invariant**
 
 Confirm from code and tests that frozen-plan Apply, stable Preview head, suffix overlap, external Force distinction, live fingerprint,
 Writer Lease, pending, CAS, abnormal Recovery, crash tests, multi-Session preservation, and performance gates are all represented.
 
-- [ ] **Step 2: Update status using measured evidence**
+- [x] **Step 2: Update status using measured evidence**
 
 Change the design status from `待实施` only if its correctness and performance gates actually pass. Mark completed plan checkboxes and
 leave any failed production gate visibly unchecked with its measured result.
 
-- [ ] **Step 3: Verify the final diff**
+- [x] **Step 3: Verify the final diff**
 
 Run:
 
@@ -613,7 +620,7 @@ git log --oneline -10
 
 Expected: only known pre-existing unrelated worktree changes remain; all fast-path work is committed in focused commits.
 
-- [ ] **Step 4: Commit final documentation state**
+- [x] **Step 4: Commit final documentation state**
 
 ```bash
 git add -f docs/superpowers/specs/2026-08-29-agent-rewind-apply-fast-path-design.md docs/superpowers/plans/2026-08-29-agent-rewind-apply-fast-path.md

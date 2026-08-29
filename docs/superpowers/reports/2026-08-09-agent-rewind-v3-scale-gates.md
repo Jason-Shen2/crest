@@ -181,3 +181,92 @@ restore；没有依赖 full-reconcile fallback，也没有把失败行伪装成�
 
 因此当前可陈述的生产边界是：**合成 Git Workspace 在 200k scanned entries 内通过完整 Rewind V3 规模矩阵；
 多 Session 高并发延迟和真实仓库异质性仍是上线前需要单独评估的体验/环境风险。**
+
+## 2026-08-29：Undo/Redo Apply 快路径门禁
+
+### 为什么增加独立 Apply 门禁
+
+前面的 `restore` row 包含计划、确认和多轮正常成功后的 Recovery 风格重校验，能说明端到端安全流程，却不能准确
+解释用户点击确认后的等待。本轮新增 `restore-apply` scenario：fixture、checkpoint、Preview 和 confirmation 全部在
+计时前完成，计时只覆盖 frozen plan 被 executor 应用到 durable completion 的过程。
+
+实现依次删除了 Apply planner 重算、正常成功 Recovery classifier、可信 pending/marker 的重复 Git 校验，并将多路径
+state 查询批处理。最终安全回归还发现旧 Recovery 隐含提供了成功后的 target/marker 复核，因此正常路径保留一个
+只复用可信事实的轻量 finalizer。Writer Lease、suffix overlap、live fingerprint、source-head check、pending、
+文件应用/验证、head CAS、marker CAS 和异常 Recovery 均保留。
+
+### 最终命令与环境
+
+```bash
+PATH=/opt/homebrew/bin:/usr/bin:/bin \
+  npm run benchmark:agent-rewind-snapshots -- \
+  --entries=50000,200000 --iterations=30 --apply-only --paths=1
+```
+
+- Node.js：22.22.3
+- 每组：30 次 warm Apply
+- target path：1
+- bytes read：每组累计 800 bytes
+- commit traversal：每组累计 630
+- fallback：全部 0
+
+### 最终 30 轮结果
+
+| entries | shape | p50 | p95 | max | Git processes / Apply |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 50,000 | deep | 1,188.28 ms | 1,303.33 ms | 1,304.00 ms | 36 |
+| 50,000 | wide | 1,166.95 ms | 1,254.96 ms | 1,259.05 ms | 36 |
+| 200,000 | deep | 1,399.90 ms | 1,499.51 ms | 1,531.04 ms | 36 |
+| 200,000 | wide | 1,308.11 ms | 1,389.94 ms | 1,398.08 ms | 36 |
+
+phase p95：
+
+| entries / shape | prepare commit | pending publish | apply files | verify files | publish head | marker | cleanup |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 50k deep | 462.98 | 135.86 | 204.64 | 103.88 | 41.81 | 0.04 | 200.36 |
+| 50k wide | 423.99 | 138.59 | 204.35 | 104.79 | 41.57 | 0.04 | 201.88 |
+| 200k deep | 619.63 | 143.03 | 223.64 | 108.13 | 46.25 | 0.04 | 214.65 |
+| 200k wide | 543.44 | 133.50 | 211.35 | 103.14 | 43.30 | 0.04 | 198.87 |
+
+phase 单位均为毫秒。不同 phase 的独立 p95 不能直接相加为 total p95。
+
+### 前后变化与门禁结论
+
+历史 `restore` p95 在 50k 为 5.66–8.44 秒，在 200k 为 7.52–9.80 秒；新 Apply-only p95 为 1.25–1.50 秒。
+两者计时边界不同，不能当作严格微基准同比，但能解释产品体验：原路径的完整重算和成功后 Recovery 已不再存在于
+点击 Apply 的热路径。
+
+- 200k 单文件 Apply `<1,500 ms`：p95 通过，但 deep 仅有 0.49 ms 余量，max 为 1,531.04 ms；
+- 50k 单文件 Apply `<1,000 ms`：未通过，实际为 1,254.96–1,303.33 ms；
+- fallback、pending leak、source Workspace 非目标修改：未出现；
+- 50k 与 200k 的 Git process count 都固定为 36，证明没有重新引入全 workspace 扫描放大。
+
+剩余主耗时是 private Shadow Git 结果 commit 准备，其次是最小 pending 的 durable publish/cleanup 和安全文件 helper。
+这些步骤直接承担 CAS、崩溃证据与防 symlink/partial-write 语义。本轮没有为追求 `<1s` 删除它们，也没有引入常驻
+worker、后台预建 commit、第二套 cache 或新 Recovery 状态。
+
+因此本轮关闭的是“算法会随 monorepo 总 entry 数线性放大”的生产风险，并显著改善点击等待；没有关闭 50k 的
+激进体验目标，也不据此宣称所有真实仓库环境已经 production-ready。
+
+### 最终正确性收口
+
+第一次全量并发运行得到 901 pass、2 skip、11 fail：其中 8 项是 5 秒 Git/文件系统测试在 56 个文件并发时的资源
+超时，2 项是前端/E2E 等待时序；这些失败在单 worker 中均通过。剩余 1 项暴露出旧测试仍通过 Recovery locator
+不可用制造 pending，与新正常路径语义不一致，改为在 final verification 窗口注入真实外部磁盘写入后通过。
+
+最终命令：
+
+```bash
+PATH=/opt/homebrew/bin:/usr/bin:/bin \
+  npm test -- --run --maxWorkers=1 \
+  packages/coding-agent/workspace-rewind \
+  emain/agent-rewind.e2e.test.ts \
+  frontend/app/agent/rewind
+```
+
+结果：56 files，912 pass、2 skip、0 fail，503.35 秒。另一个定向安全矩阵覆盖 executor、Recovery、真实子进程
+crash、engine 和 multi-Session，共 43/43 pass。
+
+全仓 `npx tsc --noEmit --pretty false` 仍以 exit 2 结束；所有 diagnostics 均位于既有的非 Rewind baseline，
+`workspace-rewind`、`agent-rewind.e2e`、`frontend/app/agent/rewind` 和 benchmark 路径为 0。由此关闭专项正确性，
+但不关闭 repo-wide TypeScript gate。
