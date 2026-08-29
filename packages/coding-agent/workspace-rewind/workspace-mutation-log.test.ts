@@ -4,7 +4,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import { WorkspaceMutationLog, type WorkspaceMutationMetadataV1 } from "./workspace-mutation-log";
@@ -77,6 +77,28 @@ describe.sequential("WorkspaceMutationLog", () => {
         });
 
         await expect(fixture.log.publishPrepared(prepared)).resolves.toBe(prepared.commit);
+        await expect(fixture.log.readHead()).resolves.toBe(prepared.commit);
+    });
+
+    test("uses one head validation before update-ref CAS", async () => {
+        const fixture = await makeFixture(roots);
+        const base = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "base" }),
+            metadata: makeMetadata("external"),
+        });
+        const nextTree = await writeTree(fixture, { "shared.txt": "next" });
+        const run = vi.spyOn(fixture.git, "run");
+
+        const prepared = await fixture.log.prepare({
+            expectedHead: base,
+            tree: nextTree,
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        await fixture.log.publishPrepared(prepared);
+
+        expect(
+            run.mock.calls.filter(([args]) => args[0] === "for-each-ref" && args.at(-1) === WorkspaceHeadRef)
+        ).toHaveLength(1);
         await expect(fixture.log.readHead()).resolves.toBe(prepared.commit);
     });
 

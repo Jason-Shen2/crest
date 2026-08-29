@@ -115,7 +115,6 @@ export class WorkspaceMutationLog {
         if (metadata.length > MaxMetadataBytes) {
             throw new Error("Workspace mutation metadata exceeds the size limit");
         }
-        await this.readHead();
         const commitResult = await this.git.run(
             ["commit-tree", input.tree, ...(input.expectedHead == null ? [] : ["-p", input.expectedHead])],
             {
