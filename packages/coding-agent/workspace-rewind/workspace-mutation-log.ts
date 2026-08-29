@@ -42,6 +42,7 @@ export interface PreparedWorkspaceMutation {
 
 export interface ForeignOverlapInput {
     afterCommit: string;
+    head?: string;
     paths: readonly string[];
     includedCommits: ReadonlySet<string>;
     ownerSessionId: string;
@@ -197,6 +198,7 @@ export class WorkspaceMutationLog {
 
     async findForeignOverlap(input: ForeignOverlapInput): Promise<ForeignOverlap[]> {
         validateSha1(input.afterCommit);
+        if (input.head != null) validateSha1(input.head);
         if (typeof input.ownerSessionId !== "string" || !input.ownerSessionId) {
             throw new Error("Invalid owner Session id");
         }
@@ -213,7 +215,7 @@ export class WorkspaceMutationLog {
         }
         const remainingIncluded = new Set(includedCommits);
         await this.read(input.afterCommit);
-        const head = await this.readHead();
+        const head = input.head ?? (await this.readHead());
         if (!head) {
             throw new Error("Workspace mutation head is missing");
         }
@@ -256,7 +258,7 @@ export class WorkspaceMutationLog {
         if (remainingIncluded.size !== 0) {
             throw new Error("Included commit is outside the requested mutation suffix");
         }
-        if ((await this.readHead()) !== head) {
+        if (input.head == null && (await this.readHead()) !== head) {
             throw new Error("Workspace mutation head moved during overlap inspection");
         }
         return overlaps;

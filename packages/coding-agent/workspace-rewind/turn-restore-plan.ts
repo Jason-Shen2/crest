@@ -36,6 +36,7 @@ interface PlanTurnRestoreBaseInput {
     workspace: CanonicalWorkspaceIdentity;
     rawEntries: SessionTreeEntry[];
     semanticLeafId: string | null;
+    authorityHead?: string;
     sourceTurnId: string;
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
@@ -367,6 +368,7 @@ async function classifyTurnTransitions(
     const historyBlockers = await findCrestHistoryBlockers(plan, {
         mutationLog: input.mutationLog,
         afterCommit: historyBoundary,
+        ...(input.authorityHead == null ? {} : { authorityHead: input.authorityHead }),
         paths: [...transitions.keys()].sort(),
         includedCommits,
         ownerSessionId: input.sessionId,

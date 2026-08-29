@@ -69,6 +69,7 @@ export interface PlanRewindInput {
     workspace: CanonicalWorkspaceIdentity;
     rawEntries: SessionTreeEntry[];
     semanticLeafId: string | null;
+    authorityHead?: string;
     targetTurnId: string;
     currentWorkspaceState?: WorkspaceStateV1;
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
@@ -84,6 +85,7 @@ export interface PlanRedoInput {
     workspace: CanonicalWorkspaceIdentity;
     rawEntries: SessionTreeEntry[];
     semanticLeafId: string | null;
+    authorityHead?: string;
     rewindState: WorkspaceRewindMarkerV1;
     inspectLivePath: (path: string) => Promise<LiveCapturedPathState>;
     inspectLivePaths?: (paths: readonly string[]) => Promise<ReadonlyMap<string, LiveCapturedPathState>>;
@@ -247,6 +249,7 @@ export async function findCrestHistoryBlockers(
     input: {
         mutationLog: RestoreMutationLog;
         afterCommit: string;
+        authorityHead?: string;
         paths: readonly string[];
         includedCommits: ReadonlySet<string>;
         ownerSessionId: string;
@@ -257,6 +260,7 @@ export async function findCrestHistoryBlockers(
     try {
         const overlaps = await input.mutationLog.findForeignOverlap({
             afterCommit: input.afterCommit,
+            ...(input.authorityHead == null ? {} : { head: input.authorityHead }),
             paths: input.paths,
             includedCommits: input.includedCommits,
             ownerSessionId: input.ownerSessionId,
@@ -828,6 +832,7 @@ export async function planRewind(input: PlanRewindInput): Promise<RestorePlanV1>
     const historyBlockers = await findCrestHistoryBlockers(plan, {
         mutationLog: input.mutationLog,
         afterCommit: historyBoundary,
+        ...(input.authorityHead == null ? {} : { authorityHead: input.authorityHead }),
         paths: [...transitions.keys()].sort(),
         includedCommits,
         ownerSessionId: input.sessionId,
@@ -905,6 +910,7 @@ export async function planRedo(input: PlanRedoInput): Promise<RestorePlanV1> {
     const historyBlockers = await findCrestHistoryBlockers(plan, {
         mutationLog: input.mutationLog,
         afterCommit: input.rewindState.currentSnapshot.id,
+        ...(input.authorityHead == null ? {} : { authorityHead: input.authorityHead }),
         paths: [...transitions.keys()].sort(),
         includedCommits: new Set(),
         ownerSessionId: input.sessionId,
