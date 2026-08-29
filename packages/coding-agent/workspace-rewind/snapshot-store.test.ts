@@ -248,6 +248,28 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         );
     });
 
+    it("derives candidate scope and coverage with one immutable manifest read", async () => {
+        const { fixture, before, after, candidates } = await makeHundredChangedCandidates();
+        const expected = await fixture.store.readSnapshotMetadata(before.ref);
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const metadata = await fixture.store.deriveCandidateSnapshotMetadata(before.ref, after.ref.tree, candidates);
+
+        expect(metadata).toEqual({
+            scope: expected.scope,
+            coverage: {
+                complete: after.coverage.complete,
+                eligibleEntryCount: after.coverage.eligibleEntryCount,
+                exclusions: after.coverage.exclusions,
+            },
+        });
+        expect(run).toHaveBeenCalledTimes(4);
+        expect(run).toHaveBeenCalledWith(
+            expect.arrayContaining(["diff-tree"]),
+            expect.objectContaining({ gitDir: fixture.store.storeRoot })
+        );
+    });
+
     it("updates only candidate path exclusions when deriving coverage", async () => {
         const fixture = await makeFixture();
         await writeFile(join(fixture.workspace, ".gitignore"), "cache\ncache-keep\n");

@@ -40,14 +40,14 @@ afterEach(async () => {
 test("executes a result-commit restore without any restore-time workspace capture", async () => {
     const fixture = await makeFixture();
     const capture = vi.spyOn(fixture.store, "capture");
-    const coverage = vi.spyOn(fixture.store, "computeCandidateSnapshotCoverage");
+    const metadata = vi.spyOn(fixture.store, "deriveCandidateSnapshotMetadata");
     const onCommitted = vi.fn(async () => {});
     const executor = makeExecutor(fixture, { onCommitted });
 
     const result = await execute(executor, fixture, fixture.plan);
 
     expect(capture).not.toHaveBeenCalled();
-    expect(coverage).toHaveBeenCalledWith(fixture.source, expect.stringMatching(/^[0-9a-f]{40}$/), [
+    expect(metadata).toHaveBeenCalledWith(fixture.source, expect.stringMatching(/^[0-9a-f]{40}$/), [
         { path: "file.txt", state: fixture.target },
     ]);
     expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("planned\n");
@@ -119,6 +119,55 @@ test("does not revalidate trusted prepared state as crash-recovery input", async
 
     expect(validateCommitFacts).not.toHaveBeenCalled();
     expect(readCommitSnapshot).not.toHaveBeenCalled();
+}, 30_000);
+
+test("uses the confirmed expected-current states without rereading the source snapshot for a normal restore", async () => {
+    const fixture = await makeFixture();
+    const readPathStates = vi.spyOn(fixture.store, "readPathStates");
+    const executor = makeExecutor(fixture);
+
+    await execute(executor, fixture, fixture.plan);
+
+    expect(readPathStates).not.toHaveBeenCalled();
+}, 30_000);
+
+test("rereads synchronized source states for a forced restore", async () => {
+    const fixture = await makeFixture();
+    const actualSource = fixture.plan.paths[0]!.expectedCurrent;
+    if (actualSource.state === "excluded") throw new Error("test source path unexpectedly excluded");
+    const forcedPlan: RestorePlanV1 = {
+        ...fixture.plan,
+        paths: [
+            {
+                ...fixture.plan.paths[0]!,
+                expectedCurrent: fixture.target,
+                liveFingerprint: fingerprint(actualSource),
+                conflict: "forceable-drift",
+            },
+        ],
+        forceRequired: true,
+    };
+    const readPathStates = vi.spyOn(fixture.store, "readPathStates");
+    const executor = makeExecutor(fixture);
+    const confirmations = new RewindConfirmationRegistry();
+
+    await executor.execute({
+        ...executionInput(fixture, forcedPlan),
+        confirmation: confirmations.take(confirmations.issue(forcedPlan, fixture.source.id)),
+        mode: "force-drift",
+    });
+
+    expect(readPathStates).toHaveBeenCalledWith(fixture.source, ["file.txt"]);
+}, 30_000);
+
+test("does not repeat the apply primitive's successful target verification", async () => {
+    const fixture = await makeFixture();
+    const executor = makeExecutor(fixture);
+    const verifyPath = vi.spyOn(executor, "verifyPath");
+
+    await execute(executor, fixture, fixture.plan);
+
+    expect(verifyPath).not.toHaveBeenCalled();
 }, 30_000);
 
 test.each([

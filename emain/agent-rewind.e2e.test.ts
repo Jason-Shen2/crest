@@ -643,7 +643,6 @@ async function makeFixture() {
                 enabled: true,
                 busy: false,
                 frozen: false,
-                verifySnapshot: (snapshot) => store.verifyOwnedSnapshot(snapshot),
                 readBlob: (oid) => store.readBlob(oid),
                 getQuota: async () => {
                     const quota = await store.getQuotaStatus();
@@ -1172,7 +1171,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                     return session;
                 });
                 fullReconcile = vi.spyOn(WorkspaceSnapshotStore.prototype, "captureFullReconcile");
-                running = value.makeService();
+                running = value.makeService(applyCapturedPath, async () => {
+                    await value!.rewindState();
+                });
                 originalRegistryDisposeAll = running.registry.disposeAll;
                 disposeAll = vi.spyOn(running.registry, "disposeAll");
                 client = value.register(running.service).client;

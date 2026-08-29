@@ -36,7 +36,7 @@ import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoIn
 import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
-import { WorkspaceRestoreExecutor } from "./workspace-restore-executor";
+import { WorkspaceRestoreExecutor, type WorkspaceRestoreTiming } from "./workspace-restore-executor";
 import { ProcessWorkspaceWriterLeases, type WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
 type WorkspaceRewindMarkerV1 = Extract<WorkspaceStateV1, { kind: "rewind" }>;
@@ -125,6 +125,7 @@ export interface WorkspaceRewindEngineOptions {
     createOperationId?: () => string;
     now?: () => Date;
     onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
+    onRestoreTiming?: (timing: WorkspaceRestoreTiming) => void;
 }
 
 interface PlannedRestore {
@@ -314,6 +315,7 @@ export class WorkspaceRewindEngine {
             createOperationId: options.createOperationId,
             now: options.now,
             onCommitted: options.onCommitted,
+            onTiming: options.onRestoreTiming,
         });
     }
 
@@ -618,7 +620,7 @@ export class WorkspaceRewindEngine {
         input: ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" })
     ): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        return this.withRestoreLease(input.sessionId, async (source) => {
+        return this.withRestoreLease(input.sessionId, input.mode, async (source) => {
             const plan = await this.assertFrozenPlanFresh({
                 input,
                 source,
@@ -646,7 +648,7 @@ export class WorkspaceRewindEngine {
 
     private async apply(input: ApplyRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        return this.withRestoreLease(input.sessionId, async (source) => {
+        return this.withRestoreLease(input.sessionId, input.mode, async (source) => {
             const plan = await this.assertFrozenPlanFresh({
                 input,
                 source,
@@ -715,6 +717,7 @@ export class WorkspaceRewindEngine {
 
     private async withRestoreLease<T>(
         sessionId: string,
+        mode: "normal" | "force-drift",
         operation: (source: WorkspaceSnapshotRefV1) => Promise<T>
     ): Promise<T> {
         if (!this.snapshotSource) {
@@ -726,7 +729,11 @@ export class WorkspaceRewindEngine {
             boundaryToken: `restore-${randomUUID()}`,
         });
         try {
-            return await operation((await this.snapshotSource.synchronizeExternal()).ref);
+            const source =
+                mode === "force-drift"
+                    ? await this.snapshotSource.synchronizeExternal()
+                    : await this.snapshotSource.readHead();
+            return await operation(source.ref);
         } finally {
             lease.release();
         }

@@ -152,6 +152,7 @@ function makeHarness(input: {
     plan?: RestorePlanV1;
     redoPlan?: RestorePlanV1;
     blobs?: Record<string, Buffer | string | Error>;
+    onRestoreTiming?: WorkspaceRewindEngineOptions["onRestoreTiming"];
 }) {
     const plan = input.plan ?? restorePlan();
     const session = makeSession();
@@ -188,6 +189,7 @@ function makeHarness(input: {
         planRedo: vi.fn(async () => structuredClone(input.redoPlan ?? plan)),
         inspectLivePath: vi.fn(),
         inspectLivePaths: vi.fn(),
+        onRestoreTiming: input.onRestoreTiming,
     };
     return {
         engine: new WorkspaceRewindEngine(options),
@@ -259,6 +261,8 @@ describe("WorkspaceRewindEngine transaction", () => {
         vi.spyOn(value.engine.executor, "execute").mockResolvedValue(committed);
         vi.mocked(value.options.planRewind!).mockClear();
         vi.mocked(value.options.planRedo!).mockClear();
+        vi.mocked(value.snapshotSource.readHead).mockClear();
+        vi.mocked(value.snapshotSource.synchronizeExternal).mockClear();
 
         await expect(
             value.engine.applyRewind({
@@ -274,9 +278,57 @@ describe("WorkspaceRewindEngine transaction", () => {
 
         expect(value.options.planRewind).not.toHaveBeenCalled();
         expect(value.options.planRedo).not.toHaveBeenCalled();
+        expect(value.snapshotSource.readHead).toHaveBeenCalledOnce();
+        expect(value.snapshotSource.synchronizeExternal).not.toHaveBeenCalled();
         expect(value.engine.executor.execute).toHaveBeenCalledWith(
             expect.objectContaining({ plan: confirmation.plan, confirmation })
         );
+    });
+
+    it("synchronizes external bytes before a forced restore", async () => {
+        const forcedPlan = restorePlan({
+            paths: [
+                {
+                    path: "file.txt",
+                    operation: "write",
+                    target: { state: "file", oid: OldOid, executable: false },
+                    expectedCurrent: { state: "file", oid: NewOid, executable: false },
+                    liveFingerprint: CleanFingerprint,
+                    conflict: "forceable-drift",
+                    reason: "files changed on disk since the agent last wrote them",
+                },
+            ],
+            forceRequired: true,
+        });
+        const value = makeHarness({ plan: forcedPlan });
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+        const confirmation = value.confirmations.take(preview.confirmationToken!);
+        vi.spyOn(value.engine.executor, "execute").mockResolvedValue({
+            sessionMetadata: value.session.metadata,
+            semanticLeafId: "operation-leaf-1",
+            displayLeafId: "operation-leaf-1",
+        });
+        vi.mocked(value.snapshotSource.readHead).mockClear();
+        vi.mocked(value.snapshotSource.synchronizeExternal).mockClear();
+
+        await value.engine.applyRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+            mode: "force-drift",
+            confirmation,
+        });
+
+        expect(value.snapshotSource.synchronizeExternal).toHaveBeenCalledOnce();
+        expect(value.snapshotSource.readHead).not.toHaveBeenCalled();
     });
 
     it("constructs one pending store and Resolver shared by every restore path", () => {
@@ -295,6 +347,13 @@ describe("WorkspaceRewindEngine transaction", () => {
 
         expect(engine.executor.pending).toBe((engine as unknown as { pending: unknown }).pending);
         expect(engine.executor.recovery).toBe((engine as unknown as { recovery: unknown }).recovery);
+    });
+
+    it("forwards the restore timing observer to the executor", () => {
+        const onRestoreTiming = vi.fn();
+        const value = makeHarness({ onRestoreTiming });
+
+        expect(value.engine.executor.onTiming).toBe(onRestoreTiming);
     });
 
     it("rejects explicitly mismatched pending store and Resolver dependencies", () => {

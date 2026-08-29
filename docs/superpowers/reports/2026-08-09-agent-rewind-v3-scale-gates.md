@@ -270,3 +270,27 @@ crash、engine 和 multi-Session，共 43/43 pass。
 全仓 `npx tsc --noEmit --pretty false` 仍以 exit 2 结束；所有 diagnostics 均位于既有的非 Rewind baseline，
 `workspace-rewind`、`agent-rewind.e2e`、`frontend/app/agent/rewind` 和 benchmark 路径为 0。由此关闭专项正确性，
 但不关闭 repo-wide TypeScript gate。
+
+## 2026-08-29：真实点击链路二次校正
+
+前一轮 E2E 仍使用空 broadcaster，因此只测到 renderer client → IPC → persistence，没有覆盖产品在 commit 后同步构建并
+发布权威 Session state 的步骤。本轮把 live incremental E2E 改为每次 mutation 都执行真实 rewind-state 构建，并拆分
+测量 executor、state publication 和 client completion。
+
+第二阶段核心 Apply（空 broadcaster）结果：
+
+| Rewind | Redo | Turn Undo |
+| ---: | ---: | ---: |
+| 950.34 ms | 943.27 ms | 951.22 ms |
+
+相对 1,699.97–1,725.19 ms 的校正前基线，核心 Apply 降低约 44%。启用真实权威 rewind-state 构建后，state 构建为
+168.80–222.92 ms，完整三次 mutation 为 1,130.84–1,184.65 ms。
+
+进一步检查发现旧 state builder 会对当前会话每个 eligible turn 的 `before`/`after` 做串行 Git-backed snapshot
+verification；该工作与会话历史长度线性增长，但只用于提前隐藏坏入口。Preview/Apply 已经对实际操作引用的 snapshot
+执行 fail-closed 验证，因此删除 state publication 的重复预检，不改变磁盘写入安全边界。损坏 checkpoint 现在会在用户
+点击 Preview 时 hard-block，而不会在后台状态刷新中被静默过滤。
+
+最终专项安全矩阵：11 files、145 pass、0 fail，295.80 秒。覆盖真实文件系统 restore、normal/Force drift、ABA、
+多 Session、pending、journal root swap/no-overwrite、真实 child-process crash、Session state/broadcaster 和 renderer → IPC →
+production persistence E2E。全仓 TypeScript 仍因既有非 Rewind baseline 以 exit 2 结束；本轮所有修改路径无 diagnostic。

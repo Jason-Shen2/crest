@@ -626,3 +626,75 @@ Expected: only known pre-existing unrelated worktree changes remain; all fast-pa
 git add -f docs/superpowers/specs/2026-08-29-agent-rewind-apply-fast-path-design.md docs/superpowers/plans/2026-08-29-agent-rewind-apply-fast-path.md
 git commit -m "docs: record rewind apply fast path results"
 ```
+
+### Task 8: Remove eager external synchronization from normal Apply
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/rewind-engine.ts`
+- Modify: `packages/coding-agent/workspace-rewind/rewind-engine.test.ts`
+- Modify: `packages/coding-agent/workspace-rewind/rewind-engine.integration.test.ts`
+- Modify: `emain/agent-rewind.e2e.test.ts`
+- Modify: `docs/superpowers/specs/2026-08-29-agent-rewind-apply-fast-path-design.md`
+- Modify: `docs/superpowers/reports/2026-08-09-agent-rewind-v3-scale-gates.md`
+
+- [x] **Step 1: Record the missing E2E timing boundary**
+
+Run the live incremental E2E on Node.js 22 and measure Preview, Apply, and authoritative state calls independently. Record that the
+three Apply calls are about 1.7 seconds while the 100-entry executor-only benchmark is about 0.92 seconds.
+
+- [x] **Step 2: Write failing source-selection tests**
+
+Require normal Rewind/Redo/Turn Undo/Turn Redo to use `snapshotSource.readHead()` without calling
+`snapshotSource.synchronizeExternal()`. Require `force-drift` Rewind/Turn Undo to retain synchronization.
+
+- [x] **Step 3: Implement mode-aware restore source selection**
+
+Inside the existing Writer Lease, select the source with `readHead()` for `normal` mode and `synchronizeExternal()` only for
+`force-drift`. Do not change confirmation, freshness, target-path verification, pending, CAS, marker, or Recovery behavior.
+
+- [x] **Step 4: Prove drift and multi-Session safety**
+
+Add a real filesystem test where a non-target file changes after Preview: normal Apply restores only its target, preserves the external
+file bytes, and a later snapshot capture records them. Keep existing same-target drift, Force, multi-Session, crash, and recovery tests.
+
+- [x] **Step 5: Re-run real E2E and correctness gates**
+
+Run the focused engine tests, restore/crash/multi-Session matrix, and live incremental E2E on Node.js 22. Compare the same three Apply
+timings with the 1.70–1.73 second baseline; do not report the executor-only number as user-perceived latency.
+
+- [x] **Step 6: Record final evidence**
+
+Append exact before/after E2E timings and correctness results to the scale report. Keep any missed target visible; do not widen the gate.
+
+### Task 9: Remove history-scaled work from authoritative state publication
+
+**Files:**
+- Modify: `packages/coding-agent/workspace-rewind/session-state.ts`
+- Modify: `packages/coding-agent/workspace-rewind/session-state.test.ts`
+- Modify: `emain/agent-ipc.ts`
+- Modify: `emain/agent-rewind.e2e.test.ts`
+
+- [x] **Step 1: Reproduce the real post-Apply boundary**
+
+Make the live incremental E2E publish a real rewind state after each mutation. Measure executor, authoritative state publication, and
+renderer-client completion separately instead of using the executor benchmark as the UI number.
+
+- [x] **Step 2: Identify history-scaled duplicate validation**
+
+Confirm that `buildAgentRewindSessionStateView()` verifies `before` and `after` for every eligible checkpoint on every publication,
+while Preview/Apply already verifies every snapshot that can affect a mutation.
+
+- [x] **Step 3: Write the failing state-publication test**
+
+Require renderer-state publication to derive eligibility from structurally valid persisted checkpoints without invoking snapshot object
+validation. Corrupt objects may remain visible until Preview, but Preview must continue to hard-block them.
+
+- [x] **Step 4: Remove the duplicate preflight**
+
+Delete `verifySnapshot` from `AgentRewindSessionStateProbe` and its live/cold IPC wiring. Keep redo file projection, quota publication,
+Preview validation, confirmation freshness, live-path validation, executor verification, and Recovery unchanged.
+
+- [x] **Step 5: Validate the real authoritative path**
+
+Run session-state/broadcaster tests plus the two-phase renderer → IPC → persistence E2E with real authoritative state construction.
+Record both the fixed Apply cost and the remaining state-publication cost.

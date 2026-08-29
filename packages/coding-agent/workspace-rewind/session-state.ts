@@ -9,7 +9,6 @@ import { projectRedoFileRows } from "./redo-view";
 import type {
     FoldedWorkspaceSessionState,
     WorkspaceCheckpointV1,
-    WorkspaceSnapshotRefV1,
     WorkspaceStateV1,
 } from "./types";
 import { WorkspaceControlCustomTypes } from "./types";
@@ -290,7 +289,6 @@ export interface AgentRewindSessionStateProbe {
     enabled: boolean;
     busy: boolean;
     frozen: boolean;
-    verifySnapshot(snapshot: WorkspaceSnapshotRefV1): Promise<void>;
     readBlob(oid: string): Promise<Buffer>;
     getQuota(): Promise<AgentCheckpointQuotaView>;
 }
@@ -322,9 +320,9 @@ function messageText(entry: SessionTreeEntry): string {
 }
 
 /**
- * Builds the renderer state from the raw persisted branch and verifies every
- * advertised snapshot against the store. SQLite metadata alone is never
- * treated as proof that snapshot objects are still available.
+ * Builds non-destructive renderer state from the raw persisted branch.
+ * Snapshot integrity is checked by preview/apply before any workspace mutation;
+ * repeating it here would make every state publication scale with turn history.
  */
 export async function buildAgentRewindSessionStateView(
     entries: SessionTreeEntry[],
@@ -345,19 +343,7 @@ export async function buildAgentRewindSessionStateView(
         };
     }
 
-    const eligibleTurnIds: string[] = [];
-    for (const turnId of folded.eligibleTurnIds) {
-        const checkpoint = folded.checkpointsByTurnId.get(turnId);
-        if (checkpoint?.status !== "available") continue;
-        try {
-            await probe.verifySnapshot(checkpoint.before);
-            await probe.verifySnapshot(checkpoint.after);
-            eligibleTurnIds.push(turnId);
-        } catch {
-            // A corrupt/missing descriptor is a checkpoint gap, not an
-            // invitation for the renderer to attempt a destructive action.
-        }
-    }
+    const eligibleTurnIds = folded.eligibleTurnIds;
 
     const readableTurnIds = new Set(eligibleTurnIds);
     const turnChanges: AgentRewindSessionStateView["turnChanges"] = [];
@@ -377,8 +363,6 @@ export async function buildAgentRewindSessionStateView(
     const state = folded.conversationRedoState;
     if (state) {
         try {
-            await probe.verifySnapshot(state.currentSnapshot);
-            await probe.verifySnapshot(state.sourceSnapshot);
             const messages = revertedUserMessages(entries, state.rewind.targetTurnId, state.rewind.fromLeafId);
             const files = await projectRedoFileRows(state, probe.readBlob);
             if (!files) throw new Error("rewind marker is missing an expected current path state");

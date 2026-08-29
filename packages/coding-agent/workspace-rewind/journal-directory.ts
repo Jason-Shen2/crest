@@ -278,16 +278,22 @@ export async function publishAnchoredJournalEntryNoReplace(input: {
     rootIdentity: AnchoredJournalDirectoryIdentity;
     destinationName: string;
     bytes: Buffer;
-}): Promise<void> {
+}): Promise<AnchoredJournalEntry["identity"]> {
     const result = await runWorker(input.root, {
         type: "publish-no-replace",
         rootIdentity: input.rootIdentity,
         destinationName: input.destinationName,
         bytesBase64: input.bytes.toString("base64"),
     });
-    if (!isRecord(result) || result.ok !== true || Object.keys(result).length !== 1) {
+    if (
+        !isRecord(result) ||
+        result.ok !== true ||
+        !isEntryIdentity(result.entryIdentity) ||
+        Object.keys(result).sort().join(",") !== "entryIdentity,ok"
+    ) {
         throw new Error("Workspace recovery journal no-replace publication returned invalid output");
     }
+    return result.entryIdentity;
 }
 
 async function runPublicationWorker(
@@ -917,6 +923,13 @@ async function main() {
                 if (cleanupError.code !== "ENOENT") throw cleanupError;
             }
             throw error;
+        }
+        if (noReplace) {
+            const published = await fsp.lstat(input.destinationName, { bigint: true });
+            if (!published.isFile() || published.isSymbolicLink() || published.nlink !== 1n || (published.mode & 63n) !== 0n) {
+                throw new Error("unsafe published journal entry");
+            }
+            return { ok: true, entryIdentity: entryIdentity(published) };
         }
         return { ok: true };
     }

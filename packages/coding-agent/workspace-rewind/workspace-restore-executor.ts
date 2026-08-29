@@ -90,6 +90,7 @@ export class WorkspaceRestoreExecutor {
     readonly inspectPaths: NonNullable<WorkspaceRestoreExecutorOptions["inspectLivePaths"]>;
     readonly applyPath: ApplyPath;
     readonly verifyPath: VerifyPath;
+    readonly applyPathIncludesVerification: boolean;
     readonly createOperationId: () => string;
     readonly now: () => Date;
     readonly onCommitted: NonNullable<WorkspaceRestoreExecutorOptions["onCommitted"]>;
@@ -103,6 +104,8 @@ export class WorkspaceRestoreExecutor {
             options.inspectLivePaths ?? ((paths) => inspectLivePaths(this.store.identity.canonicalRoot, paths));
         this.applyPath = options.applyPath ?? applyCapturedPath;
         this.verifyPath = options.verifyPath ?? verifyCapturedPath;
+        this.applyPathIncludesVerification =
+            (options.applyPath == null || options.applyPath === applyCapturedPath) && options.verifyPath == null;
         this.createOperationId = options.createOperationId ?? randomUUID;
         this.now = options.now ?? (() => new Date());
         this.onCommitted = options.onCommitted ?? (async () => {});
@@ -149,10 +152,13 @@ export class WorkspaceRestoreExecutor {
                 ? orderedPaths.filter((path) => path.conflict === "forceable-drift").map((path) => path.path)
                 : [];
         const sourceStates = new Map<string, RestorableCapturedPathState>();
-        const capturedSourceStates = await this.store.readPathStates(
-            input.source,
-            orderedPaths.map((path) => path.path)
-        );
+        const capturedSourceStates =
+            input.mode === "force-drift"
+                ? await this.store.readPathStates(
+                      input.source,
+                      orderedPaths.map((path) => path.path)
+                  )
+                : new Map(orderedPaths.map((path) => [path.path, path.expectedCurrent]));
         for (const path of orderedPaths) {
             const state = capturedSourceStates.get(path.path)!;
             if (state.state === "excluded") {
@@ -210,15 +216,17 @@ export class WorkspaceRestoreExecutor {
                     });
                 }
             });
-            await measurePhase(timing, "verifyFilesMs", async () => {
-                for (const path of orderedPaths) {
-                    await this.verifyPath({
-                        root: input.workspace.canonicalRoot,
-                        path: path.path,
-                        expected: path.target,
-                    });
-                }
-            });
+            if (!this.applyPathIncludesVerification) {
+                await measurePhase(timing, "verifyFilesMs", async () => {
+                    for (const path of orderedPaths) {
+                        await this.verifyPath({
+                            root: input.workspace.canonicalRoot,
+                            path: path.path,
+                            expected: path.target,
+                        });
+                    }
+                });
+            }
             await assertCurrent();
             await measurePhase(timing, "publishHeadMs", () =>
                 this.store.withWorkspaceLock(() => this.store.mutationLog.publishPrepared(planned.prepared))
@@ -301,18 +309,15 @@ export class WorkspaceRestoreExecutor {
                         : {}),
                 },
             });
-            const [metadata, coverage] = await Promise.all([
-                this.store.readSnapshotMetadata(input.source),
-                this.store.computeCandidateSnapshotCoverage(
-                    input.source,
-                    tree,
-                    paths.map((path) => ({ path: path.path, state: path.target }))
-                ),
-            ]);
+            const metadata = await this.store.deriveCandidateSnapshotMetadata(
+                input.source,
+                tree,
+                paths.map((path) => ({ path: path.path, state: path.target }))
+            );
             const snapshot = await this.store.publishCommitSnapshot({
                 commit: prepared.commit,
                 scope: metadata.scope,
-                coverage,
+                coverage: metadata.coverage,
             });
             return { prepared, snapshot };
         } finally {

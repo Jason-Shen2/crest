@@ -1037,6 +1037,26 @@ export class WorkspaceSnapshotStore {
         });
     }
 
+    deriveCandidateSnapshotMetadata(
+        snapshot: WorkspaceSnapshotRefV1,
+        candidateTree: string,
+        entries: WorkspaceCandidatePathEntry[]
+    ): Promise<{
+        scope: WorkspaceScopeManifest;
+        coverage: Omit<WorkspaceSnapshotCoverage, "newlyHashedBytes">;
+    }> {
+        const ownedEntries = normalizeWorkspaceCandidateEntries(entries);
+        return this.withWorkspaceLock(async () => {
+            const manifest = await this.#readStoredManifest(snapshot);
+            const coverage = manifest.getCoverage();
+            const { eligibleEntryDelta } = await this.#readTreeDelta(snapshot.tree, candidateTree);
+            return {
+                scope: manifest.getScope(),
+                coverage: deriveCandidateCoverage(coverage, ownedEntries, eligibleEntryDelta),
+            };
+        });
+    }
+
     computeCandidateSnapshotCoverage(
         snapshot: WorkspaceSnapshotRefV1,
         candidateTree: string,

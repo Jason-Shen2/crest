@@ -54,6 +54,7 @@ export class PendingWorkspaceRestoreStore {
     readonly store: WorkspaceSnapshotStore;
     readonly root: string;
     rootIdentity?: AnchoredJournalDirectoryIdentity;
+    published?: { operationId: string; source: AnchoredJournalEntry };
 
     constructor(store: WorkspaceSnapshotStore) {
         if (!isAbsolute(store.storeRoot)) {
@@ -95,24 +96,42 @@ export class PendingWorkspaceRestoreStore {
     }
 
     async publishDecodedLocked(decoded: PendingWorkspaceRestoreV2): Promise<void> {
-        await makePrivateDirectory(this.root);
-        const active = await this.readActiveEntry(true);
-        if (!active) {
-            throw new Error("Pending restore directory disappeared before publication");
+        const identity = await makePrivateDirectory(this.root);
+        if (this.rootIdentity && !sameIdentity(this.rootIdentity, identity)) {
+            throw new Error("Pending restore directory identity changed");
         }
-        if (active.source) {
-            throw new Error("A workspace restore is already pending");
+        this.rootIdentity ??= identity;
+        try {
+            const bytes = encodeDurableJson(decoded);
+            const entryIdentity = await publishAnchoredJournalEntryNoReplace({
+                root: this.root,
+                rootIdentity: identity,
+                destinationName: "pending.json",
+                bytes,
+            });
+            this.published = {
+                operationId: decoded.operationId,
+                source: { name: "pending.json", bytes, identity: entryIdentity },
+            };
+        } catch (error) {
+            if (error instanceof Error && /journal write destination appeared/i.test(error.message)) {
+                throw new Error("A workspace restore is already pending", { cause: error });
+            }
+            throw error;
         }
-        await publishAnchoredJournalEntryNoReplace({
-            root: this.root,
-            rootIdentity: active.identity,
-            destinationName: "pending.json",
-            bytes: encodeDurableJson(decoded),
-        });
     }
 
     async removeLocked(operationId: string): Promise<void> {
         validateToken(operationId);
+        if (this.published?.operationId === operationId && this.rootIdentity) {
+            await removeAnchoredJournalEntry({
+                root: this.root,
+                rootIdentity: this.rootIdentity,
+                source: this.published.source,
+            });
+            this.published = undefined;
+            return;
+        }
         const { rootIdentity, source, record } = await this.requireValidActive();
         if (record.operationId !== operationId) {
             throw new Error("Pending restore belongs to another operation");
@@ -503,12 +522,17 @@ function samePaths(left: readonly string[], right: readonly string[]): boolean {
     return left.length === right.length && left.every((path, index) => path === right[index]);
 }
 
-async function makePrivateDirectory(path: string): Promise<void> {
+async function makePrivateDirectory(path: string): Promise<AnchoredJournalDirectoryIdentity> {
     await mkdir(path, { recursive: true, mode: 0o700 });
     const state = await lstat(path, { bigint: true });
     if (!state.isDirectory() || state.isSymbolicLink() || (state.mode & 0o077n) !== 0n) {
         throw new Error("Pending restore directory is unsafe");
     }
+    return {
+        dev: state.dev.toString(),
+        ino: state.ino.toString(),
+        birthtimeNs: state.birthtimeNs.toString(),
+    };
 }
 
 function sameIdentity(left: AnchoredJournalDirectoryIdentity, right: AnchoredJournalDirectoryIdentity): boolean {

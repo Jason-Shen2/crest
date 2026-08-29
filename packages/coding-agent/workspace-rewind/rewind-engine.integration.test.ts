@@ -166,6 +166,44 @@ async function appendAvailableCheckpoint(
 }
 
 describe("WorkspaceRewindEngine real filesystem transaction", () => {
+    it("preserves non-target external bytes and captures them after a normal restore", async () => {
+        const value = await fixture();
+        const target = join(value.workspaceRoot, "target.txt");
+        const external = join(value.workspaceRoot, "external.txt");
+        await writeFile(target, "before");
+        await writeFile(external, "original");
+        const turn = await appendAvailableCheckpoint(value, "change target", async () => await writeFile(target, "after"));
+        const preview = await value.engine.previewTurnUndo({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: turn.checkpointId,
+            sourceTurnId: turn.turnId,
+        });
+        await writeFile(external, "changed outside Crest");
+        const synchronizeExternal = vi.spyOn(value.snapshotSource, "synchronizeExternal");
+
+        await value.engine.applyTurnUndo({
+            session: value.session,
+            sessionId: value.metadata.id,
+            workspace: value.identity,
+            semanticLeafId: turn.checkpointId,
+            sourceTurnId: turn.turnId,
+            mode: "normal",
+            confirmation: value.confirmations.take(preview.confirmationToken!),
+        });
+
+        expect(synchronizeExternal).not.toHaveBeenCalled();
+        expect(await readFile(target, "utf8")).toBe("before");
+        expect(await readFile(external, "utf8")).toBe("changed outside Crest");
+
+        const synchronized = await value.snapshotSource.synchronizeExternal();
+        const externalState = await value.store.readPathState(synchronized.ref, "external.txt");
+        expect(externalState.state).toBe("file");
+        if (externalState.state !== "file") throw new Error("external path was not captured as a file");
+        expect((await value.store.readBlob(externalState.oid)).toString("utf8")).toBe("changed outside Crest");
+    }, 30_000);
+
     it("rewinds a directory rename checkpoint with the complete V3 path set", async () => {
         const value = await fixture();
         await mkdir(join(value.workspaceRoot, "old-dir", "nested"), { recursive: true });

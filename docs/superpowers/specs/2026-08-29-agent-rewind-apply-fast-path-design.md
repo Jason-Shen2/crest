@@ -473,3 +473,96 @@ commit 准备阶段，而不是重新扫描 workspace。
 
 最终结论是：快路径已经适合在 200k entry 边界内进行生产候选验证，常见点击延迟从历史 restore 的约 5.6–9.8 秒
 降到约 1.25–1.50 秒；它不是“瞬时完成”，200k 门禁没有宽裕余量，50k 的激进体验门禁也仍需如实保留为未通过。
+
+## 真实 E2E 计时校正（2026-08-29）
+
+前述 `restore-apply` benchmark 从 `WorkspaceRestoreExecutor.execute()` 开始计时，没有覆盖真实产品在 executor 前执行的
+Writer Lease 获取与 `snapshotSource.synchronizeExternal()`，也没有覆盖 IPC 和权威 Session state 发布。因此它能衡量
+executor 的算法边界，但不能直接代表用户从按钮点击到完成的等待。
+
+Node.js 22 下的 renderer client → IPC → production persistence E2E 实测为：
+
+| 操作 | 耗时 |
+| --- | ---: |
+| Rewind Preview | 532.83 ms |
+| Rewind Apply | 1,712.37 ms |
+| Redo Preview | 692.45 ms |
+| Redo Apply | 1,725.19 ms |
+| Turn Undo Preview | 955.25 ms |
+| Turn Undo Apply | 1,699.97 ms |
+
+同一环境下，100-entry 单文件 executor benchmark 为约 922 ms。两者相差约 0.8 秒，和 warm
+`synchronizeExternal()` 的固定 Shadow Git metadata/candidate capture 成本一致。上一轮优化只缩短了后半段 executor，
+遗漏了前半段同步，因此用户仍会感到一次操作需要接近两秒；这是测量边界错误，不是 UI 动画问题。
+
+## 第二阶段：普通 Apply 不做 eager 全局同步
+
+普通 Undo/Redo 已经有三条更精确的安全证明：
+
+1. confirmation 绑定 Preview 的 authority head，freshness 检查其到当前 Shadow head 的 commit suffix；
+2. executor 在写入前批量比较每个目标路径的 live fingerprint、live captured state、当前 head state 和
+   `expectedCurrent`；
+3. Writer Lease、pending、文件验证、Shadow head CAS 和 Session marker CAS 保持不变。
+
+所以无 Force 的普通 Apply 不需要先把所有非目标外部变化写入 Shadow head。它只读取当前 head，并让 executor 对目标
+路径完成最终实时证明。非目标路径从不被本次操作写入；它们即使在磁盘上有尚未捕获的外部变化，也会原样保留，并在
+下一个 turn boundary 或需要同步的操作中进入 Shadow history。
+
+Force Revert 继续执行 `synchronizeExternal()`。Force 的 live bytes 与 `expectedCurrent` 不同，Recovery 必须先拥有这些
+被用户明确覆盖的 source bytes，才能在中途失败时准确恢复。因此 Force 不能走普通快路径。
+
+新的常见路径为：
+
+```text
+普通 Undo / Redo
+  → 获取 Writer Lease
+  → readHead
+  → suffix / leaf / target live-state freshness
+  → 原 executor 安全事务
+
+Force Revert
+  → 获取 Writer Lease
+  → synchronizeExternal
+  → 原 executor 安全事务
+```
+
+这个调整不新增缓存、watcher authority、后台任务、持久字段或 Recovery 分支，只删除普通路径的一次 eager 全局同步。
+验收必须证明：普通 Apply 不调用 `synchronizeExternal()`；同路径 Preview 后漂移仍拒绝；非目标外部修改不被覆盖且后续
+capture 可见；Force 仍同步并保留 recovery source；真实 E2E Apply 明显低于当前约 1.7 秒基线。
+
+## 第三阶段：权威状态发布不再随历史 checkpoint 数增长
+
+第二阶段完成后，renderer client → IPC → persistence（测试 broadcaster 为空）的三次 Apply 已降为：
+
+| 操作 | 优化前 | 第二阶段后 |
+| --- | ---: | ---: |
+| Rewind | 1,712.37 ms | 950.34 ms |
+| Redo | 1,725.19 ms | 943.27 ms |
+| Turn Undo | 1,699.97 ms | 951.22 ms |
+
+核心 Apply 降低约 44%。但真实应用还会在 commit 后同步发布权威 Session state；旧实现会在每次发布时，对当前会话所有可用
+checkpoint 的 `before`、`after` 逐个执行 Git-backed snapshot 验证。拥有 `N` 个 turn 的会话因此额外执行约 `2N` 次
+串行验证，Redo 再多两次。它只决定 UI 是否提前隐藏损坏的入口，不参与磁盘写入安全证明；Preview 和 Apply 本身仍会对
+真正参与操作的 snapshot 做严格验证。
+
+最终设计删除 Session state 的这层重复对象预检：
+
+```text
+权威 Session state
+  → 折叠 active branch / checkpoint 结构
+  → 生成 eligible turn、turn action、Redo 文件行和 quota
+  → 发布 renderer state
+
+用户点击 Preview / Apply
+  → 校验本次操作引用的 snapshot
+  → 校验 confirmation / head / live target path
+  → 执行安全事务
+```
+
+这意味着极少见的 store 损坏会在用户点击 Preview 时显示为 hard-block，而不是在后台刷新时静默隐藏按钮；不会降低写入
+安全性，也不新增缓存失效协议。三-turn E2E 在启用真实 rewind-state 构建后，权威状态构建为 168.80–222.92 ms，完整
+Rewind/Redo/Turn Undo 为 1,130.84–1,184.65 ms。更重要的是，状态构建不再包含随历史 turn 数线性增长的 Git 校验。
+
+剩余约 1.1 秒主要是必要的 pending publication、文件写入/验证、Shadow commit/CAS、marker 和清理固定成本。该路径已经
+从“历史越长越慢”变为固定成本主导；后续若要继续压缩，应先用生产 telemetry 证明新的主导阶段，而不是增加缓存或放宽
+安全事务。

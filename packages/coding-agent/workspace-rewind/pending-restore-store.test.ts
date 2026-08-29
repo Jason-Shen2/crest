@@ -5,7 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
 import { WorkspaceGitRunner } from "./git-runner";
 import {
@@ -90,6 +90,29 @@ test("publishes one record only after validating both commit associations and ex
         /already pending/i
     );
     await fixture.store.withWorkspaceLock(() => pending.removeLocked(fixture.record.operationId));
+    await expect(pending.readCandidate()).resolves.toEqual({ kind: "none" });
+});
+
+test("publishes a trusted prepared record without a redundant active-journal read", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const readActiveEntry = vi.spyOn(pending, "readActiveEntry");
+
+    await fixture.store.withWorkspaceLock(() => pending.publishPreparedLocked(fixture.record));
+
+    expect(readActiveEntry).not.toHaveBeenCalled();
+    expect(await pending.readCandidate()).toEqual({ kind: "valid", record: fixture.record });
+});
+
+test("removes its just-published record without rereading the active journal", async () => {
+    const fixture = await makeFixture();
+    const pending = new PendingWorkspaceRestoreStore(fixture.store);
+    const requireValidActive = vi.spyOn(pending, "requireValidActive");
+
+    await fixture.store.withWorkspaceLock(() => pending.publishPreparedLocked(fixture.record));
+    await fixture.store.withWorkspaceLock(() => pending.removeLocked(fixture.record.operationId));
+
+    expect(requireValidActive).not.toHaveBeenCalled();
     await expect(pending.readCandidate()).resolves.toEqual({ kind: "none" });
 });
 

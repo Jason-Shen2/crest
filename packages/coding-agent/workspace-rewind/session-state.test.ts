@@ -180,7 +180,6 @@ describe("workspace rewind session state", () => {
                 enabled: true,
                 busy: false,
                 frozen: false,
-                verifySnapshot: async () => {},
                 readBlob: async () => Buffer.alloc(0),
                 getQuota: async () => ({
                     status: "ok",
@@ -224,7 +223,6 @@ describe("workspace rewind session state", () => {
                 enabled: true,
                 busy: false,
                 frozen: false,
-                verifySnapshot: async () => {},
                 readBlob: async (oid: string) => {
                     if (oid === OidA) return Buffer.from("before\n");
                     if (oid === OidC) return Buffer.from("after\nextra\n");
@@ -254,7 +252,7 @@ describe("workspace rewind session state", () => {
         });
     });
 
-    it("verifies snapshot objects before advertising eligible rewind points", async () => {
+    it("does not preflight immutable snapshot objects while publishing renderer state", async () => {
         const u1 = message("u1", null, "user");
         const a1 = message("a1", "u1", "assistant");
         const c1 = custom("c1", "a1", WorkspaceControlCustomTypes.checkpoint, checkpoint("u1"));
@@ -267,7 +265,6 @@ describe("workspace rewind session state", () => {
             enabled: true,
             busy: false,
             frozen: false,
-            verifySnapshot,
             readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
@@ -277,9 +274,8 @@ describe("workspace rewind session state", () => {
             }),
         });
 
-        expect(verifySnapshot).toHaveBeenCalledTimes(2);
-        expect(view.eligibleTurnIds).toEqual([]);
-        expect(view.turnChanges).toEqual([]);
+        expect(verifySnapshot).not.toHaveBeenCalled();
+        expect(view.eligibleTurnIds).toEqual(["u1"]);
         expect(view.quota.usedBytes).toBe(10);
         expect(view.semanticLeafId).toBe("c1");
         expect(view.displayLeafId).toBe("a1");
@@ -441,7 +437,6 @@ describe("workspace rewind session state", () => {
             enabled: true,
             busy: false,
             frozen: false,
-            verifySnapshot: async () => {},
             readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
@@ -501,7 +496,6 @@ describe("workspace rewind session state", () => {
             enabled: true,
             busy: false,
             frozen: false,
-            verifySnapshot: async () => {},
             readBlob: async () => Buffer.alloc(0),
             getQuota: async () => ({
                 status: "ok",
@@ -725,7 +719,7 @@ describe("workspace rewind session state", () => {
         expect(folded.turnMutationsByTurnId.has(foreignUser.id)).toBe(false);
     });
 
-    it("publishes turn actions only for readable non-empty available checkpoints", async () => {
+    it("publishes turn actions only for structurally available non-empty checkpoints", async () => {
         const missing = message("missing", null, "user");
         const unavailable = message("unavailable", missing.id, "user");
         const unavailableEntry = custom(
@@ -780,9 +774,6 @@ describe("workspace rewind session state", () => {
                 enabled: true,
                 busy: false,
                 frozen: false,
-                verifySnapshot: async (ref) => {
-                    if (ref.id === OidC) throw new Error("missing object");
-                },
                 readBlob: async () => Buffer.alloc(0),
                 getQuota: async () => ({
                     status: "ok",
@@ -793,9 +784,10 @@ describe("workspace rewind session state", () => {
             }
         );
 
-        expect(view.eligibleTurnIds).toEqual([empty.id, readable.id]);
+        expect(view.eligibleTurnIds).toEqual([empty.id, readable.id, unreadable.id]);
         expect(view.turnChanges).toEqual([
             { turnId: readable.id, action: "redo", undoOperationId: "undo-readable-operation" },
+            { turnId: unreadable.id, action: "undo" },
         ]);
     });
 
