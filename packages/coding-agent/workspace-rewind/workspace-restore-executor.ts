@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { performance } from "node:perf_hooks";
 
 import { assertRestorePlanMatchesConfirmation, type ConfirmedRestorePlanV1 } from "./confirmation-token";
+import { encodeDurableJson } from "./durability";
 import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
 import { inspectLivePaths, type LiveCapturedPathState } from "./live-path-state";
 import { PendingWorkspaceRestoreStore, type PendingWorkspaceRestoreV2 } from "./pending-restore-store";
@@ -49,10 +50,7 @@ export interface WorkspaceRestoreTiming {
     pendingCleanupMs: number;
 }
 
-type WorkspaceRestorePhase = Exclude<
-    keyof WorkspaceRestoreTiming,
-    "outcome" | "pathCount" | "totalMs"
->;
+type WorkspaceRestorePhase = Exclude<keyof WorkspaceRestoreTiming, "outcome" | "pathCount" | "totalMs">;
 
 export interface WorkspaceRestoreExecutorOptions {
     store: WorkspaceSnapshotStore;
@@ -248,9 +246,10 @@ export class WorkspaceRestoreExecutor {
             await measurePhase(timing, "appendMarkerMs", () =>
                 input.session.appendEntries([entry], { expectedLeafId: pending.expectedSemanticLeafId })
             );
-            await measurePhase(timing, "pendingCleanupMs", () =>
-                this.store.withWorkspaceLock(() => this.pending.removeLocked(pending.operationId))
+            await measurePhase(timing, "verifyFilesMs", () =>
+                this.verifyCommittedState(input.session, pending, entry, derived.plannedStates)
             );
+            await measurePhase(timing, "pendingCleanupMs", () => this.clearCommittedPending(pending));
             return { sessionMetadata, operationId };
         } catch (error) {
             if (!pendingVisible) {
@@ -367,6 +366,42 @@ export class WorkspaceRestoreExecutor {
                 throw new Error(`Force source commit does not match the confirmed bytes: ${path.path}`);
             }
         }
+    }
+
+    async verifyCommittedState(
+        session: Session<JsonlSessionMetadata>,
+        pending: PendingWorkspaceRestoreV2,
+        expectedEntry: SessionTreeEntry,
+        plannedStates: ReadonlyArray<{ path: string; state: RestorableCapturedPathState }>
+    ): Promise<void> {
+        const inspected = await this.inspectPaths(plannedStates.map((item) => item.path));
+        for (const item of plannedStates) {
+            const live = inspected.get(item.path);
+            const captured = live == null ? undefined : capturedFromLive(live);
+            if (!captured || !sameCapturedState(captured, item.state)) {
+                throw new Error(`Workspace changed before restore completion: ${item.path}`);
+            }
+        }
+        if ((await session.getLeafId()) !== pending.workspaceStateEntryId) {
+            throw new Error("Session leaf changed before restore completion");
+        }
+        const storedEntry = await session.getEntry(pending.workspaceStateEntryId);
+        if (!storedEntry || !encodeDurableJson(storedEntry).equals(encodeDurableJson(expectedEntry))) {
+            throw new Error("Session marker changed before restore completion");
+        }
+    }
+
+    async clearCommittedPending(pending: PendingWorkspaceRestoreV2): Promise<void> {
+        await this.store.withWorkspaceLock(async () => {
+            const current = await this.pending.readLocked();
+            if (current.kind !== "valid" || current.record.operationId !== pending.operationId) {
+                throw new Error("Pending restore changed before cleanup");
+            }
+            if ((await this.store.mutationLog.readHead()) !== pending.plannedCommit) {
+                throw new Error("Workspace mutation head changed before pending cleanup");
+            }
+            await this.pending.removeLocked(pending.operationId);
+        });
     }
 
     assertWorkspace(workspace: CanonicalWorkspaceIdentity): void {

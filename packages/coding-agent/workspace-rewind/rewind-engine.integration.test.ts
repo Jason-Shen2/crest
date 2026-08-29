@@ -630,7 +630,7 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
         expect(await readFile(file, "utf8")).toBe("before");
     }, 30_000);
 
-    it("keeps a missing owning Session frozen without changing workspace bytes or the Session tree", async () => {
+    it("completes with the actively leased Session without consulting the Recovery locator", async () => {
         const value = await fixture({
             locateSession: async () => undefined,
         });
@@ -657,27 +657,9 @@ describe("WorkspaceRewindEngine real filesystem transaction", () => {
                 mode: "normal",
                 confirmation: value.confirmations.take(planned.confirmationToken!),
             })
-        ).rejects.toBeInstanceOf(WorkspaceFrozenError);
-        const pending = await value.pending.readLocked();
-        expect(pending).toMatchObject({ kind: "valid" });
-        if (pending.kind !== "valid") throw new Error("expected valid pending restore");
-        const leafBefore = await value.session.getLeafId();
-        const bytesBefore = await readFile(file);
+        ).resolves.toBeDefined();
 
-        await expect(value.recovery.inspectPending()).resolves.toMatchObject({
-            state: "needs-user",
-            view: { operationId: pending.record.operationId, allowedActions: ["retry"] },
-        });
-        await expect(value.recovery.resolvePending(pending.record.operationId)).resolves.toMatchObject({
-            state: "needs-user",
-            view: { operationId: pending.record.operationId, allowedActions: ["retry"] },
-        });
-
-        expect(await value.session.getLeafId()).toBe(leafBefore);
-        expect(await readFile(file)).toEqual(bytesBefore);
-        await expect(value.pending.readLocked()).resolves.toMatchObject({
-            kind: "valid",
-            record: { operationId: pending.record.operationId },
-        });
+        expect(await readFile(file, "utf8")).toBe("before");
+        await expect(value.pending.readLocked()).resolves.toEqual({ kind: "none" });
     }, 30_000);
 });
