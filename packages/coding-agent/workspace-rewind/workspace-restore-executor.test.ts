@@ -296,7 +296,7 @@ function executionInput(fixture: Fixture, plan: RestorePlanV1) {
         workspace: fixture.workspace,
         source: fixture.source,
         plan,
-        confirmation: confirmations.take(confirmations.issue(plan)),
+        confirmation: confirmations.take(confirmations.issue(plan, fixture.source.id)),
         mode: "normal" as const,
         commit: strategy(),
     };

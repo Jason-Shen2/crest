@@ -128,6 +128,7 @@ export interface WorkspaceRewindEngineOptions {
 }
 
 interface PlannedRestore {
+    authorityHead: string;
     entries: SessionTreeEntry[];
     plan: RestorePlanV1;
     rewindState?: WorkspaceRewindMarkerV1;
@@ -282,22 +283,26 @@ export class WorkspaceRewindEngine {
 
     async previewRewind(input: PreviewRewindInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return await this.preview(await this.computeRewind(input));
+        return await this.preview(await this.computeAtStableHead((authorityHead) => this.computeRewind(input, authorityHead)));
     }
 
     async previewRedo(input: PreviewRedoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return await this.preview(await this.computeRedo(input));
+        return await this.preview(await this.computeAtStableHead((authorityHead) => this.computeRedo(input, authorityHead)));
     }
 
     async previewTurnUndo(input: PreviewTurnUndoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(await this.computeTurnUndo(input));
+        return this.preview(
+            await this.computeAtStableHead((authorityHead) => this.computeTurnUndo(input, authorityHead))
+        );
     }
 
     async previewTurnRedo(input: PreviewTurnRedoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(await this.computeTurnRedo(input));
+        return this.preview(
+            await this.computeAtStableHead((authorityHead) => this.computeTurnRedo(input, authorityHead))
+        );
     }
 
     async getTurnChangeSummary(input: ReadTurnChangesInput): Promise<AgentTurnChangeSummaryView> {
@@ -376,11 +381,13 @@ export class WorkspaceRewindEngine {
     }
 
     async applyTurnUndo(input: ApplyTurnUndoInput): Promise<WorkspaceRewindCommitResult> {
-        return this.applyTurn(input, () => this.computeTurnUndo(input));
+        return this.applyTurn(input, (authorityHead) => this.computeTurnUndo(input, authorityHead));
     }
 
     async applyTurnRedo(input: ApplyTurnRedoInput): Promise<WorkspaceRewindCommitResult> {
-        return this.applyTurn({ ...input, mode: "normal" }, () => this.computeTurnRedo(input));
+        return this.applyTurn({ ...input, mode: "normal" }, (authorityHead) =>
+            this.computeTurnRedo(input, authorityHead)
+        );
     }
 
     private async projectTurnChanges(input: ReadTurnChangesInput): Promise<{
@@ -440,7 +447,7 @@ export class WorkspaceRewindEngine {
         const folded = foldWorkspaceSessionState(entries, plan.sessionId);
         let confirmationToken: string | undefined;
         if (!plan.hardBlocked) {
-            confirmationToken = this.confirmations.issue(plan);
+            confirmationToken = this.confirmations.issue(plan, planned.authorityHead);
         }
         const files = await fileRows(plan, (oid) => this.store.readBlob(oid));
         return {
@@ -461,7 +468,7 @@ export class WorkspaceRewindEngine {
         };
     }
 
-    private async computeRewind(input: PreviewRewindInput): Promise<PlannedRestore> {
+    private async computeRewind(input: PreviewRewindInput, authorityHead: string): Promise<PlannedRestore> {
         const entries = await input.session.getEntries();
         const folded = foldWorkspaceSessionState(entries, input.sessionId);
         const plan = await this.planRewindImpl({
@@ -469,6 +476,7 @@ export class WorkspaceRewindEngine {
             workspace: input.workspace,
             rawEntries: entries,
             semanticLeafId: input.semanticLeafId,
+            authorityHead,
             targetTurnId: input.targetTurnId,
             currentWorkspaceState: folded.activeWorkspaceState,
             inspectLivePath: this.inspectPath,
@@ -479,19 +487,21 @@ export class WorkspaceRewindEngine {
             readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return {
+            authorityHead,
             entries,
             plan,
             targetEntry: selectedUserEntry(entries, input.targetTurnId),
         };
     }
 
-    private async computeRedo(input: PreviewRedoInput): Promise<PlannedRestore> {
+    private async computeRedo(input: PreviewRedoInput, authorityHead: string): Promise<PlannedRestore> {
         const entries = await input.session.getEntries();
         const folded = foldWorkspaceSessionState(entries, input.sessionId);
         const rewindState = folded.conversationRedoState;
         if (!rewindState) {
             return {
                 entries,
+                authorityHead,
                 plan: {
                     target: { kind: "redo", sourceRewindOperationId: "unavailable" } as RestoreTargetV1,
                     sessionId: input.sessionId,
@@ -513,6 +523,7 @@ export class WorkspaceRewindEngine {
             workspace: input.workspace,
             rawEntries: entries,
             semanticLeafId: input.semanticLeafId,
+            authorityHead,
             rewindState,
             inspectLivePath: this.inspectPath,
             inspectLivePaths: this.inspectPaths,
@@ -522,6 +533,7 @@ export class WorkspaceRewindEngine {
             readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
         return {
+            authorityHead,
             entries,
             plan,
             rewindState,
@@ -529,13 +541,14 @@ export class WorkspaceRewindEngine {
         };
     }
 
-    private async computeTurnUndo(input: PreviewTurnUndoInput): Promise<PlannedRestore> {
+    private async computeTurnUndo(input: PreviewTurnUndoInput, authorityHead: string): Promise<PlannedRestore> {
         const entries = await input.session.getEntries();
         const plan = await this.planTurnUndoImpl({
             sessionId: input.sessionId,
             workspace: input.workspace,
             rawEntries: entries,
             semanticLeafId: input.semanticLeafId,
+            authorityHead,
             sourceTurnId: input.sourceTurnId,
             inspectLivePath: this.inspectPath,
             inspectLivePaths: this.inspectPaths,
@@ -544,16 +557,17 @@ export class WorkspaceRewindEngine {
             diffSnapshots: (before, after) => this.store.diff(before, after),
             readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
-        return { entries, plan };
+        return { authorityHead, entries, plan };
     }
 
-    private async computeTurnRedo(input: PreviewTurnRedoInput): Promise<PlannedRestore> {
+    private async computeTurnRedo(input: PreviewTurnRedoInput, authorityHead: string): Promise<PlannedRestore> {
         const entries = await input.session.getEntries();
         const plan = await this.planTurnRedoImpl({
             sessionId: input.sessionId,
             workspace: input.workspace,
             rawEntries: entries,
             semanticLeafId: input.semanticLeafId,
+            authorityHead,
             sourceTurnId: input.sourceTurnId,
             undoOperationId: input.undoOperationId,
             inspectLivePath: this.inspectPath,
@@ -563,16 +577,16 @@ export class WorkspaceRewindEngine {
             diffSnapshots: (before, after) => this.store.diff(before, after),
             readCommitSnapshot: (commit) => this.store.readCommitSnapshot(commit),
         });
-        return { entries, plan };
+        return { authorityHead, entries, plan };
     }
 
     private async applyTurn(
         input: ApplyTurnUndoInput | (ApplyTurnRedoInput & { mode: "normal" }),
-        compute: () => Promise<PlannedRestore>
+        compute: (authorityHead: string) => Promise<PlannedRestore>
     ): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
         return this.withRestoreLease(input.sessionId, async (source) => {
-            const planned = await compute();
+            const planned = await compute(source.id);
             assertRestorePlanMatchesConfirmation({
                 confirmation: input.confirmation,
                 plan: planned.plan,
@@ -602,19 +616,25 @@ export class WorkspaceRewindEngine {
         return this.withRestoreLease(input.sessionId, async (source) => {
             const planned =
                 input.kind === "rewind"
-                    ? await this.computeRewind({
-                          session: input.session,
-                          sessionId: input.sessionId,
-                          workspace: input.workspace,
-                          semanticLeafId: input.semanticLeafId,
-                          targetTurnId: input.targetTurnId!,
-                      })
-                    : await this.computeRedo({
-                          session: input.session,
-                          sessionId: input.sessionId,
-                          workspace: input.workspace,
-                          semanticLeafId: input.semanticLeafId,
-                      });
+                    ? await this.computeRewind(
+                          {
+                              session: input.session,
+                              sessionId: input.sessionId,
+                              workspace: input.workspace,
+                              semanticLeafId: input.semanticLeafId,
+                              targetTurnId: input.targetTurnId!,
+                          },
+                          source.id
+                      )
+                    : await this.computeRedo(
+                          {
+                              session: input.session,
+                              sessionId: input.sessionId,
+                              workspace: input.workspace,
+                              semanticLeafId: input.semanticLeafId,
+                          },
+                          source.id
+                      );
             assertRestorePlanMatchesConfirmation({
                 confirmation: input.confirmation,
                 plan: planned.plan,
@@ -675,6 +695,18 @@ export class WorkspaceRewindEngine {
         } finally {
             lease.release();
         }
+    }
+
+    private async computeAtStableHead(
+        compute: (authorityHead: string) => Promise<PlannedRestore>
+    ): Promise<PlannedRestore> {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const authorityHead = await this.store.mutationLog.readHead();
+            if (!authorityHead) throw new Error("Workspace mutation head is not initialized");
+            const planned = await compute(authorityHead);
+            if ((await this.store.mutationLog.readHead()) === authorityHead) return planned;
+        }
+        throw new Error("Workspace changed while preparing the rewind preview");
     }
 
     private assertWorkspace(workspace: CanonicalWorkspaceIdentity): void {

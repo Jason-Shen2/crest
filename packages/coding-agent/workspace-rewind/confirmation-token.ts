@@ -11,12 +11,15 @@ import { decodeWorkspaceSnapshotRefV1 } from "./validation";
 const ConfirmationTtlMs = 5 * 60 * 1_000;
 const ConfirmationRegistryCapacity = 1_024;
 const ConfirmationTokenPattern = /^[A-Za-z0-9_-]{43}$/;
+const AuthorityHeadPattern = /^[0-9a-f]{40}$/;
 
 export interface ConfirmedRestorePlanV1 {
     plan: RestorePlanV1;
+    authorityHead: string;
     issuedAt: number;
     expiresAt: number;
     binding: {
+        authorityHead: string;
         workspaceIdentity: string;
         workspaceIncarnation: string;
         sessionId: string;
@@ -110,9 +113,10 @@ function canonicalLinkedOperation(value: WorkspaceLinkedOperationV1): WorkspaceL
     return { operationId: value.operationId, sourceSnapshot, currentSnapshot };
 }
 
-function confirmationBinding(plan: RestorePlanV1): ConfirmedRestorePlanV1["binding"] {
+function confirmationBinding(plan: RestorePlanV1, authorityHead: string): ConfirmedRestorePlanV1["binding"] {
     const orderedPaths = [...plan.paths].sort((left, right) => left.path.localeCompare(right.path));
     return {
+        authorityHead,
         workspaceIdentity: plan.workspaceIdentity,
         workspaceIncarnation: plan.workspaceIncarnation,
         sessionId: plan.sessionId,
@@ -162,18 +166,22 @@ function validateIssuable(plan: RestorePlanV1): void {
 export class RewindConfirmationRegistry {
     entries = new Map<string, ConfirmedRestorePlanV1>();
 
-    issue(plan: RestorePlanV1, now = Date.now()): string {
+    issue(plan: RestorePlanV1, authorityHead: string, now = Date.now()): string {
         this.sweepExpired(now);
         validateIssuable(plan);
+        if (!AuthorityHeadPattern.test(authorityHead)) {
+            throw new Error("Rewind confirmation authority head must be a SHA-1 commit OID");
+        }
         if (this.entries.size >= ConfirmationRegistryCapacity) {
             throw new Error("Rewind confirmation registry reached capacity");
         }
         const copiedPlan = clonePlan(plan);
         const confirmed = deepFreeze({
             plan: copiedPlan,
+            authorityHead,
             issuedAt: now,
             expiresAt: now + ConfirmationTtlMs,
-            binding: confirmationBinding(copiedPlan),
+            binding: confirmationBinding(copiedPlan, authorityHead),
         });
         let token: string;
         do {
@@ -222,7 +230,7 @@ export function assertRestorePlanMatchesConfirmation(input: {
     mode: "normal" | "force-drift";
 }): void {
     validateIssuable(input.plan);
-    const recomputed = confirmationBinding(input.plan);
+    const recomputed = confirmationBinding(input.plan, input.confirmation.authorityHead);
     if (!bindingsEqual(input.confirmation.binding, recomputed)) {
         throw new Error("Rewind confirmation is stale");
     }

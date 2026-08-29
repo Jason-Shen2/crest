@@ -870,7 +870,7 @@ describe("per-turn restore planning", () => {
         );
 
         expect(duplicate).toMatchObject({ hardBlocked: true, forceRequired: false, paths: [] });
-        expect(() => new RewindConfirmationRegistry().issue(duplicate)).toThrow(/blocked/i);
+        expect(() => new RewindConfirmationRegistry().issue(duplicate, OidA)).toThrow(/blocked/i);
 
         const redoMarker = custom(
             "redo-1",
@@ -983,7 +983,7 @@ describe("per-turn restore planning", () => {
             { path: ".vite", reason: "ignored" },
             { path: "node_modules", reason: "ignored" },
         ]);
-        expect(() => new RewindConfirmationRegistry().issue(plan)).not.toThrow();
+        expect(() => new RewindConfirmationRegistry().issue(plan, OidA)).not.toThrow();
     });
 
     it("hard-blocks unexplained incomplete checkpoint coverage and cannot issue a confirmation", async () => {
@@ -1009,7 +1009,7 @@ describe("per-turn restore planning", () => {
             path: "",
             reason: "workspace checkpoint coverage is incomplete",
         });
-        expect(() => new RewindConfirmationRegistry().issue(plan)).toThrow(/blocked/i);
+        expect(() => new RewindConfirmationRegistry().issue(plan, OidA)).toThrow(/blocked/i);
     });
 
     it.each([
@@ -1034,7 +1034,7 @@ describe("per-turn restore planning", () => {
 
         expect(plan.hardBlocked).toBe(true);
         expect(input.inspectLivePath).not.toHaveBeenCalled();
-        expect(() => new RewindConfirmationRegistry().issue(plan)).toThrow(/blocked/i);
+        expect(() => new RewindConfirmationRegistry().issue(plan, OidA)).toThrow(/blocked/i);
     });
 
     it.each(["before", "after"] as const)("hard-blocks a path excluded from %s coverage", async (side) => {

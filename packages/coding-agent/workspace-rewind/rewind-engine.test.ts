@@ -159,6 +159,7 @@ function makeHarness(input: {
         storeRoot: "/store",
         identity: Workspace,
         mutationLog: {
+            readHead: vi.fn(async () => HeadSnapshot.id),
             read: vi.fn(),
             findForeignOverlap: vi.fn(),
         },
@@ -200,6 +201,46 @@ function makeHarness(input: {
 }
 
 describe("WorkspaceRewindEngine transaction", () => {
+    it("issues a Preview from one stable workspace authority head", async () => {
+        const value = makeHarness({});
+
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+
+        expect(value.options.planRewind).toHaveBeenCalledWith(
+            expect.objectContaining({ authorityHead: HeadSnapshot.id })
+        );
+        expect(value.confirmations.take(preview.confirmationToken!).authorityHead).toBe(HeadSnapshot.id);
+    });
+
+    it("retries Preview once when the workspace authority head moves during planning", async () => {
+        const value = makeHarness({});
+        vi.mocked(value.store.mutationLog.readHead)
+            .mockResolvedValueOnce("4".repeat(40))
+            .mockResolvedValueOnce(HeadSnapshot.id)
+            .mockResolvedValueOnce(HeadSnapshot.id)
+            .mockResolvedValueOnce(HeadSnapshot.id);
+
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+
+        expect(value.options.planRewind).toHaveBeenCalledTimes(2);
+        expect(value.options.planRewind).toHaveBeenLastCalledWith(
+            expect.objectContaining({ authorityHead: HeadSnapshot.id })
+        );
+        expect(value.confirmations.take(preview.confirmationToken!).authorityHead).toBe(HeadSnapshot.id);
+    });
+
     it("constructs one pending store and Resolver shared by every restore path", () => {
         const store = {
             storeRoot: "/store",

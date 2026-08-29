@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from "vitest";
 import { assertRestorePlanMatchesConfirmation, RewindConfirmationRegistry } from "./confirmation-token";
 import type { RestorePlanV1 } from "./restore-plan";
 
+const AuthorityHead = "9".repeat(40);
+
 function linkedOperation(operationId: string) {
     const snapshot = (id: string) => ({
         id,
@@ -51,14 +53,24 @@ function plan(overrides: Partial<RestorePlanV1> = {}): RestorePlanV1 {
 }
 
 describe("rewind confirmation registry", () => {
+    it("freezes the Preview authority head with the confirmed plan", () => {
+        const registry = new RewindConfirmationRegistry();
+        const token = registry.issue(plan(), AuthorityHead, 100);
+        const confirmed = registry.take(token, 101);
+
+        expect(confirmed.authorityHead).toBe(AuthorityHead);
+        expect(Object.isFrozen(confirmed)).toBe(true);
+    });
+
     it("issues opaque 32-byte, five-minute, one-use tokens with canonical bindings", () => {
         const registry = new RewindConfirmationRegistry();
-        const token = registry.issue(plan(), 1_000);
+        const token = registry.issue(plan(), AuthorityHead, 1_000);
 
         expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
         const confirmed = registry.take(token, 300_999);
         expect(confirmed).toMatchObject({ issuedAt: 1_000, expiresAt: 301_000 });
         expect(confirmed.binding).toEqual({
+            authorityHead: AuthorityHead,
             workspaceIdentity: "workspace-1",
             workspaceIncarnation: "incarnation-1",
             sessionId: "session-1",
@@ -90,14 +102,14 @@ describe("rewind confirmation registry", () => {
         const registry = new RewindConfirmationRegistry();
         expect(() => registry.take("random", 0)).toThrow(/token/i);
 
-        const expired = registry.issue(plan(), 0);
+        const expired = registry.issue(plan(), AuthorityHead, 0);
         expect(() => registry.take(expired, 300_000)).toThrow(/expired/i);
 
-        const invalidated = registry.issue(plan(), 1);
+        const invalidated = registry.issue(plan(), AuthorityHead, 1);
         registry.invalidateSession("session-1");
         expect(() => registry.take(invalidated, 2)).toThrow(/token/i);
 
-        expect(() => registry.issue(plan({ hardBlocked: true }), 0)).toThrow(/blocked/i);
+        expect(() => registry.issue(plan({ hardBlocked: true }), AuthorityHead, 0)).toThrow(/blocked/i);
         expect(() =>
             registry.issue(
                 plan({
@@ -108,6 +120,7 @@ describe("rewind confirmation registry", () => {
                     },
                     forceRequired: true,
                 }),
+                AuthorityHead,
                 0
             )
         ).toThrow(/redo/i);
@@ -116,7 +129,7 @@ describe("rewind confirmation registry", () => {
     it("stores an immutable projection so callers cannot expand force authority", () => {
         const registry = new RewindConfirmationRegistry();
         const source = plan();
-        const token = registry.issue(source, 0);
+        const token = registry.issue(source, AuthorityHead, 0);
         source.paths.push({
             path: "later.ts",
             operation: "delete",
@@ -148,7 +161,7 @@ describe("rewind confirmation registry", () => {
         ["target", { target: { kind: "rewind", targetTurnId: "turn-2" } }],
     ] as const)("rejects a recomputed plan with a changed %s binding", (_label, override) => {
         const registry = new RewindConfirmationRegistry();
-        const token = registry.issue(plan(), 0);
+        const token = registry.issue(plan(), AuthorityHead, 0);
         const confirmation = registry.take(token, 1);
 
         expect(() =>
@@ -162,7 +175,7 @@ describe("rewind confirmation registry", () => {
 
     it.each(["target state", "expected state"] as const)("rejects changed %s after confirmation", (change) => {
         const registry = new RewindConfirmationRegistry();
-        const confirmation = registry.take(registry.issue(plan(), 0), 1);
+        const confirmation = registry.take(registry.issue(plan(), AuthorityHead, 0), 1);
         const recomputed = plan();
         if (change === "target state") {
             recomputed.paths[0]!.target = { state: "file", oid: "d".repeat(40), executable: false };
@@ -179,7 +192,7 @@ describe("rewind confirmation registry", () => {
         "rejects %s post-preview path drift",
         (change) => {
             const registry = new RewindConfirmationRegistry();
-            const confirmation = registry.take(registry.issue(plan(), 0), 1);
+            const confirmation = registry.take(registry.issue(plan(), AuthorityHead, 0), 1);
             const recomputed = plan();
             if (change === "added") {
                 recomputed.paths.push({
@@ -211,7 +224,7 @@ describe("rewind confirmation registry", () => {
 
     it("rejects normal drift, force path expansion, and force across a hard blocker", () => {
         const registry = new RewindConfirmationRegistry();
-        const confirmation = registry.take(registry.issue(plan(), 0), 1);
+        const confirmation = registry.take(registry.issue(plan(), AuthorityHead, 0), 1);
 
         expect(() => assertRestorePlanMatchesConfirmation({ confirmation, plan: plan(), mode: "normal" })).toThrow(
             /normal/i
@@ -247,7 +260,7 @@ describe("rewind confirmation registry", () => {
     it("binds turn targets exactly and allows force only for rewind-like targets", () => {
         const registry = new RewindConfirmationRegistry();
         const undoPlan = plan({ target: { kind: "turn-undo", sourceTurnId: "source-1" } });
-        const undo = registry.take(registry.issue(undoPlan, 0), 1);
+        const undo = registry.take(registry.issue(undoPlan, AuthorityHead, 0), 1);
         expect(undo.binding.target).toEqual({ kind: "turn-undo", sourceTurnId: "source-1" });
 
         const redoPlan = plan({
@@ -260,7 +273,7 @@ describe("rewind confirmation registry", () => {
             paths: plan().paths.map((path) => ({ ...path, conflict: "none" as const })),
             forceRequired: false,
         });
-        const redo = registry.take(registry.issue(redoPlan, 0), 1);
+        const redo = registry.take(registry.issue(redoPlan, AuthorityHead, 0), 1);
         expect(redo.binding.target).toEqual({
             kind: "turn-redo",
             sourceTurnId: "source-1",
@@ -270,7 +283,7 @@ describe("rewind confirmation registry", () => {
         expect(() =>
             assertRestorePlanMatchesConfirmation({ confirmation: redo, plan: redoPlan, mode: "force-drift" })
         ).toThrow(/only.*rewind/i);
-        expect(() => registry.issue({ ...redoPlan, forceRequired: true }, 0)).toThrow(/redo/i);
+        expect(() => registry.issue({ ...redoPlan, forceRequired: true }, AuthorityHead, 0)).toThrow(/redo/i);
     });
 
     it("rejects incomplete turn targets instead of weakening their binding", () => {
@@ -280,6 +293,7 @@ describe("rewind confirmation registry", () => {
                 plan({
                     target: { kind: "turn-redo", sourceTurnId: "source-1" } as RestorePlanV1["target"],
                 }),
+                AuthorityHead,
                 0
             )
         ).toThrow(/target/i);
@@ -287,16 +301,16 @@ describe("rewind confirmation registry", () => {
 
     it("sweeps expired entries during issue", () => {
         const registry = new RewindConfirmationRegistry();
-        registry.issue(plan({ sessionId: "expired" }), 0);
-        registry.issue(plan({ sessionId: "current" }), 300_001);
+        registry.issue(plan({ sessionId: "expired" }), AuthorityHead, 0);
+        registry.issue(plan({ sessionId: "current" }), AuthorityHead, 300_001);
 
         expect(registry.entries.size).toBe(1);
     });
 
     it("sweeps other expired entries during take", () => {
         const registry = new RewindConfirmationRegistry();
-        registry.issue(plan({ sessionId: "expired" }), 0);
-        const current = registry.issue(plan({ sessionId: "current" }), 1);
+        registry.issue(plan({ sessionId: "expired" }), AuthorityHead, 0);
+        const current = registry.issue(plan({ sessionId: "current" }), AuthorityHead, 1);
 
         expect(registry.take(current, 300_000).binding.sessionId).toBe("current");
         expect(registry.entries.size).toBe(0);
@@ -313,12 +327,12 @@ describe("rewind confirmation registry", () => {
 
     it("never evicts an unexpired token when capacity is reached", () => {
         const registry = new RewindConfirmationRegistry();
-        const first = registry.issue(plan({ sessionId: "first" }), 0);
+        const first = registry.issue(plan({ sessionId: "first" }), AuthorityHead, 0);
         for (let index = 1; index < 1_024; index++) {
-            registry.issue(plan({ sessionId: `session-${index}` }), 0);
+            registry.issue(plan({ sessionId: `session-${index}` }), AuthorityHead, 0);
         }
 
-        expect(() => registry.issue(plan({ sessionId: "overflow" }), 0)).toThrow(/capacity/i);
+        expect(() => registry.issue(plan({ sessionId: "overflow" }), AuthorityHead, 0)).toThrow(/capacity/i);
         expect(registry.take(first, 1).binding.sessionId).toBe("first");
     });
 });

@@ -723,7 +723,7 @@ async function measureRestore(fixture: BenchmarkFixture, iterations: number): Pr
             workspace: fixture.registryInput.identity,
             source: source.ref,
             plan,
-            confirmation: confirmations.take(confirmations.issue(plan)),
+            confirmation: confirmations.take(confirmations.issue(plan, source.ref.id)),
             mode: "normal",
             commit: benchmarkCommitStrategy(),
         });

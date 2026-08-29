@@ -33,6 +33,7 @@ const Snapshot = {
 };
 const LinkedSourceSnapshot = { ...Snapshot, id: "d".repeat(40) };
 const LinkedResultSnapshot = { ...Snapshot, id: "e".repeat(40) };
+const AuthorityHead = "f".repeat(40);
 
 function linkedOperation(operationId: string) {
     return {
@@ -194,7 +195,7 @@ function harness(options: { rejectOpenSessionWith?: Error; release?: () => Promi
             const target = { kind: "turn-undo" as const, sourceTurnId: "turn-1" };
             return {
                 ...previewResult,
-                confirmationToken: confirmations.issue({ ...plan(), target }),
+                confirmationToken: confirmations.issue({ ...plan(), target }, AuthorityHead),
                 target,
             };
         }),
@@ -207,7 +208,7 @@ function harness(options: { rejectOpenSessionWith?: Error; release?: () => Promi
             };
             return {
                 ...previewResult,
-                confirmationToken: confirmations.issue({ ...plan(), target }),
+                confirmationToken: confirmations.issue({ ...plan(), target }, AuthorityHead),
                 target,
             };
         }),
@@ -362,7 +363,7 @@ describe("AgentRewindService", () => {
 
     it("consumes the confirmation and broadcasts inside the retained session mutation", async () => {
         const value = harness();
-        const token = value.confirmations.issue(plan());
+        const token = value.confirmations.issue(plan(), AuthorityHead);
         const originalTake = value.confirmations.take.bind(value.confirmations);
         vi.spyOn(value.confirmations, "take").mockImplementation((valueToken, now) => {
             value.order.push("consume-token");
@@ -400,7 +401,7 @@ describe("AgentRewindService", () => {
                 linkedOperation: linkedOperation("rewind-1"),
             },
         };
-        const token = value.confirmations.issue(redoPlan);
+        const token = value.confirmations.issue(redoPlan, AuthorityHead);
 
         const result = await value.service.redo({
             sessionMetadata: Metadata,
@@ -422,7 +423,7 @@ describe("AgentRewindService", () => {
 
     it("revalidates current authorization inside the retained session mutation before consuming", async () => {
         const value = harness();
-        const token = value.confirmations.issue(plan());
+        const token = value.confirmations.issue(plan(), AuthorityHead);
         const assertCurrent = vi.fn(async () => {
             throw new Error("stale sender");
         });
@@ -545,15 +546,18 @@ describe("AgentRewindService", () => {
             })
         ).rejects.toThrow(/undoOperationId/i);
 
-        const token = value.confirmations.issue({
-            ...plan(),
-            target: {
-                kind: "turn-redo",
-                sourceTurnId: "turn-1",
-                undoOperationId: "undo-1",
-                linkedOperation: linkedOperation("undo-1"),
+        const token = value.confirmations.issue(
+            {
+                ...plan(),
+                target: {
+                    kind: "turn-redo",
+                    sourceTurnId: "turn-1",
+                    undoOperationId: "undo-1",
+                    linkedOperation: linkedOperation("undo-1"),
+                },
             },
-        });
+            AuthorityHead
+        );
         await expect(
             value.service.applyTurnRedo({
                 sessionMetadata: Metadata,
