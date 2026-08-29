@@ -82,6 +82,19 @@ export class PendingWorkspaceRestoreStore {
         }
         this.assertIdentity(decoded);
         await this.validateCommitFacts(decoded);
+        await this.publishDecodedLocked(decoded);
+    }
+
+    async publishPreparedLocked(record: PendingWorkspaceRestoreV2): Promise<void> {
+        const decoded = decodePendingWorkspaceRestoreV2(record);
+        if (!decoded) {
+            throw new Error("Invalid pending workspace restore");
+        }
+        this.assertIdentity(decoded);
+        await this.publishDecodedLocked(decoded);
+    }
+
+    async publishDecodedLocked(decoded: PendingWorkspaceRestoreV2): Promise<void> {
         await makePrivateDirectory(this.root);
         const active = await this.readActiveEntry(true);
         if (!active) {

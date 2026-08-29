@@ -87,6 +87,40 @@ test("clears a committed pending record without entering Recovery on the normal 
     await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
 }, 30_000);
 
+test("reports one complete timing record for a successful restore", async () => {
+    const fixture = await makeFixture();
+    const onTiming = vi.fn();
+    const executor = makeExecutor(fixture, { onTiming });
+
+    await execute(executor, fixture, fixture.plan);
+
+    expect(onTiming).toHaveBeenCalledTimes(1);
+    expect(onTiming).toHaveBeenCalledWith({
+        outcome: "committed",
+        pathCount: 1,
+        totalMs: expect.any(Number),
+        prepareCommitMs: expect.any(Number),
+        pendingPublishMs: expect.any(Number),
+        applyFilesMs: expect.any(Number),
+        verifyFilesMs: expect.any(Number),
+        publishHeadMs: expect.any(Number),
+        appendMarkerMs: expect.any(Number),
+        pendingCleanupMs: expect.any(Number),
+    });
+}, 30_000);
+
+test("does not revalidate trusted prepared state as crash-recovery input", async () => {
+    const fixture = await makeFixture();
+    const executor = makeExecutor(fixture);
+    const validateCommitFacts = vi.spyOn(executor.pending, "validateCommitFacts");
+    const readCommitSnapshot = vi.spyOn(fixture.store, "readCommitSnapshot");
+
+    await execute(executor, fixture, fixture.plan);
+
+    expect(validateCommitFacts).not.toHaveBeenCalled();
+    expect(readCommitSnapshot).not.toHaveBeenCalled();
+}, 30_000);
+
 test.each([
     { target: { kind: "rewind", targetTurnId: "turn-1" }, expectedTurn: "turn-1" },
     {
@@ -279,6 +313,7 @@ function makeExecutor(
         verifyPath?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["verifyPath"];
         onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
         recovery?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["recovery"];
+        onTiming?: ConstructorParameters<typeof WorkspaceRestoreExecutor>[0]["onTiming"];
     } = {}
 ): WorkspaceRestoreExecutor {
     const pending = new PendingWorkspaceRestoreStore(fixture.store);
@@ -296,6 +331,7 @@ function makeExecutor(
         now: () => new Date("2026-08-08T00:00:01.000Z"),
         ...(options.verifyPath ? { verifyPath: options.verifyPath } : {}),
         ...(options.onCommitted ? { onCommitted: options.onCommitted } : {}),
+        ...(options.onTiming ? { onTiming: options.onTiming } : {}),
     });
 }
 

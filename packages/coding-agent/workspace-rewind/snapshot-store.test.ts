@@ -303,6 +303,21 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         await expect(fixture.store.verifyOwnedSnapshot(captured.ref)).resolves.toBeUndefined();
     });
 
+    it("reads path states in one depth-independent batch", async () => {
+        const fixture = await makeFixture();
+        await mkdir(join(fixture.workspace, "a", "b", "c"), { recursive: true });
+        await writeFile(join(fixture.workspace, "a", "b", "c", "deep.txt"), "deep");
+        const captured = await fixture.store.capture({ profile: "terminal" });
+        const run = vi.spyOn(fixture.store.git, "run");
+
+        const states = await fixture.store.readPathStates(captured.ref, ["a/b/c/deep.txt", "plain.txt"]);
+
+        expect(states.get("a/b/c/deep.txt")).toMatchObject({ state: "file", executable: false });
+        expect(states.get("plain.txt")).toMatchObject({ state: "file", executable: false });
+        expect(countTreeReads(run.mock.calls)).toBe(0);
+        expect(run.mock.calls.filter(([args]) => args[0] === "ls-tree")).toHaveLength(2);
+    });
+
     it("diffs commit-backed V3 trees across files, executable bits, links, and removals", async () => {
         const fixture = await makeFixture();
         const before = await fixture.store.capture({ profile: "terminal" });

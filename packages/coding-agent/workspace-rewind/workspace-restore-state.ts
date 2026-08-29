@@ -36,6 +36,17 @@ export async function deriveWorkspaceRestoreState(
         sourceStates.push({ path, state: source });
         plannedStates.push({ path, state: planned });
     }
+    return makeWorkspaceRestoreState({ pending, sourceSnapshot, plannedSnapshot, sourceStates, plannedStates });
+}
+
+export function makeWorkspaceRestoreState(input: {
+    pending: PendingWorkspaceRestoreV2;
+    sourceSnapshot: WorkspaceSnapshotRefV1;
+    plannedSnapshot: WorkspaceSnapshotRefV1;
+    sourceStates: DerivedWorkspaceRestoreState["sourceStates"];
+    plannedStates: DerivedWorkspaceRestoreState["plannedStates"];
+}): DerivedWorkspaceRestoreState {
+    const { pending, sourceSnapshot, plannedSnapshot, sourceStates, plannedStates } = input;
     const base = {
         schemaVersion: 1,
         sessionId: pending.sessionId,

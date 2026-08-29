@@ -789,15 +789,35 @@ export class WorkspaceSnapshotStore {
         }
     }
 
-    readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
-        return this.withWorkspaceLock(() => this.#readPathStateUnlocked(snapshot, path));
+    async readPathState(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
+        return (await this.readPathStates(snapshot, [path])).get(path)!;
     }
 
-    async #readPathStateUnlocked(snapshot: WorkspaceSnapshotRefV1, path: string): Promise<CapturedPathStateV1> {
-        validateRelativePath(path);
+    readPathStates(
+        snapshot: WorkspaceSnapshotRefV1,
+        paths: readonly string[]
+    ): Promise<ReadonlyMap<string, CapturedPathStateV1>> {
+        return this.withWorkspaceLock(() => this.#readPathStatesUnlocked(snapshot, paths));
+    }
+
+    async #readPathStatesUnlocked(
+        snapshot: WorkspaceSnapshotRefV1,
+        paths: readonly string[]
+    ): Promise<ReadonlyMap<string, CapturedPathStateV1>> {
+        for (const path of paths) validateRelativePath(path);
         try {
             const manifest = await this.#readStoredManifest(snapshot);
-            return await this.#readPathStateFromManifest(snapshot, manifest, path);
+            const uniquePaths = [...new Set(paths)];
+            const entries = await this.#readWorkspacePathEntries(snapshot.tree, uniquePaths);
+            const states = new Map<string, CapturedPathStateV1>();
+            for (const path of uniquePaths) {
+                const entry = entries.get(path);
+                states.set(
+                    path,
+                    !entry || entry.kind === "tree" ? await manifest.readCoveragePathState(path) : entry.state
+                );
+            }
+            return states;
         } catch (cause) {
             throw asCorruptSnapshot(cause);
         }
@@ -902,16 +922,6 @@ export class WorkspaceSnapshotStore {
             assertBatchObjectTypes(objectInfo.stdout, expected);
         }
         return results;
-    }
-
-    async #readPathStateFromManifest(
-        snapshot: WorkspaceSnapshotRefV1,
-        manifest: StoredManifestReader,
-        path: string
-    ): Promise<CapturedPathStateV1> {
-        const entry = await this.#readWorkspacePathEntry(snapshot.tree, path);
-        if (!entry || entry.kind === "tree") return await manifest.readCoveragePathState(path);
-        return entry.state;
     }
 
     async #readWorkspacePathEntry(

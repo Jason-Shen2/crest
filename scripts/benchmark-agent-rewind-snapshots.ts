@@ -34,6 +34,7 @@ import { WorkspaceRecovery } from "../packages/coding-agent/workspace-rewind/wor
 import {
     WorkspaceRestoreExecutor,
     type WorkspaceRestoreCommitStrategy,
+    type WorkspaceRestoreTiming,
 } from "../packages/coding-agent/workspace-rewind/workspace-restore-executor";
 import {
     WorkspaceTrackerRegistry,
@@ -49,12 +50,15 @@ export type BenchmarkScenario =
     | "dirty-paths"
     | "session-contention"
     | "overlap"
-    | "restore";
+    | "restore"
+    | "restore-apply";
 export type BenchmarkOutcome = "pass" | "fallback" | "unavailable" | "timeout" | "budget";
 
 export interface BenchmarkOptions {
     entryCounts: number[];
     iterations: number;
+    applyOnly?: boolean;
+    applyPathCounts?: number[];
 }
 
 export interface BenchmarkRow {
@@ -72,6 +76,9 @@ export interface BenchmarkRow {
     fallbackCount: number;
     p50Ms: number | null;
     p95Ms: number | null;
+    maxMs?: number | null;
+    gitProcessCount?: number;
+    phaseP95Ms?: Omit<WorkspaceRestoreTiming, "outcome" | "pathCount" | "totalMs">;
     reason?: string;
 }
 
@@ -128,6 +135,7 @@ interface BenchmarkMetrics {
     bytesRead: number;
     commitsTraversed: number;
     fullReconcileCount: number;
+    gitProcessCount: number;
     reset(): void;
 }
 
@@ -527,14 +535,25 @@ async function measureFixture(
         error: fixture.coldError,
     });
     if (!fixture.keeperLease) {
-        return [
-            cold,
-            ...unavailableRows(
-                fixture,
-                options.iterations,
-                `cold authority unavailable: ${failureMessage(fixture.coldError)}`
-            ),
-        ];
+        const unavailable = unavailableRows(
+            fixture,
+            options.iterations,
+            `cold authority unavailable: ${failureMessage(fixture.coldError)}`
+        );
+        if (options.applyOnly) {
+            const applyPathCounts = new Set(options.applyPathCounts ?? DirtyPathCounts);
+            return unavailable.filter(
+                (row) => row.scenario === "restore-apply" && applyPathCounts.has(row.dirtyPathCount)
+            );
+        }
+        return [cold, ...unavailable];
+    }
+    if (options.applyOnly) {
+        const rows: BenchmarkRow[] = [];
+        for (const pathCount of options.applyPathCounts ?? DirtyPathCounts) {
+            rows.push(await measureRestoreApply(fixture, pathCount, options.iterations));
+        }
+        return rows;
     }
     const rows = [cold];
     rows.push(await measureNoToolFresh(fixture, options.iterations));
@@ -549,6 +568,10 @@ async function measureFixture(
     }
     rows.push(await measureOverlap(fixture, options.iterations));
     rows.push(await measureRestore(fixture, options.iterations));
+    const applyPathCounts = matrix === "smoke" ? ([1] as const) : DirtyPathCounts;
+    for (const pathCount of applyPathCounts) {
+        rows.push(await measureRestoreApply(fixture, pathCount, options.iterations));
+    }
     return rows;
 }
 
@@ -737,11 +760,137 @@ async function measureRestore(fixture: BenchmarkFixture, iterations: number): Pr
     });
 }
 
-function makeBenchmarkSession(fixture: BenchmarkFixture, iteration: number, initialLeaf: string) {
+async function measureRestoreApply(
+    fixture: BenchmarkFixture,
+    pathCount: number,
+    iterations: number
+): Promise<BenchmarkRow> {
+    const paths = fixture.paths.slice(0, Math.min(pathCount, fixture.paths.length));
+    fixture.metrics.reset();
+    const durations: number[] = [];
+    const timings: WorkspaceRestoreTiming[] = [];
+    const gitProcessCounts: number[] = [];
+    let error: unknown;
+    for (let iteration = 0; iteration < iterations; iteration++) {
+        try {
+            const before = await fixture.keeperLease!.snapshotSource.readHead();
+            await mutatePaths(fixture.workspaceRoot, paths, `restore-apply-source-${pathCount}-${iteration}`);
+            fixture.feed.record(paths);
+            const fallbackBefore = fixture.metrics.fullReconcileCount;
+            const changed = await fixture.keeperLease!.snapshotSource.captureOwnedTurn({
+                base: before.ref,
+                sessionId: "restore-apply-session",
+                turnId: `restore-apply-${pathCount}-${iteration}`,
+            });
+            recordCoverage(fixture.metrics, changed.coverage, fallbackBefore);
+            const source = await fixture.keeperLease!.snapshotSource.readHead();
+            const [expectedStates, targetStates] = await Promise.all([
+                Promise.all(paths.map((path) => fixture.keeperLease!.store.readPathState(source.ref, path))),
+                Promise.all(paths.map((path) => fixture.keeperLease!.store.readPathState(before.ref, path))),
+            ]);
+            if ([...expectedStates, ...targetStates].some((state) => state.state === "excluded")) {
+                throw new Error("Restore Apply benchmark path is excluded");
+            }
+            const semanticLeafId = `restore-apply-leaf-${pathCount}-${iteration}`;
+            const plan: RestorePlanV1 = {
+                target: { kind: "turn-undo", sourceTurnId: `restore-apply-${pathCount}-${iteration}` },
+                sessionId: "restore-apply-session",
+                workspaceIdentity: fixture.registryInput.identity.workspaceIdentity,
+                workspaceIncarnation: fixture.registryInput.identity.workspaceIncarnation,
+                semanticLeafId,
+                commitParentId: semanticLeafId,
+                paths: paths.map((path, index) => ({
+                    path,
+                    operation: "write",
+                    target: targetStates[index] as Exclude<(typeof targetStates)[number], { state: "excluded" }>,
+                    expectedCurrent: expectedStates[index] as Exclude<
+                        (typeof expectedStates)[number],
+                        { state: "excluded" }
+                    >,
+                    liveFingerprint: fingerprintCaptured(
+                        expectedStates[index] as Exclude<(typeof expectedStates)[number], { state: "excluded" }>
+                    ),
+                    conflict: "none",
+                })),
+                coverageWarnings: [],
+                forceRequired: false,
+                hardBlocked: false,
+            };
+            const session = makeBenchmarkSession(fixture, iteration, semanticLeafId, `restore-apply-${pathCount}`);
+            const pending = new PendingWorkspaceRestoreStore(fixture.keeperLease!.store);
+            const recovery = new WorkspaceRecovery({
+                workspace: fixture.registryInput.identity,
+                store: fixture.keeperLease!.store,
+                pending,
+                locateSession: async () => session,
+            });
+            const confirmations = new RewindConfirmationRegistry();
+            let timing: WorkspaceRestoreTiming | undefined;
+            const executor = new WorkspaceRestoreExecutor({
+                store: fixture.keeperLease!.store,
+                pending,
+                recovery,
+                createOperationId: () => `restore-apply-operation-${pathCount}-${iteration}`,
+                onTiming: (value) => {
+                    timing = value;
+                },
+            });
+            const gitBefore = fixture.metrics.gitProcessCount;
+            const started = performance.now();
+            await executor.execute({
+                session: session as never,
+                workspace: fixture.registryInput.identity,
+                source: source.ref,
+                plan,
+                confirmation: confirmations.take(confirmations.issue(plan, source.ref.id)),
+                mode: "normal",
+                commit: benchmarkCommitStrategy(),
+            });
+            durations.push(performance.now() - started);
+            gitProcessCounts.push(fixture.metrics.gitProcessCount - gitBefore);
+            if (!timing) throw new Error("Restore Apply benchmark timing was not emitted");
+            timings.push(timing);
+            const restoredHead = await fixture.keeperLease!.snapshotSource.readHead();
+            const restoredStates = await Promise.all(
+                paths.map((path) => fixture.keeperLease!.store.readPathState(restoredHead.ref, path))
+            );
+            if (
+                JSON.stringify(restoredStates) !== JSON.stringify(targetStates) ||
+                changed.changes.length !== paths.length ||
+                (await pending.readCandidate()).kind !== "none"
+            ) {
+                throw new Error("Restore Apply workload did not reproduce the exact prior path states");
+            }
+        } catch (operationError) {
+            error = operationError;
+            break;
+        }
+    }
+    return {
+        ...makeMeasuredRow(fixture, {
+            scenario: "restore-apply",
+            dirtyPathCount: pathCount,
+            sessionCount: 1,
+            iterations,
+            durations,
+            error,
+        }),
+        maxMs: durations.length === 0 ? null : roundMs(Math.max(...durations)),
+        gitProcessCount: gitProcessCounts.length === 0 ? 0 : Math.max(...gitProcessCounts),
+        ...(timings.length === 0 ? {} : { phaseP95Ms: phaseP95(timings) }),
+    };
+}
+
+function makeBenchmarkSession(
+    fixture: BenchmarkFixture,
+    iteration: number,
+    initialLeaf: string,
+    label = "restore"
+) {
     const metadata: JsonlSessionMetadata = {
         id: "restore-session",
         cwd: fixture.workspaceRoot,
-        path: join(fixture.root, `restore-session-${iteration}.db`),
+        path: join(fixture.root, `${label}-session-${iteration}.db`),
         createdAt: "2026-08-08T00:00:00.000Z",
     };
     const entries: SessionTreeEntry[] = [
@@ -888,6 +1037,7 @@ function unavailableRows(fixture: BenchmarkFixture, iterations: number, reason: 
         ...SessionCounts.map((sessions) => make("session-contention", 0, sessions)),
         make("overlap", 1, 2),
         make("restore", 1, 1),
+        ...DirtyPathCounts.map((paths) => make("restore-apply", paths, 1)),
     ];
 }
 
@@ -958,11 +1108,13 @@ function makeMetrics(): BenchmarkMetrics {
         bytesRead: 0,
         commitsTraversed: 0,
         fullReconcileCount: 0,
+        gitProcessCount: 0,
         reset() {
             this.candidateCount = 0;
             this.bytesRead = 0;
             this.commitsTraversed = 0;
             this.fullReconcileCount = 0;
+            this.gitProcessCount = 0;
         },
     };
 }
@@ -999,6 +1151,7 @@ class ObservedWorkspaceGitRunner extends WorkspaceGitRunner {
     }
 
     override async run(args: readonly string[], options: GitRunOptions): Promise<GitRunResult> {
+        this.metrics.gitProcessCount++;
         const started = performance.now();
         try {
             const result = await super.run(args, options);
@@ -1083,6 +1236,41 @@ function percentile(values: readonly number[], quantile: number): number {
     return Number(sorted[index]!.toFixed(2));
 }
 
+function phaseP95(
+    timings: readonly WorkspaceRestoreTiming[]
+): Omit<WorkspaceRestoreTiming, "outcome" | "pathCount" | "totalMs"> {
+    return {
+        prepareCommitMs: percentile(
+            timings.map((timing) => timing.prepareCommitMs),
+            0.95
+        ),
+        pendingPublishMs: percentile(
+            timings.map((timing) => timing.pendingPublishMs),
+            0.95
+        ),
+        applyFilesMs: percentile(
+            timings.map((timing) => timing.applyFilesMs),
+            0.95
+        ),
+        verifyFilesMs: percentile(
+            timings.map((timing) => timing.verifyFilesMs),
+            0.95
+        ),
+        publishHeadMs: percentile(
+            timings.map((timing) => timing.publishHeadMs),
+            0.95
+        ),
+        appendMarkerMs: percentile(
+            timings.map((timing) => timing.appendMarkerMs),
+            0.95
+        ),
+        pendingCleanupMs: percentile(
+            timings.map((timing) => timing.pendingCleanupMs),
+            0.95
+        ),
+    };
+}
+
 function elapsedMs(started: number): number {
     return roundMs(performance.now() - started);
 }
@@ -1104,6 +1292,8 @@ function validateEntryCount(entryCount: number): void {
 function parseOptions(argv: readonly string[]): BenchmarkOptions {
     let entryCounts = DefaultEntryCounts;
     let iterations = DefaultIterations;
+    let applyOnly = false;
+    let applyPathCounts: number[] | undefined;
     for (const argument of argv) {
         if (argument.startsWith("--entries=")) {
             entryCounts = argument
@@ -1116,13 +1306,32 @@ function parseOptions(argv: readonly string[]): BenchmarkOptions {
             iterations = Number(argument.slice("--iterations=".length));
             continue;
         }
+        if (argument === "--apply-only") {
+            applyOnly = true;
+            continue;
+        }
+        if (argument.startsWith("--paths=")) {
+            applyPathCounts = argument
+                .slice("--paths=".length)
+                .split(",")
+                .map((value) => Number(value));
+            continue;
+        }
         throw new Error(`Unknown argument: ${argument}`);
     }
     for (const entryCount of entryCounts) validateEntryCount(entryCount);
     if (!Number.isSafeInteger(iterations) || iterations < 1) {
         throw new Error("--iterations must be a positive integer");
     }
-    return { entryCounts: [...new Set(entryCounts)], iterations };
+    if (applyPathCounts?.some((count) => !Number.isSafeInteger(count) || count < 1 || count > 100)) {
+        throw new Error("--paths must contain integers between 1 and 100");
+    }
+    return {
+        entryCounts: [...new Set(entryCounts)],
+        iterations,
+        applyOnly,
+        ...(applyPathCounts == null ? {} : { applyPathCounts: [...new Set(applyPathCounts)] }),
+    };
 }
 
 function printRows(rows: readonly BenchmarkRow[]): void {
@@ -1141,6 +1350,8 @@ function printRows(rows: readonly BenchmarkRow[]): void {
             fallbacks: row.fallbackCount,
             p50ms: row.p50Ms,
             p95ms: row.p95Ms,
+            maxms: row.maxMs,
+            gitprocesses: row.gitProcessCount,
         }))
     );
     console.log(JSON.stringify({ rows }, null, 2));
@@ -1149,7 +1360,8 @@ function printRows(rows: readonly BenchmarkRow[]): void {
 const invokedPath = process.argv[1] ? await realpath(process.argv[1]).catch(() => process.argv[1]!) : "";
 if (invokedPath === new URL(import.meta.url).pathname) {
     const options = parseOptions(process.argv.slice(2));
-    const totalRows = options.entryCounts.length * 22;
+    const totalRows = options.entryCounts.length *
+        (options.applyOnly ? (options.applyPathCounts?.length ?? DirtyPathCounts.length) * 2 : 28);
     let completedRows = 0;
     const rows = await runAgentRewindSnapshotBenchmark(options, (row) => {
         completedRows++;

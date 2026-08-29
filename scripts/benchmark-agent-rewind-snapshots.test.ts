@@ -21,6 +21,7 @@ const ExpectedScenarios: BenchmarkScenario[] = [
     "session-contention",
     "overlap",
     "restore",
+    "restore-apply",
 ];
 
 function row(scenario: BenchmarkScenario, overrides: Partial<BenchmarkRow> = {}): BenchmarkRow {
@@ -72,11 +73,14 @@ describe("agent rewind V3 production benchmark contract", () => {
                 ),
                 row("overlap", { shape: fixture.shape, dirtyPathCount: 1, sessionCount: 2, iterations: 2 }),
                 row("restore", { shape: fixture.shape, dirtyPathCount: 1, iterations: 2 }),
+                ...([1, 10, 100] as const).map((dirtyPathCount) =>
+                    row("restore-apply", { shape: fixture.shape, dirtyPathCount, iterations: 2 })
+                ),
             ],
             cleanupFixture: async () => undefined,
         });
 
-        expect(rows).toHaveLength(22);
+        expect(rows).toHaveLength(28);
         for (const shape of ["deep", "wide"] as const) {
             const shapeRows = rows.filter((item) => item.shape === shape);
             expect(new Set(shapeRows.map((item) => item.scenario))).toEqual(new Set(ExpectedScenarios));
@@ -86,6 +90,9 @@ describe("agent rewind V3 production benchmark contract", () => {
             expect(
                 shapeRows.filter((item) => item.scenario === "session-contention").map((item) => item.sessionCount)
             ).toEqual([1, 2, 4]);
+            expect(
+                shapeRows.filter((item) => item.scenario === "restore-apply").map((item) => item.dirtyPathCount)
+            ).toEqual([1, 10, 100]);
         }
         expect(
             rows.every(
@@ -121,7 +128,7 @@ describe("agent rewind V3 production benchmark contract", () => {
     test("runs the complete matrix against one shared V3 authority", async () => {
         const rows = await runAgentRewindSnapshotFixture(12, "wide", 1, "smoke");
 
-        expect(rows).toHaveLength(7);
+        expect(rows).toHaveLength(8);
         expect(
             rows.every((item) => item.outcome === "pass" || item.outcome === "fallback"),
             JSON.stringify(rows)
@@ -140,6 +147,16 @@ describe("agent rewind V3 production benchmark contract", () => {
         expect(rows.filter((item) => item.scenario === "overlap").every((item) => item.commitsTraversed > 0)).toBe(
             true
         );
+        expect(
+            rows
+                .filter((item) => item.scenario === "restore-apply")
+                .every(
+                    (item) =>
+                        item.maxMs != null &&
+                        item.gitProcessCount != null &&
+                        item.phaseP95Ms?.prepareCommitMs != null
+                )
+        ).toBe(true);
     }, 60_000);
 
     test("profiles cold fixture and authority stages without changing production limits", async () => {

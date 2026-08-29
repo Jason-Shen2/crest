@@ -5,6 +5,7 @@ import type { JsonlSessionMetadata, Session, SessionTreeEntry } from "@crest/age
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { assertRestorePlanMatchesConfirmation, type ConfirmedRestorePlanV1 } from "./confirmation-token";
 import { applyCapturedPath, verifyCapturedPath } from "./filesystem-apply";
@@ -18,7 +19,11 @@ import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { WorkspaceControlCustomTypes, type CapturedPathStateV1, type WorkspaceSnapshotRefV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, type WorkspaceRecovery } from "./workspace-recovery";
-import { deriveWorkspaceRestoreState } from "./workspace-restore-state";
+import {
+    deriveWorkspaceRestoreState,
+    makeWorkspaceRestoreState,
+    type RestorableCapturedPathState,
+} from "./workspace-restore-state";
 
 type ApplyPath = typeof applyCapturedPath;
 type VerifyPath = typeof verifyCapturedPath;
@@ -31,6 +36,24 @@ export interface WorkspaceRestoreCommitStrategy {
     }): WorkspaceRewindCommitResult;
 }
 
+export interface WorkspaceRestoreTiming {
+    outcome: "committed" | "failed";
+    pathCount: number;
+    totalMs: number;
+    prepareCommitMs: number;
+    pendingPublishMs: number;
+    applyFilesMs: number;
+    verifyFilesMs: number;
+    publishHeadMs: number;
+    appendMarkerMs: number;
+    pendingCleanupMs: number;
+}
+
+type WorkspaceRestorePhase = Exclude<
+    keyof WorkspaceRestoreTiming,
+    "outcome" | "pathCount" | "totalMs"
+>;
+
 export interface WorkspaceRestoreExecutorOptions {
     store: WorkspaceSnapshotStore;
     pending?: PendingWorkspaceRestoreStore;
@@ -41,6 +64,7 @@ export interface WorkspaceRestoreExecutorOptions {
     createOperationId?: () => string;
     now?: () => Date;
     onCommitted?: (sessionId: string, operationId: string) => Promise<void>;
+    onTiming?: (timing: WorkspaceRestoreTiming) => void;
 }
 
 export interface ExecuteWorkspaceRestoreInput {
@@ -71,6 +95,7 @@ export class WorkspaceRestoreExecutor {
     readonly createOperationId: () => string;
     readonly now: () => Date;
     readonly onCommitted: NonNullable<WorkspaceRestoreExecutorOptions["onCommitted"]>;
+    readonly onTiming: NonNullable<WorkspaceRestoreExecutorOptions["onTiming"]>;
 
     constructor(options: WorkspaceRestoreExecutorOptions) {
         this.store = options.store;
@@ -83,21 +108,35 @@ export class WorkspaceRestoreExecutor {
         this.createOperationId = options.createOperationId ?? randomUUID;
         this.now = options.now ?? (() => new Date());
         this.onCommitted = options.onCommitted ?? (async () => {});
+        this.onTiming = options.onTiming ?? (() => {});
     }
 
     async execute(input: ExecuteWorkspaceRestoreInput): Promise<WorkspaceRewindCommitResult> {
         this.assertWorkspace(input.workspace);
-        const committed = await this.executeUnderLease(input);
+        const started = performance.now();
+        const timing = makeEmptyTiming(input.plan.paths.length);
         try {
-            await this.onCommitted(input.plan.sessionId, committed.operationId);
-        } catch (error) {
-            console.warn("Workspace restore committed but renderer refresh failed", error);
+            const committed = await this.executeUnderLease(input, timing);
+            timing.outcome = "committed";
+            try {
+                await this.onCommitted(input.plan.sessionId, committed.operationId);
+            } catch (error) {
+                console.warn("Workspace restore committed but renderer refresh failed", error);
+            }
+            return this.makeResult(input, committed.sessionMetadata);
+        } finally {
+            timing.totalMs = performance.now() - started;
+            try {
+                this.onTiming(timing);
+            } catch (error) {
+                console.warn("Workspace restore timing observer failed", error);
+            }
         }
-        return this.makeResult(input, committed.sessionMetadata);
     }
 
     async executeUnderLease(
-        input: ExecuteWorkspaceRestoreInput
+        input: ExecuteWorkspaceRestoreInput,
+        timing = makeEmptyTiming(input.plan.paths.length)
     ): Promise<{ sessionMetadata: JsonlSessionMetadata; operationId: string }> {
         const assertCurrent = input.assertCurrent ?? (async () => {});
         await assertCurrent();
@@ -111,9 +150,13 @@ export class WorkspaceRestoreExecutor {
             input.mode === "force-drift"
                 ? orderedPaths.filter((path) => path.conflict === "forceable-drift").map((path) => path.path)
                 : [];
-        const sourceStates = new Map<string, CapturedPathStateV1>();
+        const sourceStates = new Map<string, RestorableCapturedPathState>();
+        const capturedSourceStates = await this.store.readPathStates(
+            input.source,
+            orderedPaths.map((path) => path.path)
+        );
         for (const path of orderedPaths) {
-            const state = await this.store.readPathState(input.source, path.path);
+            const state = capturedSourceStates.get(path.path)!;
             if (state.state === "excluded") {
                 throw new Error(`Source commit excludes a restore path: ${path.path}`);
             }
@@ -124,7 +167,9 @@ export class WorkspaceRestoreExecutor {
         const operationId = this.createOperationId();
         const workspaceStateEntryId = await input.session.getStorage().createEntryId();
         const sessionMetadata = await input.session.getMetadata();
-        const planned = await this.prepareResultCommit(input, operationId, orderedPaths);
+        const planned = await measurePhase(timing, "prepareCommitMs", () =>
+            this.prepareResultCommit(input, operationId, orderedPaths)
+        );
         const pending: PendingWorkspaceRestoreV2 = {
             schemaVersion: 2,
             operationId,
@@ -146,29 +191,52 @@ export class WorkspaceRestoreExecutor {
         let pendingVisible = false;
         try {
             await assertCurrent();
-            await this.store.withWorkspaceLock(() => this.pending.publishLocked(pending));
+            await measurePhase(timing, "pendingPublishMs", () =>
+                this.store.withWorkspaceLock(() => this.pending.publishPreparedLocked(pending))
+            );
             pendingVisible = true;
-            for (const path of orderedPaths) {
-                await assertCurrent();
-                await this.applyPath({
-                    root: input.workspace.canonicalRoot,
-                    path: path.path,
-                    expectedCurrent: sourceStates.get(path.path)!,
-                    target: path.target,
-                    readBlob: (oid) => this.store.readBlob(oid),
-                    progress: {
-                        operationId,
-                        createdParentDirectories: new Set(),
-                        onPathReplaced: async () => {},
-                    },
-                });
-            }
-            for (const path of orderedPaths) {
-                await this.verifyPath({ root: input.workspace.canonicalRoot, path: path.path, expected: path.target });
-            }
+            await measurePhase(timing, "applyFilesMs", async () => {
+                for (const path of orderedPaths) {
+                    await assertCurrent();
+                    await this.applyPath({
+                        root: input.workspace.canonicalRoot,
+                        path: path.path,
+                        expectedCurrent: sourceStates.get(path.path)!,
+                        target: path.target,
+                        readBlob: (oid) => this.store.readBlob(oid),
+                        progress: {
+                            operationId,
+                            createdParentDirectories: new Set(),
+                            onPathReplaced: async () => {},
+                        },
+                    });
+                }
+            });
+            await measurePhase(timing, "verifyFilesMs", async () => {
+                for (const path of orderedPaths) {
+                    await this.verifyPath({
+                        root: input.workspace.canonicalRoot,
+                        path: path.path,
+                        expected: path.target,
+                    });
+                }
+            });
             await assertCurrent();
-            await this.store.withWorkspaceLock(() => this.store.mutationLog.publishPrepared(planned.prepared));
-            const derived = await deriveWorkspaceRestoreState(this.store, pending);
+            await measurePhase(timing, "publishHeadMs", () =>
+                this.store.withWorkspaceLock(() => this.store.mutationLog.publishPrepared(planned.prepared))
+            );
+            const derived = makeWorkspaceRestoreState({
+                pending,
+                sourceSnapshot: input.source,
+                plannedSnapshot: planned.snapshot,
+                sourceStates: orderedPaths.map((path) => ({ path: path.path, state: sourceStates.get(path.path)! })),
+                plannedStates: orderedPaths.map((path) => {
+                    if (path.target.state === "excluded") {
+                        throw new Error(`Restore target excludes an affected path: ${path.path}`);
+                    }
+                    return { path: path.path, state: path.target as RestorableCapturedPathState };
+                }),
+            });
             const entry: SessionTreeEntry = {
                 type: "custom",
                 id: pending.workspaceStateEntryId,
@@ -177,8 +245,12 @@ export class WorkspaceRestoreExecutor {
                 customType: WorkspaceControlCustomTypes.state,
                 data: derived.markerState,
             };
-            await input.session.appendEntries([entry], { expectedLeafId: pending.expectedSemanticLeafId });
-            await this.store.withWorkspaceLock(() => this.pending.removeLocked(pending.operationId));
+            await measurePhase(timing, "appendMarkerMs", () =>
+                input.session.appendEntries([entry], { expectedLeafId: pending.expectedSemanticLeafId })
+            );
+            await measurePhase(timing, "pendingCleanupMs", () =>
+                this.store.withWorkspaceLock(() => this.pending.removeLocked(pending.operationId))
+            );
             return { sessionMetadata, operationId };
         } catch (error) {
             if (!pendingVisible) {
@@ -305,6 +377,34 @@ export class WorkspaceRestoreExecutor {
         ) {
             throw new Error("Workspace restore executor belongs to another workspace incarnation");
         }
+    }
+}
+
+function makeEmptyTiming(pathCount: number): WorkspaceRestoreTiming {
+    return {
+        outcome: "failed",
+        pathCount,
+        totalMs: 0,
+        prepareCommitMs: 0,
+        pendingPublishMs: 0,
+        applyFilesMs: 0,
+        verifyFilesMs: 0,
+        publishHeadMs: 0,
+        appendMarkerMs: 0,
+        pendingCleanupMs: 0,
+    };
+}
+
+async function measurePhase<T>(
+    timing: WorkspaceRestoreTiming,
+    phase: WorkspaceRestorePhase,
+    operation: () => Promise<T>
+): Promise<T> {
+    const started = performance.now();
+    try {
+        return await operation();
+    } finally {
+        timing[phase] += performance.now() - started;
     }
 }
 
