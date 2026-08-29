@@ -107,6 +107,7 @@ import { registerWorkspaceCheckpointManager } from "@crest/coding-agent/workspac
 import { RewindConfirmationRegistry } from "@crest/coding-agent/workspace-rewind/confirmation-token";
 import {
     applyCapturedPath,
+    verifyCapturedPath,
     workspaceFilesystemApplyPlatformSupport,
 } from "@crest/coding-agent/workspace-rewind/filesystem-apply";
 import { WorkspaceGitRunner } from "@crest/coding-agent/workspace-rewind/git-runner";
@@ -1672,6 +1673,10 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             confirmations,
             snapshotSource,
             createOperationId: () => "operation-e2e-crash",
+            verifyPath: async (input) => {
+                await verifyCapturedPath(input);
+                await writeFile(file, "external-during-final-verification");
+            },
         });
         const preview = await engine.previewRewind({
             session: value.session,
