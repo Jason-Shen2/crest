@@ -15,10 +15,12 @@ function ThreadLoadingTurn({ userWidth, assistantWidths }: { userWidth: string; 
         <div data-slot="aui_thread-loading-turn" className="flex flex-col gap-3">
             <div
                 data-slot="aui_thread-loading-user"
-                className={cn("bg-muted-foreground/15 h-4 rounded-full animate-pulse motion-reduce:animate-none")}
+                className={cn(
+                    "bg-muted-foreground/15 h-4 self-end rounded-full animate-pulse motion-reduce:animate-none"
+                )}
                 style={{ width: userWidth }}
             />
-            <div data-slot="aui_thread-loading-assistant" className="flex flex-col gap-2 ps-4">
+            <div data-slot="aui_thread-loading-assistant" className="flex flex-col gap-2">
                 {assistantWidths.map((width) => (
                     <div
                         key={width}
@@ -55,7 +57,7 @@ export function ThreadLoading() {
             role="status"
             aria-live="polite"
             data-slot="aui_thread-loading"
-            className="aui-thread-loading animate-in fade-in-0 motion-reduce:animate-none flex flex-col gap-4 px-4 py-6 duration-300"
+            className="aui-thread-loading animate-in fade-in-0 motion-reduce:animate-none flex flex-col gap-4 py-6 duration-300"
         >
             <div className="text-muted-foreground flex items-center gap-2 text-sm">
                 <RefreshCwIcon className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />

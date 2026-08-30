@@ -35,8 +35,24 @@ describe("ThreadLoading", () => {
         expect(status.textContent).toContain("Loading conversation…");
         expect(status.getAttribute("data-slot")).toBe("aui_thread-loading");
         expect(document.querySelectorAll('[data-slot="aui_thread-loading-turn"]')).toHaveLength(2);
-        expect(document.querySelectorAll('[data-slot="aui_thread-loading-user"]')).toHaveLength(2);
-        expect(document.querySelectorAll('[data-slot="aui_thread-loading-assistant"]')).toHaveLength(2);
+        const userSkeletons = document.querySelectorAll('[data-slot="aui_thread-loading-user"]');
+        expect(userSkeletons).toHaveLength(2);
+        expect(Array.from(userSkeletons).map((element) => (element as HTMLElement).style.width)).toEqual([
+            "38%",
+            "44%",
+        ]);
+        expect(Array.from(userSkeletons).every((element) => element.classList.contains("self-end"))).toBe(true);
+
+        const assistantSkeletons = document.querySelectorAll('[data-slot="aui_thread-loading-assistant"]');
+        expect(assistantSkeletons).toHaveLength(2);
+        expect(Array.from(assistantSkeletons).every((element) => !element.classList.contains("ps-4"))).toBe(true);
+        const assistantLines = document.querySelectorAll('[data-slot="aui_thread-loading-assistant"] > div');
+        expect(Array.from(assistantLines).map((element) => (element as HTMLElement).style.width)).toEqual([
+            "76%",
+            "52%",
+            "68%",
+            "46%",
+        ]);
         expect(document.querySelector('[data-slot="aui_thread-loading-skeletons"]')?.getAttribute("aria-hidden")).toBe(
             "true"
         );
