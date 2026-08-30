@@ -43,7 +43,7 @@ import {
     PencilIcon,
     PlusIcon,
     QuoteIcon,
-    RefreshCwIcon,
+    RefreshCw,
     Settings2Icon,
     SquareIcon,
     UploadIcon,
@@ -72,6 +72,7 @@ import { getCrestImageAlt, getCrestToolRenderer } from "./crest-message";
 import { ThreadFollowupSuggestions } from "./follow-up-suggestions";
 import { MarkdownText } from "./markdown-text";
 import { Reasoning, ReasoningContent, ReasoningRoot, ReasoningText, ReasoningTrigger } from "./reasoning";
+import { ThreadLoading } from "./thread-loading";
 import { ToolGroupContent, ToolGroupRoot, ToolGroupTrigger } from "./tool-group";
 import { ReadToolActivityGroup, SearchToolActivityGroup } from "./tools/tool-activity";
 import { getToolActivityKind, type ToolActivityPart } from "./tools/tool-activity-model";
@@ -241,20 +242,6 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
     );
 };
 
-const ThreadLoading: FC = () => {
-    return (
-        <div
-            role="status"
-            aria-live="polite"
-            data-slot="aui_thread-loading"
-            className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-sm"
-        >
-            <RefreshCwIcon className="size-4 animate-spin" aria-hidden="true" />
-            <span>Loading conversation…</span>
-        </div>
-    );
-};
-
 const MessageSelectionToolbar: FC = () => {
     const [mounted, setMounted] = useState(false);
     useEffect(() => {
@@ -364,7 +351,7 @@ const SLASH_ICON_MAP = {
     Info: InfoIcon,
     Download: DownloadIcon,
     Upload: UploadIcon,
-    RefreshCw: RefreshCwIcon,
+    RefreshCw,
 };
 
 const SlashCommandPopoverClassName =
@@ -1045,7 +1032,7 @@ const AssistantActionBar: FC = () => {
             <AuiIf condition={(s) => s.thread.capabilities.reload}>
                 <ActionBarPrimitive.Reload asChild>
                     <TooltipIconButton tooltip="Refresh">
-                        <RefreshCwIcon />
+                        <RefreshCw />
                     </TooltipIconButton>
                 </ActionBarPrimitive.Reload>
             </AuiIf>

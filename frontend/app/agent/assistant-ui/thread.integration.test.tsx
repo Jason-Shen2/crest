@@ -10,9 +10,10 @@ import {
     type QuoteInfo,
     type ThreadMessageLike,
 } from "@assistant-ui/react";
+import { act, cleanup, render } from "@testing-library/react";
 import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Thread, __testing as registryThreadTesting, type ThreadProps } from "./registry-thread";
 
@@ -85,21 +86,44 @@ function renderEmptyThread(props?: ThreadProps): string {
     );
 }
 
-function renderLoadingThread(props?: ThreadProps): string {
-    return renderToStaticMarkup(
+function loadingThread(props?: ThreadProps) {
+    return (
         <RuntimeProvider messages={[]} isLoading>
             <Thread {...props} />
         </RuntimeProvider>
     );
 }
 
-describe("Thread assistant-ui integration", () => {
-    it("renders a loading state instead of the welcome view while history hydrates", () => {
-        const html = renderLoadingThread();
+class TestResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+}
 
-        expect(html).toContain('data-slot="aui_thread-loading"');
-        expect(html).toContain("Loading conversation…");
-        expect(html).not.toContain("How can I help you today?");
+afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+});
+
+describe("Thread assistant-ui integration", () => {
+    it("renders conversation skeletons instead of the welcome view while history hydrates", () => {
+        vi.stubGlobal("ResizeObserver", TestResizeObserver);
+        vi.useFakeTimers();
+        const { container } = render(loadingThread());
+
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeNull();
+        expect(container.textContent).not.toContain("How can I help you today?");
+
+        act(() => {
+            vi.advanceTimersByTime(180);
+        });
+
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeTruthy();
+        expect(container.querySelectorAll('[data-slot="aui_thread-loading-turn"]')).toHaveLength(2);
+        expect(container.textContent).toContain("Loading conversation…");
+        expect(container.textContent).not.toContain("How can I help you today?");
+        expect(container.querySelector('[data-slot="aui_message-group"]')?.textContent).toBe("");
     });
 
     it("discovers /session and /info while keeping /resume hidden", () => {
