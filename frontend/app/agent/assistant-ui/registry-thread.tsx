@@ -43,7 +43,7 @@ import {
     PencilIcon,
     PlusIcon,
     QuoteIcon,
-    RefreshCw,
+    RefreshCwIcon,
     Settings2Icon,
     SquareIcon,
     UploadIcon,
@@ -351,7 +351,7 @@ const SLASH_ICON_MAP = {
     Info: InfoIcon,
     Download: DownloadIcon,
     Upload: UploadIcon,
-    RefreshCw,
+    RefreshCw: RefreshCwIcon,
 };
 
 const SlashCommandPopoverClassName =
@@ -1032,7 +1032,7 @@ const AssistantActionBar: FC = () => {
             <AuiIf condition={(s) => s.thread.capabilities.reload}>
                 <ActionBarPrimitive.Reload asChild>
                     <TooltipIconButton tooltip="Refresh">
-                        <RefreshCw />
+                        <RefreshCwIcon />
                     </TooltipIconButton>
                 </ActionBarPrimitive.Reload>
             </AuiIf>
