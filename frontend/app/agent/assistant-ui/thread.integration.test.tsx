@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 // @vitest-environment jsdom
@@ -11,7 +9,7 @@ import {
     type QuoteInfo,
     type ThreadMessageLike,
 } from "@assistant-ui/react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { FC, PropsWithChildren } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,15 +17,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TurnChangesContext, type TurnChangesContextValue } from "@/app/agent/rewind/turn-changes-context";
 import { Thread, __testing as registryThreadTesting, type ThreadProps } from "./registry-thread";
 
+class TestResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+}
+
 beforeEach(() => {
-    vi.stubGlobal(
-        "ResizeObserver",
-        class {
-            observe() {}
-            unobserve() {}
-            disconnect() {}
-        }
-    );
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
         configurable: true,
         value: vi.fn(),
@@ -36,6 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
 });
 
@@ -114,8 +112,8 @@ function renderEmptyThread(props?: ThreadProps): string {
     );
 }
 
-function renderLoadingThread(props?: ThreadProps): string {
-    return renderToStaticMarkup(
+function loadingThread(props?: ThreadProps) {
+    return (
         <RuntimeProvider messages={[]} isLoading>
             <Thread {...props} />
         </RuntimeProvider>
@@ -182,12 +180,30 @@ describe("Thread assistant-ui integration", () => {
         expect(openMutation).toHaveBeenCalledWith("turn-card");
     });
 
-    it("renders a loading state instead of the welcome view while history hydrates", () => {
-        const html = renderLoadingThread();
+    it("renders conversation skeletons instead of the welcome view while history hydrates", () => {
+        vi.stubGlobal("ResizeObserver", TestResizeObserver);
+        vi.useFakeTimers();
+        const { container } = render(loadingThread());
 
-        expect(html).toContain('data-slot="aui_thread-loading"');
-        expect(html).toContain("Loading conversation…");
-        expect(html).not.toContain("How can I help you today?");
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeNull();
+        expect(container.textContent).not.toContain("How can I help you today?");
+
+        act(() => {
+            vi.advanceTimersByTime(179);
+        });
+
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeNull();
+        expect(container.textContent).not.toContain("How can I help you today?");
+
+        act(() => {
+            vi.advanceTimersByTime(1);
+        });
+
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeTruthy();
+        expect(container.querySelectorAll('[data-slot="aui_thread-loading-turn"]')).toHaveLength(2);
+        expect(container.textContent).toContain("Loading conversation…");
+        expect(container.textContent).not.toContain("How can I help you today?");
+        expect(container.querySelector('[data-slot="aui_message-group"]')?.textContent).toBe("");
     });
 
     it("discovers /session and /info while keeping /resume hidden", () => {
