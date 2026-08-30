@@ -169,6 +169,15 @@ function makeHarness(input: {
             if (blob instanceof Error) throw blob;
             return Buffer.isBuffer(blob) ? blob : Buffer.from(blob);
         }),
+        readPathStates: vi.fn(async (_source: WorkspaceSnapshotRefV1, paths: readonly string[]) =>
+            new Map(
+                paths.map((path) => {
+                    const planned = plan.paths.find((candidate) => candidate.path === path);
+                    if (!planned) throw new Error(`missing test path: ${path}`);
+                    return [path, planned.expectedCurrent] as const;
+                })
+            )
+        ),
         verify: vi.fn(async () => {}),
         verifyUntrustedSnapshot: vi.fn(async () => {}),
     };
@@ -308,6 +317,8 @@ describe("WorkspaceRewindEngine transaction", () => {
             semanticLeafId: "old-leaf",
             targetTurnId: "turn-1",
         });
+        expect(value.snapshotSource.synchronizeExternal).toHaveBeenCalledTimes(2);
+        expect(value.store.readPathStates).toHaveBeenCalledWith(HeadSnapshot, ["file.txt"]);
         const confirmation = value.confirmations.take(preview.confirmationToken!);
         vi.spyOn(value.engine.executor, "execute").mockResolvedValue({
             sessionMetadata: value.session.metadata,

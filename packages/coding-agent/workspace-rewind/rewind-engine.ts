@@ -33,7 +33,12 @@ import { countRevertedMessages, foldWorkspaceSessionState } from "./session-stat
 import type { WorkspaceCheckpointSnapshotSource } from "./snapshot-source";
 import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
-import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
+import type {
+    CapturedPathStateV1,
+    WorkspaceCheckpointV1,
+    WorkspaceSnapshotRefV1,
+    WorkspaceStateV1,
+} from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
 import { WorkspaceFrozenError, WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
 import { WorkspaceRestoreExecutor, type WorkspaceRestoreTiming } from "./workspace-restore-executor";
@@ -189,16 +194,18 @@ function baseFileRow(path: RestorePlanV1["paths"][number]): AgentRewindFileRowVi
 
 async function fileRows(
     plan: RestorePlanV1,
-    readBlob: (oid: string) => Promise<Buffer>
+    readBlob: (oid: string) => Promise<Buffer>,
+    sourceStates?: ReadonlyMap<string, CapturedPathStateV1>
 ): Promise<AgentRewindFileRowView[]> {
     const budget = new WorkspaceDiffPreviewBudget();
     const rows: AgentRewindFileRowView[] = [];
     for (const path of plan.paths) {
         const base = baseFileRow(path);
+        const before = sourceStates?.get(path.path) ?? path.expectedCurrent;
         try {
             const projected = await projectWorkspacePathDiff({
                 path: path.path,
-                before: path.expectedCurrent,
+                before,
                 after: path.target,
                 readBlob,
                 budget,
@@ -211,6 +218,7 @@ async function fileRows(
                     ? {}
                     : { previewUnavailableReason: projected.previewUnavailableReason }),
                 ...base,
+                operation: projected.operation as AgentRewindFileRowView["operation"],
             });
         } catch {
             rows.push({ ...base, previewUnavailableReason: "diff preview is unavailable" });
@@ -321,26 +329,22 @@ export class WorkspaceRewindEngine {
 
     async previewRewind(input: PreviewRewindInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return await this.preview(await this.computeAtStableHead((authorityHead) => this.computeRewind(input, authorityHead)));
+        return await this.preparePreview(input.sessionId, (authorityHead) => this.computeRewind(input, authorityHead));
     }
 
     async previewRedo(input: PreviewRedoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return await this.preview(await this.computeAtStableHead((authorityHead) => this.computeRedo(input, authorityHead)));
+        return await this.preparePreview(input.sessionId, (authorityHead) => this.computeRedo(input, authorityHead));
     }
 
     async previewTurnUndo(input: PreviewTurnUndoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(
-            await this.computeAtStableHead((authorityHead) => this.computeTurnUndo(input, authorityHead))
-        );
+        return this.preparePreview(input.sessionId, (authorityHead) => this.computeTurnUndo(input, authorityHead));
     }
 
     async previewTurnRedo(input: PreviewTurnRedoInput): Promise<WorkspaceRestorePreviewResult> {
         this.assertWorkspace(input.workspace);
-        return this.preview(
-            await this.computeAtStableHead((authorityHead) => this.computeTurnRedo(input, authorityHead))
-        );
+        return this.preparePreview(input.sessionId, (authorityHead) => this.computeTurnRedo(input, authorityHead));
     }
 
     async getTurnChangeSummary(input: ReadTurnChangesInput): Promise<AgentTurnChangeSummaryView> {
@@ -483,7 +487,35 @@ export class WorkspaceRewindEngine {
         return { semanticLeafId: folded.semanticLeafId, checkpoint };
     }
 
-    private async preview(planned: PlannedRestore): Promise<WorkspaceRestorePreviewResult> {
+    private async preparePreview(
+        sessionId: string,
+        compute: (authorityHead: string) => Promise<PlannedRestore>
+    ): Promise<WorkspaceRestorePreviewResult> {
+        const planned = await this.computeAtStableHead(compute);
+        if (!planned.plan.forceRequired || planned.plan.hardBlocked) return this.preview(planned);
+        const snapshotSource = this.snapshotSource;
+        if (!snapshotSource) {
+            throw new Error("Force preview requires the shared checkpoint snapshot source");
+        }
+        return this.withRestoreLease(sessionId, "force-drift", async (source) => {
+            let stableSource = source;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const refreshed = await this.computeAtStableHead(compute);
+                if (!refreshed.plan.forceRequired || refreshed.plan.hardBlocked) return this.preview(refreshed);
+                const verified = await snapshotSource.synchronizeExternal();
+                if (stableSource.id === refreshed.authorityHead && verified.ref.id === stableSource.id) {
+                    return this.preview(refreshed, stableSource);
+                }
+                stableSource = verified.ref;
+            }
+            throw new Error("Workspace changed while preparing the Force preview");
+        });
+    }
+
+    private async preview(
+        planned: PlannedRestore,
+        source?: WorkspaceSnapshotRefV1
+    ): Promise<WorkspaceRestorePreviewResult> {
         const { plan, entries, rewindState } = planned;
         const targetTurnId =
             plan.target.kind === "rewind" ? plan.target.targetTurnId : rewindState?.rewind.targetTurnId;
@@ -493,7 +525,13 @@ export class WorkspaceRewindEngine {
         if (!plan.hardBlocked) {
             confirmationToken = this.confirmations.issue(plan, planned.authorityHead);
         }
-        const files = await fileRows(plan, (oid) => this.store.readBlob(oid));
+        const sourceStates = source
+            ? await this.store.readPathStates(
+                  source,
+                  plan.paths.map((path) => path.path)
+              )
+            : undefined;
+        const files = await fileRows(plan, (oid) => this.store.readBlob(oid), sourceStates);
         return {
             ...(confirmationToken == null ? {} : { confirmationToken }),
             target: plan.target,

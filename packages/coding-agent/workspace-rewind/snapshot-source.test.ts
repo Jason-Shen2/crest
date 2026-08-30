@@ -307,12 +307,13 @@ async function readRawTreeEntry(
 }
 
 describe("Workspace checkpoint snapshot source", () => {
-    it("full-reconciles when a non-Git watcher has not delivered the terminal write yet", async () => {
+    it("full-reconciles a non-Git terminal capture when watcher hints are only partial", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-candidate-source-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
         await mkdir(workspaceRoot);
         await writeFile(join(workspaceRoot, "file.txt"), "before");
+        await writeFile(join(workspaceRoot, "late.txt"), "before");
         const git = new WorkspaceGitRunner();
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
@@ -336,9 +337,15 @@ describe("Workspace checkpoint snapshot source", () => {
         const before = await source.readHead();
 
         await writeFile(join(workspaceRoot, "file.txt"), "after");
+        await writeFile(join(workspaceRoot, "late.txt"), "after");
+        feed.record("file.txt");
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
+        await expect(store.diff(before.ref, after.ref)).resolves.toEqual([
+            expect.objectContaining({ path: "file.txt" }),
+            expect.objectContaining({ path: "late.txt" }),
+        ]);
         expect(fullReconcile).toHaveBeenCalledTimes(2);
         await source.dispose?.();
     });
@@ -389,6 +396,8 @@ describe("Workspace checkpoint snapshot source", () => {
         await writeFile(join(workspaceRoot, "a.txt"), "a-before");
         await writeFile(join(workspaceRoot, "b.txt"), "b-before");
         const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await commitAll(git, workspaceRoot, "baseline");
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
             dataRoot: join(root, "data"),
@@ -397,7 +406,12 @@ describe("Workspace checkpoint snapshot source", () => {
             processOwner: { pid: process.pid, processStartToken: "candidate-validation", nonce: "2".repeat(64) },
         });
         const feed = new TestCandidateFeed();
-        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed,
+            userGit: git,
+            shadowGit: git,
+        });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
             fullReconcile: (options) => store.captureFullReconcile(options),
@@ -434,6 +448,8 @@ describe("Workspace checkpoint snapshot source", () => {
         await mkdir(workspaceRoot);
         await writeFile(join(workspaceRoot, "a.txt"), "a-before");
         const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await commitAll(git, workspaceRoot, "baseline");
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
             dataRoot: join(root, "data"),
@@ -442,14 +458,20 @@ describe("Workspace checkpoint snapshot source", () => {
             processOwner: { pid: process.pid, processStartToken: "candidate-same-path", nonce: "4".repeat(64) },
         });
         const feed = new TestCandidateFeed();
-        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed,
+            userGit: git,
+            shadowGit: git,
+        });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
             fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
+        const validationDrain = feed.drainCalls + 3;
         feed.beforeDrain = async (call) => {
-            if (call === 2) {
+            if (call === validationDrain) {
                 await writeFile(join(workspaceRoot, "a.txt"), "a-v2");
                 feed.record("a.txt");
             }
@@ -474,6 +496,8 @@ describe("Workspace checkpoint snapshot source", () => {
         await writeFile(join(workspaceRoot, "b.txt"), "b-before");
         await writeFile(join(workspaceRoot, "c.txt"), "c-before");
         const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await commitAll(git, workspaceRoot, "baseline");
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
             dataRoot: join(root, "data"),
@@ -482,7 +506,12 @@ describe("Workspace checkpoint snapshot source", () => {
             processOwner: { pid: process.pid, processStartToken: "candidate-continuous", nonce: "3".repeat(64) },
         });
         const feed = new TestCandidateFeed();
-        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed,
+            userGit: git,
+            shadowGit: git,
+        });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
             fullReconcile: (options) => store.captureFullReconcile(options),
@@ -514,6 +543,8 @@ describe("Workspace checkpoint snapshot source", () => {
         await mkdir(workspaceRoot);
         await writeFile(join(workspaceRoot, "a.txt"), "a-before");
         const git = new WorkspaceGitRunner();
+        await git.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await commitAll(git, workspaceRoot, "baseline");
         const identity = await testIdentity(workspaceRoot);
         const store = await WorkspaceSnapshotStore.open({
             dataRoot: join(root, "data"),
@@ -522,16 +553,26 @@ describe("Workspace checkpoint snapshot source", () => {
             processOwner: { pid: process.pid, processStartToken: "candidate-same-path-loop", nonce: "5".repeat(64) },
         });
         const feed = new TestCandidateFeed();
-        const candidates = new WorkspaceCandidates({ workspaceRoot, feed, reconcile: async () => ["a.txt"] });
+        const candidates = new WorkspaceCandidates({
+            workspaceRoot: identity.canonicalRoot,
+            feed,
+            userGit: git,
+            shadowGit: git,
+        });
         const source = await initializeWorkspaceCheckpointSnapshotSource({
             store,
             fullReconcile: (options) => store.captureFullReconcile(options),
             candidates,
         });
         const before = await source.readHead();
+        const firstValidationDrain = feed.drainCalls + 3;
+        const secondValidationDrain = feed.drainCalls + 5;
         feed.beforeDrain = async (call) => {
-            if (call !== 2 && call !== 3) return;
-            await writeFile(join(workspaceRoot, "a.txt"), call === 2 ? "a-v2" : "a-v3");
+            if (call !== firstValidationDrain && call !== secondValidationDrain) return;
+            await writeFile(
+                join(workspaceRoot, "a.txt"),
+                call === firstValidationDrain ? "a-v2" : "a-v3"
+            );
             feed.record("a.txt");
         };
 

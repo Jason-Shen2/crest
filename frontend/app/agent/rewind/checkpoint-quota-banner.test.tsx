@@ -66,6 +66,8 @@ describe("CheckpointQuotaBanner", () => {
         const banner = screen.getByRole("status");
         expect(banner.textContent).toMatch(/still referenced by agent sessions/i);
         expect(banner.textContent).toMatch(/archive.*trash.*do not release/i);
+        expect(banner.textContent).toMatch(/may remain referenced by workspace history/i);
+        expect(banner.textContent).not.toMatch(/permanently delete.*to release/i);
         expect(banner.textContent).not.toMatch(/ref name|refs\/crest/i);
         expect(
             (screen.getByRole("button", { name: "Clean up unreferenced snapshots" }) as HTMLButtonElement).disabled

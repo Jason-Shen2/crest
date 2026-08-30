@@ -386,19 +386,30 @@ overlap 和 exact restore 矩阵，且没有 full-reconcile fallback；真实 Cr
 ### 15.1 合入 main 前复审补充（2026-08-30）
 
 完整 E2E 串行运行暴露了一个只在热路径出现的边界：Non-Git Workspace 的 Parcel/FSEvents callback
-是异步 hint，文件已经写完时，terminal capture 仍可能先于 callback 入队。空 hint 因此不能证明“本 turn
-没有文件变化”。最终没有引入 watcher cursor、固定 sleep 或新的协调层，而是采用最小安全降级：
+是异步 hint，文件已经写完时，terminal capture 仍可能先于部分 callback 入队。无论 hint 为空还是非空，
+都不能证明“本 turn 的全部变化已经到达”。最终没有引入 watcher cursor、固定 sleep 或新的协调层，而是采用
+最小安全降级：
 
 - Git Workspace 继续使用同步 Git evidence、watcher hint 和 candidate capture，三 turn E2E 断言不发生 full reconcile；
-- Non-Git Workspace 仅在实际获得 writer lease 且 terminal hint 为空时 full reconcile；只读或没有写工具的 turn
-  仍直接复用 workspace head；
-- 独立回归测试证明“磁盘已变化但 watcher 尚未投递”不会再提交空 checkpoint。
+- Non-Git Workspace 的 terminal capture 统一 full reconcile；没有进入 capture 的只读边界仍直接复用 workspace head；
+- 独立回归测试证明“一个 hint 已到达、另一个文件事件仍延迟”不会再提交部分 checkpoint。
+
+代价是大型 Non-Git Workspace 的写入边界仍为 `O(total entries)`；这是缺少同步文件事实源时的必要正确性成本。
+生产级大型 monorepo 通常位于 Git Workspace，继续使用 `O(candidates)` 热路径，不受该降级影响。
 
 复审还确认了一个长期存储边界：`refs/crest/workspace-head` 的 mutation ancestry 会保留历史 tree/blob 可达性。
 删除 Session owner 可以释放 Session 级引用，但不保证立即回收仍可从 workspace head 祖先到达的内容。当前 5 GB
 soft quota 会 fail closed，避免无界占盘；但 cleanup 不能承诺长期活跃 Workspace 的旧内容都可回收。这里暂不引入
 第二套 mutation log 或重写历史。只有 production 生命周期数据证明它成为实际配额问题时，才设计“路径 mutation
 元数据与内容保留解耦”的可迁移格式，并同时证明 pending restore、Redo 和 owner retention 不会失去所需 snapshot。
+因此配额 UI 只承诺永久删除 trashed Session 本身，并明确提示 snapshot 仍可能被 Workspace 历史引用，不能把不可逆
+删除描述成必然释放存储的修复手段。
+
+Force 安全审查还发现：最初预览使用历史 `expectedCurrent -> target`，但执行会先同步磁盘并实际覆盖
+`live -> target`。最终实现仅在 planner 检测到 `forceable-drift` 时持有 Workspace writer lease、同步并复核权威 live
+snapshot、基于新 authority 重新规划，并用稳定的 snapshot 生成预览。普通无冲突预览不增加同步；Force confirmation 与
+Apply 若遇到预览后的新写入仍按现有 authority/fingerprint fence 失效。这样用户审阅的正是可能丢失的外部编辑，而不是
+Agent 上一次写入的历史内容。
 
 未来只有在 production profiling 证明现有 commit-history 查询、Git metadata 或 writer serialization 是实际瓶颈时，
 才考虑增加可从 commit chain 重建的 cache。任何新状态都必须回答两个问题：它是否真的必要，以及它损坏时能否

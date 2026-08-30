@@ -294,7 +294,9 @@ describe("workspace rewind across sessions", () => {
             const checkpointBItem = findAvailableCheckpoint(await value.sessions.b.getEntries(), "session-b");
 
             expect(openStore).toHaveBeenCalledTimes(1);
-            expect(fullReconcile).not.toHaveBeenCalled();
+            // Non-Git watcher events are eventual hints, so terminal captures
+            // must reconcile authoritatively even when hints are non-empty.
+            expect(fullReconcile).toHaveBeenCalledTimes(2);
             expect(checkpointAItem.checkpoint.originSessionId).toBe("session-a");
             expect(checkpointBItem.checkpoint.originSessionId).toBe("session-b");
             expect(checkpointAItem.checkpoint.after).toEqual(checkpointBItem.checkpoint.after);
@@ -420,6 +422,9 @@ describe("workspace rewind across sessions", () => {
 
         expect(planned).toMatchObject({ forceRequired: true, hardBlocked: false });
         expect(planned.files).toEqual([expect.objectContaining({ path: "shared.txt", conflict: "forceable-drift" })]);
+        expect(planned.files[0]!.diff).toContain("-external");
+        expect(planned.files[0]!.diff).toContain("+base");
+        expect(planned.files[0]!.diff).not.toContain("-session-a");
     }, 30_000);
 
     it("rewinds only session A paths while preserving later session B bytes", async () => {

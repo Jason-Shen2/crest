@@ -471,13 +471,15 @@ boundary, require at least the greater of 1 GiB or 5% free space, and share a
 capture limit or encounters `ENOSPC` becomes an unavailable checkpoint; the
 agent response continues. The reconciler may remove only unreferenced objects.
 If referenced snapshots alone exceed quota, new checkpoints remain unavailable
-with a visible cleanup action until session/reference removal frees space.
+with a visible cleanup action. Session removal may reduce ownership, but content
+still reachable through workspace mutation ancestry is not guaranteed to be reclaimed.
 Archive and recoverable delete-to-trash remain owner sources and therefore do
 not release quota. The storage UI may clean only already-unreferenced objects,
 or list trashed sessions for an explicit second-confirmation permanent purge.
 That purge accepts an opaque, short-lived token rather than a database path or
 snapshot ref, follows session-lease then workspace-lock ordering, removes the
-trashed session DB, and reruns owner reconciliation. Active or archived
+trashed session DB, and reruns owner reconciliation without promising that the
+workspace-history ancestry becomes collectible. Active or archived
 sessions are never directly purgeable from this quota surface.
 
 ### 2. Checkpoint Journal in the Session Tree

@@ -16,7 +16,7 @@ export interface CheckpointQuotaBannerProps {
 function quotaMessage(quota: AgentCheckpointQuotaView): string {
     if (quota.status === "referenced-over-quota") {
         const explanation =
-            "Checkpoint snapshots are still referenced by agent sessions. Archive and moving sessions to trash do not release this storage; permanently delete trash sessions to release their ownership.";
+            "Checkpoint snapshots are still referenced by agent sessions. Archive and moving sessions to trash do not release this storage. Permanent deletion removes a trashed session, but snapshots may remain referenced by workspace history.";
         return quota.message ? `${quota.message}. ${explanation}` : explanation;
     }
     return quota.message ?? "Checkpoint storage exceeds its soft quota. New workspace captures are paused.";

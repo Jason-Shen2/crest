@@ -608,7 +608,10 @@ export interface AgentApplyTurnMutationInput extends AgentPreviewTurnMutationInp
 
 - [ ] **Step 4: 为 conversation preview 和 turn review 连接 diff projector**
 
-`WorkspaceRewindEngine.preview()` 对 restore plan 使用 `expectedCurrent -> target` enrichment。Turn Review 使用 checkpoint `before -> after`；Turn Undo 使用 `after -> before`；Turn Redo 使用 `before -> after`。summary 只返回路径与统计，不返回 patch/blob 内容。
+`WorkspaceRewindEngine.preview()` 的普通 restore plan 使用 `expectedCurrent -> target` enrichment；若存在
+`forceable-drift`，则在 Workspace lease 内同步 live snapshot、重新规划，并展示实际会被覆盖的 `live -> target`。
+Turn Review 使用 checkpoint `before -> after`；Turn Undo 使用 `after -> before`；Turn Redo 使用
+`before -> after`。summary 只返回路径与统计，不返回 patch/blob 内容。
 
 - [ ] **Step 5: 实现 service、authorization、IPC、preload 和 runtime client**
 
