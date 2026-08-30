@@ -116,7 +116,14 @@ describe("Thread assistant-ui integration", () => {
         expect(container.textContent).not.toContain("How can I help you today?");
 
         act(() => {
-            vi.advanceTimersByTime(180);
+            vi.advanceTimersByTime(179);
+        });
+
+        expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeNull();
+        expect(container.textContent).not.toContain("How can I help you today?");
+
+        act(() => {
+            vi.advanceTimersByTime(1);
         });
 
         expect(container.querySelector('[data-slot="aui_thread-loading"]')).toBeTruthy();
