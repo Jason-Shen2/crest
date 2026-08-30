@@ -16,6 +16,7 @@ import type {
     AgentReviewTurnChangesResult,
     AgentRewindMutationResult,
     AgentRewindPreviewResult,
+    AgentRewindSessionStateView,
     AgentRewindTreeInput,
     AgentTurnChangeSummaryView,
     AgentTurnFileDiffView,
@@ -49,7 +50,7 @@ export type ResolveAgentRewindWorkspaceInput =
           mode: "mutation";
           sessionMetadata: JsonlSessionMetadata;
           lease: RetainedSessionMutationLease<AgentSessionRuntime>;
-          publishState(): Promise<void>;
+          publishState(rewindState?: AgentRewindSessionStateView): Promise<void>;
       };
 
 export interface AgentRewindServiceOptions {
@@ -267,7 +268,8 @@ export class AgentRewindService {
     ): Promise<AgentRewindMutationResult> {
         return this.withLockedSession(
             input.sessionMetadata,
-            ({ session, workspace, engine }) => {
+            async ({ session, workspace, engine }) => {
+                await engine.assertWorkspaceWritable();
                 const confirmation = this.confirmations.take(input.confirmationToken);
                 return engine.applyTurnUndo({
                     session,
@@ -293,7 +295,8 @@ export class AgentRewindService {
         if (input.mode !== "normal") throw new Error("turn redo does not support force mode");
         return await this.withLockedSession(
             input.sessionMetadata,
-            ({ session, workspace, engine }) => {
+            async ({ session, workspace, engine }) => {
+                await engine.assertWorkspaceWritable();
                 const confirmation = this.confirmations.take(input.confirmationToken);
                 return engine.applyTurnRedo({
                     session,
@@ -316,7 +319,8 @@ export class AgentRewindService {
     ): Promise<AgentRewindMutationResult> {
         return this.withLockedSession(
             input.sessionMetadata,
-            ({ session, workspace, engine }) => {
+            async ({ session, workspace, engine }) => {
+                await engine.assertWorkspaceWritable();
                 const confirmation = this.confirmations.take(input.confirmationToken);
                 return engine.applyRewind({
                     session,
@@ -339,7 +343,8 @@ export class AgentRewindService {
     ): Promise<AgentRewindMutationResult> {
         return this.withLockedSession(
             input.sessionMetadata,
-            ({ session, workspace, engine }) => {
+            async ({ session, workspace, engine }) => {
+                await engine.assertWorkspaceWritable();
                 const confirmation = this.confirmations.take(input.confirmationToken);
                 return engine.applyRedo({
                     session,
@@ -363,8 +368,8 @@ export class AgentRewindService {
             sessionMetadata.path,
             { rejectIfRunning: true },
             async (lease) => {
-                const publishState = async () => {
-                    await this.broadcaster.publishForLease(lease, sessionMetadata);
+                const publishState = async (rewindState?: AgentRewindSessionStateView) => {
+                    await this.broadcaster.publishForLease(lease, sessionMetadata, rewindState);
                 };
                 const resolved = await this.resolveWorkspace({
                     mode: "mutation",

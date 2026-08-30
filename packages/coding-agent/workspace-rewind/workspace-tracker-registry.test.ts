@@ -137,6 +137,94 @@ describe("WorkspaceTrackerRegistry", () => {
         expect(mutationLog.dispose).not.toHaveBeenCalled();
     });
 
+    it("reuses an idle tracker during the grace period and disposes it after expiry", async () => {
+        vi.useFakeTimers();
+        try {
+            const feed = { dispose: vi.fn(async () => undefined) };
+            const snapshotSource = { dispose: vi.fn(async () => undefined) };
+            const openStore = vi.fn(async () => ({
+                identity: identity(),
+                storeRoot: "/data/workspace/repo.git",
+                mutationLog: {},
+            }));
+            const registry = new WorkspaceTrackerRegistry(
+                {
+                    openStore: openStore as never,
+                    makeFeed: vi.fn(() => feed as never),
+                    makeCandidates: vi.fn(() => ({}) as never),
+                    makeWriterLeases: vi.fn(() => ({}) as never),
+                    makeSnapshotSource: vi.fn(async () => snapshotSource as never),
+                },
+                1_000
+            );
+
+            const first = await registry.acquire(acquireInput(identity()));
+            await first.release();
+            const second = await registry.acquire(acquireInput(identity()));
+
+            expect(second.store).toBe(first.store);
+            expect(openStore).toHaveBeenCalledOnce();
+            expect(snapshotSource.dispose).not.toHaveBeenCalled();
+            expect(feed.dispose).not.toHaveBeenCalled();
+
+            await second.release();
+            await vi.advanceTimersByTimeAsync(999);
+            expect(snapshotSource.dispose).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(snapshotSource.dispose).toHaveBeenCalledOnce();
+            expect(feed.dispose).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("retries a failed idle disposal before creating a replacement tracker", async () => {
+        vi.useFakeTimers();
+        const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        try {
+            const firstFeed = {
+                dispose: vi.fn().mockRejectedValueOnce(new Error("idle dispose failed")).mockResolvedValue(undefined),
+            };
+            const secondFeed = { dispose: vi.fn(async () => undefined) };
+            const firstSource = { dispose: vi.fn(async () => undefined) };
+            const secondSource = { dispose: vi.fn(async () => undefined) };
+            const openStore = vi.fn(async () => ({
+                identity: identity(),
+                storeRoot: "/data/workspace/repo.git",
+                mutationLog: {},
+            }));
+            const registry = new WorkspaceTrackerRegistry(
+                {
+                    openStore: openStore as never,
+                    makeFeed: vi.fn().mockReturnValueOnce(firstFeed).mockReturnValueOnce(secondFeed),
+                    makeCandidates: vi.fn(() => ({}) as never),
+                    makeWriterLeases: vi.fn(() => ({}) as never),
+                    makeSnapshotSource: vi
+                        .fn()
+                        .mockResolvedValueOnce(firstSource as never)
+                        .mockResolvedValueOnce(secondSource as never),
+                },
+                1_000
+            );
+
+            const first = await registry.acquire(acquireInput(identity()));
+            await first.release();
+            await vi.advanceTimersByTimeAsync(1_000);
+
+            const replacement = await registry.acquire(acquireInput(identity()));
+
+            expect(replacement.store).not.toBe(first.store);
+            expect(firstFeed.dispose).toHaveBeenCalledTimes(2);
+            expect(openStore).toHaveBeenCalledTimes(2);
+            await replacement.release();
+            await vi.advanceTimersByTimeAsync(1_000);
+        } finally {
+            consoleError.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
     it("disposes a feed when snapshot-source initialization fails and permits retry", async () => {
         const feeds = [{ dispose: vi.fn(async () => undefined) }, { dispose: vi.fn(async () => undefined) }];
         const makeSnapshotSource = vi

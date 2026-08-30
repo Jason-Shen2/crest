@@ -698,3 +698,38 @@ Preview validation, confirmation freshness, live-path validation, executor verif
 
 Run session-state/broadcaster tests plus the two-phase renderer → IPC → persistence E2E with real authoritative state construction.
 Record both the fixed Apply cost and the remaining state-publication cost.
+
+### Task 10: Reuse one Workspace tracker across a user interaction
+
+**Files:**
+- Modify: `emain/agent-ipc.ts`
+- Modify: `emain/agent-rewind-service.ts`
+- Modify: `emain/agent-session-state-broadcaster.ts`
+- Modify: `packages/coding-agent/workspace-rewind/rewind-engine.ts`
+- Modify: `packages/coding-agent/workspace-rewind/workspace-tracker-registry.ts`
+- Modify: corresponding focused tests
+
+- [x] **Step 1: Profile the real Electron path**
+
+Record IPC authorization, feature acquire/release, restore phases, authoritative state and post-mutation refresh. Confirm that repeated
+`WorkspaceSnapshotStore.open()` calls cost about 0.5 seconds each while Session locking and frozen-plan validation are negligible.
+
+- [x] **Step 2: Move pending-recovery validation into the retained mutation**
+
+Remove the outer writable recovery-gate acquire for the four restore mutations. Before consuming the one-shot confirmation, require the
+already-open engine to inspect pending recovery and throw `WorkspaceFrozenError` when the workspace is frozen.
+
+- [x] **Step 3: Publish cold authoritative state from the current store**
+
+Build the post-commit rewind view from the store already owned by the mutation and pass it through the broadcaster. Do not reopen a
+second store merely to reconstruct the same view.
+
+- [x] **Step 4: Add a bounded idle grace to the shared tracker registry**
+
+Keep a zero-reference tracker alive for 5 seconds, cancel disposal on reacquire, and dispose the snapshot source/feed once the grace
+expires. Preserve binding mismatch rejection and canonical identity validation.
+
+- [x] **Step 5: Validate lifecycle, safety and real latency**
+
+Require focused tests for recovery ordering, confirmation consumption, cold-state override, IPC gate removal and idle expiry/reuse.
+After Electron restart, verify Undo/Redo acquire drops from about 0.5 seconds to 15–18ms and full IPC completion is about 1.59 seconds.

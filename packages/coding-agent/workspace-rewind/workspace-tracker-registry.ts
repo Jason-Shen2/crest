@@ -10,6 +10,8 @@ import { ParcelWorkspaceChangeFeed, type WorkspaceChangeFeed } from "./workspace
 import { discoverWorkspaceScope } from "./workspace-scope";
 import { WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
+const ProcessWorkspaceTrackerIdleTtlMs = 5_000;
+
 export interface WorkspaceTrackerLease {
     store: WorkspaceSnapshotStore;
     mutationLog: WorkspaceSnapshotStore["mutationLog"];
@@ -49,6 +51,7 @@ interface WorkspaceTrackerRegistryEntry {
     binding: WorkspaceTrackerRegistryBinding;
     initialization: Promise<WorkspaceTrackerRegistryResource>;
     refCount: number;
+    idleDisposalTimer?: ReturnType<typeof setTimeout>;
     disposal?: Promise<void>;
 }
 
@@ -89,10 +92,15 @@ const DefaultDependencies: WorkspaceTrackerRegistryDependencies = {
 
 export class WorkspaceTrackerRegistry {
     readonly dependencies: WorkspaceTrackerRegistryDependencies;
+    readonly idleTtlMs: number;
     readonly entries = new Map<string, WorkspaceTrackerRegistryEntry>();
 
-    constructor(dependencies: Partial<WorkspaceTrackerRegistryDependencies> = {}) {
+    constructor(
+        dependencies: Partial<WorkspaceTrackerRegistryDependencies> = {},
+        idleTtlMs = 0
+    ) {
         this.dependencies = { ...DefaultDependencies, ...dependencies };
+        this.idleTtlMs = idleTtlMs;
     }
 
     async acquire(input: WorkspaceTrackerAcquireInput): Promise<WorkspaceTrackerLease> {
@@ -104,8 +112,17 @@ export class WorkspaceTrackerRegistry {
                 throw new Error(`Workspace tracker registry binding mismatch for ${key}`);
             }
             if (entry?.refCount === 0) {
-                await this.disposeEntry(key, entry);
-                continue;
+                if (entry.disposal) {
+                    await entry.disposal;
+                    continue;
+                }
+                if (entry.idleDisposalTimer) {
+                    clearTimeout(entry.idleDisposalTimer);
+                    entry.idleDisposalTimer = undefined;
+                } else {
+                    await this.disposeEntry(key, entry);
+                    continue;
+                }
             }
             if (!entry) {
                 entry = this.makeEntry(input, binding);
@@ -138,7 +155,7 @@ export class WorkspaceTrackerRegistry {
                         releasePromise = Promise.resolve();
                         return releasePromise;
                     }
-                    releasePromise = this.disposeEntry(key, entry!).catch((error) => {
+                    releasePromise = this.releaseEntry(key, entry!).catch((error) => {
                         releasePromise = undefined;
                         throw error;
                     });
@@ -185,8 +202,26 @@ export class WorkspaceTrackerRegistry {
         return { binding, initialization, refCount: 0 };
     }
 
+    releaseEntry(key: string, entry: WorkspaceTrackerRegistryEntry): Promise<void> {
+        if (this.idleTtlMs <= 0) return this.disposeEntry(key, entry);
+        if (entry.idleDisposalTimer || entry.disposal || this.entries.get(key) !== entry) return Promise.resolve();
+        entry.idleDisposalTimer = setTimeout(() => {
+            entry.idleDisposalTimer = undefined;
+            if (entry.refCount > 0 || this.entries.get(key) !== entry) return;
+            void this.disposeEntry(key, entry).catch((error) => {
+                console.error("[workspace-rewind] idle tracker disposal failed", error);
+            });
+        }, this.idleTtlMs);
+        entry.idleDisposalTimer.unref?.();
+        return Promise.resolve();
+    }
+
     disposeEntry(key: string, entry: WorkspaceTrackerRegistryEntry): Promise<void> {
         if (entry.disposal) return entry.disposal;
+        if (entry.idleDisposalTimer) {
+            clearTimeout(entry.idleDisposalTimer);
+            entry.idleDisposalTimer = undefined;
+        }
         const disposal = entry.initialization
             .then(async (resource) => {
                 const failures: unknown[] = [];
@@ -249,7 +284,7 @@ function bindingsEqual(left: WorkspaceTrackerRegistryBinding, right: WorkspaceTr
     return left.processOwner.nonce === right.processOwner.nonce;
 }
 
-const ProcessWorkspaceTrackerRegistry = new WorkspaceTrackerRegistry();
+const ProcessWorkspaceTrackerRegistry = new WorkspaceTrackerRegistry({}, ProcessWorkspaceTrackerIdleTtlMs);
 
 export function acquireWorkspaceTracker(input: WorkspaceTrackerAcquireInput): Promise<WorkspaceTrackerLease> {
     return ProcessWorkspaceTrackerRegistry.acquire(input);

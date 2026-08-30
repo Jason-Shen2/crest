@@ -223,6 +223,38 @@ describe("AgentSessionStateBroadcaster", () => {
         expect(state.rewindState).toEqual(rewindState);
     });
 
+    it("uses the mutation's rewind state for cold publication without rebuilding checkpoint storage", async () => {
+        const registry = new AgentRuntimeRegistry<FakeRuntime>({ idleTtlMs: 1_000 });
+        const coldMetadata = metadata("/sessions/cold-reused-rewind.db");
+        const rewindState = {
+            enabled: true,
+            semanticLeafId: "assistant-1",
+            displayLeafId: "assistant-1",
+            eligibleTurnIds: ["user-1"],
+            turnChanges: [],
+            busy: false,
+            frozen: false,
+            quota: { status: "ok" as const, usedBytes: 1, softQuotaBytes: 2, cleanupAvailable: false },
+        };
+        const buildRewindState = vi.fn(async () => ({ ...rewindState, frozen: true }));
+        const broadcaster = new AgentSessionStateBroadcaster({
+            registry: registry as never,
+            openSession: vi.fn(async () => fakeSession() as never),
+            publish: vi.fn(async () => {}),
+            workspaceRewind: { status: "enabled" },
+            buildRewindState,
+        });
+
+        const state = await registry.withRetainedSessionMutation(
+            coldMetadata.path,
+            { rejectIfRunning: true },
+            (lease) => broadcaster.publishForLease(lease as never, coldMetadata, rewindState)
+        );
+
+        expect(buildRewindState).not.toHaveBeenCalled();
+        expect(state.rewindState).toEqual(rewindState);
+    });
+
     it("keeps the cold session open until asynchronous authoritative state construction finishes", async () => {
         const registry = new AgentRuntimeRegistry<FakeRuntime>({ idleTtlMs: 1_000 });
         const coldMetadata = metadata("/sessions/cold-lifecycle.db");

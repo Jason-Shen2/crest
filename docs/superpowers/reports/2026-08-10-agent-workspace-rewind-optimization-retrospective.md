@@ -387,6 +387,21 @@ overlap 和 exact restore 矩阵，且没有 full-reconcile fallback；真实 Cr
 才考虑增加可从 commit chain 重建的 cache。任何新状态都必须回答两个问题：它是否真的必要，以及它损坏时能否
 完全从唯一 authority 重建。否则不进入核心架构。
 
+## 18. 真实 Electron Apply 延迟收口（2026-08-30）
+
+用户实测最初约 4 秒，明显高于 executor 和 renderer→IPC E2E。production main-process profile 显示根因不是算法重新
+扫描 monorepo，而是同一次交互把 shared workspace tracker 在 Preview、Apply、Recovery gate 和状态刷新之间立即销毁并
+重复初始化。一次 store/tracker cold open 约 0.5 秒。
+
+最终实现没有增加新的持久化层：mutation 在 engine 内复用同一 feature 完成 pending-recovery 检查；commit 后从当前 store
+构建 rewind view；shared tracker 的零引用资源保留 5 秒后再释放。canonical workspace identity、binding、writer lease、
+confirmation、live drift、pending、CAS 与异常 Recovery 均保持原语义。
+
+真实单文件操作最终记录：Turn Undo IPC 1,597.80ms，Turn Redo IPC 1,593.71ms；对应 tracker acquire 为 15.55ms 和
+17.63ms，紧随其后的状态刷新为 16–19ms。用户体感最终约 2 秒。restore transaction 本身仍为 1.31–1.32 秒，说明剩余
+成本已主要来自必要的 durable commit、pending、文件安全写入/验证、ref CAS 和 cleanup，而不是 workspace 总规模扫描或
+重复初始化。
+
 ## 16. 关联文档
 
 - [初始 Workspace Rewind 设计](../specs/2026-07-28-agent-workspace-rewind-design.md)

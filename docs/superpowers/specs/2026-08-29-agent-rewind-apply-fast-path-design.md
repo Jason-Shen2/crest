@@ -566,3 +566,33 @@ Rewind/Redo/Turn Undo 为 1,130.84–1,184.65 ms。更重要的是，状态构�
 剩余约 1.1 秒主要是必要的 pending publication、文件写入/验证、Shadow commit/CAS、marker 和清理固定成本。该路径已经
 从“历史越长越慢”变为固定成本主导；后续若要继续压缩，应先用生产 telemetry 证明新的主导阶段，而不是增加缓存或放宽
 安全事务。
+
+## 第四阶段：一次交互只初始化一次 Workspace tracker（2026-08-30）
+
+真实 Electron 应用仍比 E2E 慢。分阶段日志发现一次 mutation 周围会重复打开同一个 workspace 的安全基础设施：IPC
+写权限 gate 打开一次，Rewind service 再打开一次，完成后的 cold authoritative-state 构建或 UI 刷新又打开一次。每次
+`WorkspaceSnapshotStore.open()` 都会校验 private store、Git refs、quota 与 cleanup，单次约 0.5 秒；这些不是恢复文件的
+必要工作，而是资源生命周期过短造成的重复初始化。
+
+最终路径做了三项收敛：
+
+1. IPC 不再在 mutation 外层单独打开 Recovery feature；持有 Session mutation lease 后，engine 使用同一个 feature
+   检查 pending recovery，再消费 confirmation token；
+2. mutation 完成时使用已经打开的 store 构建 `AgentRewindSessionStateView`，传给 broadcaster，不再 cold reopen；
+3. process 级 `WorkspaceTrackerRegistry` 在最后一个 lease 释放后保留 5 秒 idle grace。预览、执行和紧随其后的状态刷新
+   复用同一 tracker；超时后自动释放 watcher 与 snapshot source。
+
+idle grace 只延长既有内存资源的生命周期，不新增 durable cache、后台 worker 或第二套 authority。tracker 保活期间继续
+接收 workspace change hints；每次 acquire 之前仍重新解析 canonical identity/incarnation，同 key 的 data root、canonical
+root 或 process owner 不匹配仍拒绝。并发 Session 继续共享同一个 writer-lease registry，文件隔离和 CAS 语义不变。
+
+真实单文件测量中，优化前 IPC mutation 为约 2.09–2.31 秒，用户体感约 3 秒；应用 idle reuse 后：
+
+| 操作 | IPC 完成 | mutation acquire | restore transaction | authoritative state |
+| --- | ---: | ---: | ---: | ---: |
+| Turn Undo | 1,597.80 ms | 15.55 ms | 1,320.84 ms | 232.83 ms |
+| Turn Redo | 1,593.71 ms | 17.63 ms | 1,308.85 ms | 232.27 ms |
+
+紧随 mutation 的状态读取 acquire 为 16–19ms，不再支付约 0.5 秒 store reopen。用户实测体感从约 4 秒逐步降至 3 秒，
+最终约 2 秒。剩余 1.3 秒 restore transaction 主要由结果 commit、pending durability、文件安全应用/验证、head CAS 和
+cleanup 构成；这些步骤承担 crash safety，本阶段没有继续删除。

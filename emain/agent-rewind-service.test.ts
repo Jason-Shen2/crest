@@ -157,6 +157,9 @@ function harness(options: { rejectOpenSessionWith?: Error; release?: () => Promi
     };
     let publishState: (() => Promise<void>) | undefined;
     const engine = {
+        assertWorkspaceWritable: vi.fn(async () => {
+            order.push("workspace-writable");
+        }),
         getTurnChangeSummary: vi.fn(async () => ({
             turnId: "turn-1",
             semanticLeafId: "checkpoint-1",
@@ -341,7 +344,7 @@ describe("AgentRewindService", () => {
             semanticLeafId: "checkpoint-1",
             displayLeafId: "turn-1",
         });
-        expect(value.getPublishState()).toHaveLength(0);
+        expect(value.getPublishState()).toHaveLength(1);
         expect(value.order).toEqual(["session-lease", "release-session-lease"]);
     });
 
@@ -381,13 +384,14 @@ describe("AgentRewindService", () => {
         expect(result.editorText).toBe("original prompt");
         expect(value.order).toEqual([
             "session-lease",
+            "workspace-writable",
             "consume-token",
             "engine-apply",
             "broadcast",
             "release-session-lease",
         ]);
         expect(value.broadcaster.publishForLease).toHaveBeenCalledOnce();
-        expect(value.broadcaster.publishForLease).toHaveBeenCalledWith(expect.any(Object), Metadata);
+        expect(value.broadcaster.publishForLease).toHaveBeenCalledWith(expect.any(Object), Metadata, undefined);
         expect(value.session.close).toHaveBeenCalledOnce();
     });
 
@@ -418,7 +422,13 @@ describe("AgentRewindService", () => {
                 }),
             })
         );
-        expect(value.order).toEqual(["session-lease", "engine-redo", "broadcast", "release-session-lease"]);
+        expect(value.order).toEqual([
+            "session-lease",
+            "workspace-writable",
+            "engine-redo",
+            "broadcast",
+            "release-session-lease",
+        ]);
     });
 
     it("revalidates current authorization inside the retained session mutation before consuming", async () => {
@@ -529,6 +539,7 @@ describe("AgentRewindService", () => {
                 "session-lease",
                 "release-session-lease",
                 "session-lease",
+                "workspace-writable",
                 `engine-turn-${kind}`,
                 "broadcast",
                 "release-session-lease",

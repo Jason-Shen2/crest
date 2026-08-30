@@ -4614,7 +4614,7 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
-    it("registers all rewind and maintenance channels with authorization and the write gate", async () => {
+    it("registers all rewind and maintenance channels while restore mutations defer recovery checks to the engine", async () => {
         const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-rewind-ipc-contract-"));
         const { metadata } = await createPaneSession(cwd);
         const identity = {
@@ -4686,7 +4686,7 @@ describe("agent-ipc command helpers", () => {
 
         expect(listPoints).toHaveBeenCalledOnce();
         expect(rewind).toHaveBeenCalledOnce();
-        expect(assertWorkspaceWritable).toHaveBeenCalledOnce();
+        expect(assertWorkspaceWritable).not.toHaveBeenCalled();
         expect(
             [
                 "agent:list-rewind-points",
@@ -5050,7 +5050,7 @@ describe("agent-ipc command helpers", () => {
         expect(methods.applyTurnUndo).toHaveBeenCalledOnce();
         expect(methods.previewTurnRedo).toHaveBeenCalledOnce();
         expect(methods.applyTurnRedo).toHaveBeenCalledOnce();
-        expect(assertWorkspaceWritable).toHaveBeenCalledTimes(2);
+        expect(assertWorkspaceWritable).not.toHaveBeenCalled();
     });
 
     it("rejects extra and nested renderer fields outside each rewind IPC schema", async () => {

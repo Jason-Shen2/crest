@@ -3387,7 +3387,31 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
                 confirmations,
                 ...(input.mode === "mutation"
                     ? {
-                          onCommitted: async () => await input.publishState(),
+                          onCommitted: async () => {
+                              const session = await openPaneSessionByPath(sessionMetadata.path);
+                              let entries: import("@crest/agent/harness/types").SessionTreeEntry[];
+                              try {
+                                  entries = await session.getEntries();
+                              } finally {
+                                  session.close();
+                              }
+                              const rewindState = await buildAgentRewindSessionStateView(entries, sessionMetadata.id, {
+                                  enabled: true,
+                                  busy: false,
+                                  frozen: false,
+                                  readBlob: (oid) => feature.store.readBlob(oid),
+                                  getQuota: async () => {
+                                      const quota = await feature.store.getQuotaStatus();
+                                      return {
+                                          status: quota.status,
+                                          usedBytes: quota.usedBytes,
+                                          softQuotaBytes: quota.softQuotaBytes,
+                                          cleanupAvailable: quota.status !== "ok",
+                                      };
+                                  },
+                              });
+                              await input.publishState(rewindState);
+                          },
                       }
                     : {}),
             });
@@ -3886,7 +3910,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return result;
     });
     electron.ipcMain.handle("agent:apply-turn-undo", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-undo-apply", true);
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-undo-apply", false);
         const result = await requireRewindService().applyTurnUndo(authorized.input, () =>
             assertCurrent(event, authorized.authenticated)
         );
@@ -3900,7 +3924,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return result;
     });
     electron.ipcMain.handle("agent:apply-turn-redo", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-redo-apply", true);
+        const authorized = await authorizeRewindInput(event, requestContext, input, "turn-redo-apply", false);
         const result = await requireRewindService().applyTurnRedo(authorized.input, () =>
             assertCurrent(event, authorized.authenticated)
         );
@@ -3914,7 +3938,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return result;
     });
     electron.ipcMain.handle("agent:rewind-tree", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "rewind", true);
+        const authorized = await authorizeRewindInput(event, requestContext, input, "rewind", false);
         const result = await requireRewindService().rewind(authorized.input, () =>
             assertCurrent(event, authorized.authenticated)
         );
@@ -3922,7 +3946,7 @@ export function registerAgentIpcHandlers(options: AgentIpcRegistrationOptions): 
         return result;
     });
     electron.ipcMain.handle("agent:redo-rewind", async (event, requestContext, input) => {
-        const authorized = await authorizeRewindInput(event, requestContext, input, "redo", true);
+        const authorized = await authorizeRewindInput(event, requestContext, input, "redo", false);
         const result = await requireRewindService().redo(authorized.input, () =>
             assertCurrent(event, authorized.authenticated)
         );

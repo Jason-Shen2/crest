@@ -356,6 +356,38 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.engine.executor.onTiming).toBe(onRestoreTiming);
     });
 
+    it("blocks a mutation when the shared restore journal still requires recovery", async () => {
+        const pending = { root: "/store/journal/restore" };
+        const recovery = {
+            pending,
+            inspectPending: vi.fn(async () => ({
+                state: "needs-user" as const,
+                view: {
+                    operationId: "restore-1",
+                    corrupt: false,
+                    message: "Workspace recovery required",
+                    paths: [],
+                    allowedActions: ["retry" as const],
+                },
+            })),
+            resolvePendingUnderLease: vi.fn(),
+        };
+        const engine = new WorkspaceRewindEngine({
+            store: {
+                storeRoot: "/store",
+                identity: Workspace,
+            } as never,
+            pending: pending as never,
+            recovery: recovery as never,
+            confirmations: new RewindConfirmationRegistry(),
+        });
+
+        await expect(engine.assertWorkspaceWritable()).rejects.toMatchObject({
+            name: "WorkspaceFrozenError",
+            operationId: "restore-1",
+        });
+    });
+
     it("rejects explicitly mismatched pending store and Resolver dependencies", () => {
         const store = {
             storeRoot: "/store",

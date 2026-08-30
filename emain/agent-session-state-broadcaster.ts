@@ -111,7 +111,8 @@ export class AgentSessionStateBroadcaster {
 
     async publishForLease(
         lease: RetainedSessionMutationLease<AgentSessionRuntime>,
-        sessionMetadata: JsonlSessionMetadata
+        sessionMetadata: JsonlSessionMetadata,
+        coldRewindState?: AgentRewindSessionStateView
     ): Promise<AgentAuthoritativeSessionState> {
         return this.registry.withMutationLeaseAccess(lease, async (runtime) => {
             const state = runtime
@@ -120,18 +121,23 @@ export class AgentSessionStateBroadcaster {
                           discardCompletedPtyHistory: true,
                       })
                   )
-                : await this.buildColdState(sessionMetadata);
+                : await this.buildColdState(sessionMetadata, coldRewindState);
             await this.publishState({ lease, sessionMetadata, state });
             return state;
         });
     }
 
-    async buildColdState(sessionMetadata: JsonlSessionMetadata): Promise<AgentAuthoritativeSessionState> {
+    async buildColdState(
+        sessionMetadata: JsonlSessionMetadata,
+        rewindStateOverride?: AgentRewindSessionStateView
+    ): Promise<AgentAuthoritativeSessionState> {
         const session = await this.openSession(sessionMetadata);
         try {
-            const rewindState = this.buildRewindState
-                ? await this.buildRewindState(sessionMetadata, await session.getEntries())
-                : undefined;
+            const rewindState =
+                rewindStateOverride ??
+                (this.buildRewindState
+                    ? await this.buildRewindState(sessionMetadata, await session.getEntries())
+                    : undefined);
             return await buildPersistedAgentSessionState(
                 session,
                 typeof this.workspaceRewind === "function"

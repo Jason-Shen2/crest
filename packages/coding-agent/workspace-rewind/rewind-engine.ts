@@ -35,7 +35,7 @@ import type { WorkspaceSnapshotStore } from "./snapshot-store";
 import { planTurnRedo, planTurnUndo, type PlanTurnRedoInput, type PlanTurnUndoInput } from "./turn-restore-plan";
 import type { WorkspaceCheckpointV1, WorkspaceSnapshotRefV1, WorkspaceStateV1 } from "./types";
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
-import { WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
+import { WorkspaceFrozenError, WorkspaceRecovery, type WorkspaceRecoveryOptions } from "./workspace-recovery";
 import { WorkspaceRestoreExecutor, type WorkspaceRestoreTiming } from "./workspace-restore-executor";
 import { ProcessWorkspaceWriterLeases, type WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
@@ -424,6 +424,14 @@ export class WorkspaceRewindEngine {
 
     async applyTurnRedo(input: ApplyTurnRedoInput): Promise<WorkspaceRewindCommitResult> {
         return this.applyTurn({ ...input, mode: "normal" });
+    }
+
+    async assertWorkspaceWritable(): Promise<void> {
+        const decision = await this.recovery.inspectPending();
+        if (decision.state === "none") return;
+        const operationId = decision.state === "needs-user" ? decision.view.operationId : decision.operationId;
+        const message = decision.state === "needs-user" ? decision.view.message : "Workspace recovery required";
+        throw new WorkspaceFrozenError(operationId, message);
     }
 
     private async projectTurnChanges(input: ReadTurnChangesInput): Promise<{
