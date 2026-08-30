@@ -93,7 +93,6 @@ describe("AgentChatHost", () => {
                 executionContext={{
                     workspaceId: "workspace-1",
                     workspaceDir: "/repo",
-                    connection: "",
                     environment: {},
                 }}
                 modelSelection={{ provider: "openai", model: "gpt-test" }}

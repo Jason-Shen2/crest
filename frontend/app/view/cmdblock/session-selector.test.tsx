@@ -37,6 +37,7 @@ function makeTreeEntry(overrides: Partial<AgentTreeEntryView> = {}): AgentTreeEn
         preview: "first prompt",
         isLeaf: false,
         isCurrent: false,
+        semanticAnchorId: null,
         ...overrides,
     };
 }
@@ -623,9 +624,11 @@ describe("agent selector popover", () => {
                     preview: "old session entry",
                     isLeaf: true,
                     isCurrent: true,
+                    semanticAnchorId: null,
                 },
             ],
-            leafId: "old-entry",
+            semanticLeafId: "old-entry",
+            displayLeafId: "old-entry",
         });
         await act(async () => {
             await staleList.promise;

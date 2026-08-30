@@ -3,10 +3,14 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { type AssistantMessage, type Model, type UserMessage } from "@crest/ai";
+import { type AssistantMessage, type Message, type Model, type UserMessage } from "@crest/ai";
 import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import { runAgentLoop } from "./agent-loop";
 import type { AgentContext, AgentLoopConfig, AgentMessage } from "./types";
+
+type FinalAssistantMessage = AssistantMessage & {
+    stopReason: Exclude<AssistantMessage["stopReason"], "pending">;
+};
 
 function fakeModel(): Model<any> {
     return {
@@ -31,7 +35,10 @@ function user(text: string): UserMessage {
     };
 }
 
-function assistant(model: Model<any>, stopReason: AssistantMessage["stopReason"] = "stop"): AssistantMessage {
+function assistant(
+    model: Model<any>,
+    stopReason: Exclude<AssistantMessage["stopReason"], "pending"> = "stop"
+): FinalAssistantMessage {
     return {
         role: "assistant",
         content: [{ type: "text", text: "done" }],
@@ -51,7 +58,7 @@ function assistant(model: Model<any>, stopReason: AssistantMessage["stopReason"]
     };
 }
 
-function streamResult(message: AssistantMessage): AssistantMessageEventStream {
+function streamResult(message: FinalAssistantMessage): AssistantMessageEventStream {
     const stream = new AssistantMessageEventStream();
     stream.push({ type: "start", partial: message });
     if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -73,7 +80,11 @@ function context(): AgentContext {
 function config(overrides: Partial<AgentLoopConfig> = {}): AgentLoopConfig {
     return {
         model: fakeModel(),
-        convertToLlm: (messages) => messages,
+        convertToLlm: (messages) =>
+            messages.filter(
+                (message): message is Message =>
+                    message.role === "user" || message.role === "assistant" || message.role === "toolResult"
+            ),
         ...overrides,
     };
 }
@@ -99,7 +110,11 @@ describe("agent loop user-message seam", () => {
             events.push(
                 `provider:${llmContext.messages
                     .filter((message: AgentMessage) => message.role === "user")
-                    .map((message: UserMessage) => message.content[0].type === "text" && message.content[0].text)
+                    .map((message: UserMessage) => {
+                        if (typeof message.content === "string") return message.content;
+                        const text = message.content.find((content) => content.type === "text");
+                        return text?.text ?? "";
+                    })
                     .join(",")}`
             );
             return streamResult(assistant(fakeModel()));

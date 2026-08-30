@@ -421,7 +421,6 @@ function renderRewindContent(
                 executionContext={{
                     workspaceId: "workspace-1",
                     workspaceDir: "/repo",
-                    connection: "",
                     environment: {},
                 }}
                 onOpenFile={props.onOpenFile}
@@ -1734,7 +1733,6 @@ describe("AgentContent", () => {
                     executionContext={{
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     }}
                 />

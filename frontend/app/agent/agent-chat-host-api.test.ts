@@ -1090,6 +1090,7 @@ describe("createAgentChatHostApi", () => {
                 followUp: [],
                 commands: [],
             })),
+            inspectContext: vi.fn(async () => ({ snapshot: {} as AgentContextSnapshotView })),
             send: vi.fn(async () => {
                 throw new Error("send failed");
             }),
@@ -1108,7 +1109,6 @@ describe("createAgentChatHostApi", () => {
                     executionContext: {
                         workspaceId: "workspace-1",
                         workspaceDir: "/repo",
-                        connection: "",
                         environment: {},
                     },
                     sessionRevision: 0,

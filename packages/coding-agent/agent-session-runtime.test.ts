@@ -1489,9 +1489,7 @@ describe("AgentSessionRuntime — hosted PTYs", () => {
             owner.startHostedCommand("npm run dev", {
                 workspaceId: "w1",
                 workspaceDir: "/tmp",
-                connection: "",
                 environment: {},
-                recentCmds: [],
             })
         ).rejects.toThrow(/workspace frozen/);
         await expect(owner.writeHostedCommand("cmd1", "yes\n")).rejects.toThrow(/workspace frozen/);
