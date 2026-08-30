@@ -21,6 +21,20 @@ type AgentStateField = (typeof AgentStateFields)[number];
 
 export type WorkspaceAgentStatus = "clean" | "dirty" | "saving" | "error";
 
+export interface WorkspaceAgentContextIdentity {
+    workspaceGeneration: number;
+    sessionGeneration: number;
+    sessionPath?: string;
+    modelKey: string;
+}
+
+export interface WorkspaceAgentContextState {
+    identity: WorkspaceAgentContextIdentity;
+    status: "loading" | "ready" | "out_of_date" | "error";
+    snapshot?: AgentContextSnapshotView;
+    errorMessage?: string;
+}
+
 export interface WorkspaceAgentModelEventTarget {
     visibilityState?: string;
     addEventListener(type: string, listener: () => void): void;
@@ -75,6 +89,18 @@ function fieldEqual(field: AgentStateField, left: LocalWorkspaceAgentState, righ
     return JSON.stringify(left[field]) === JSON.stringify(right[field]);
 }
 
+function contextIdentitiesEqual(
+    left: WorkspaceAgentContextIdentity,
+    right: WorkspaceAgentContextIdentity
+): boolean {
+    return (
+        left.workspaceGeneration === right.workspaceGeneration &&
+        left.sessionGeneration === right.sessionGeneration &&
+        left.sessionPath === right.sessionPath &&
+        left.modelKey === right.modelKey
+    );
+}
+
 export class WorkspaceAgentModel {
     static instances = new Map<string, WorkspaceAgentModel>();
     static resetInProgress: Promise<void>;
@@ -83,6 +109,8 @@ export class WorkspaceAgentModel {
     statusAtom: jotai.PrimitiveAtom<WorkspaceAgentStatus>;
     errorAtom: jotai.PrimitiveAtom<string>;
     sessionGenerationAtom = jotai.atom(0);
+    contextSnapshotAtom: jotai.PrimitiveAtom<WorkspaceAgentContextState | null> =
+        jotai.atom(null as WorkspaceAgentContextState | null);
 
     windowId: string;
     workspaceId: string;
@@ -187,6 +215,60 @@ export class WorkspaceAgentModel {
 
     selectModel(selection?: AgentSelectionMeta): void {
         this.updateField("selection", selection == null ? undefined : { ...selection });
+    }
+
+    beginContextInspection(identity: WorkspaceAgentContextIdentity): WorkspaceAgentContextIdentity {
+        const captured = { ...identity };
+        const current = globalStore.get(this.contextSnapshotAtom);
+        globalStore.set(this.contextSnapshotAtom, {
+            identity: captured,
+            status: "loading",
+            ...(current && contextIdentitiesEqual(current.identity, captured) && current.snapshot
+                ? { snapshot: current.snapshot }
+                : {}),
+        });
+        return captured;
+    }
+
+    publishContextSnapshot(identity: WorkspaceAgentContextIdentity, snapshot: AgentContextSnapshotView): boolean {
+        const current = globalStore.get(this.contextSnapshotAtom);
+        if (!current || !contextIdentitiesEqual(current.identity, identity)) return false;
+        if (
+            snapshot.identity.modelKey !== identity.modelKey ||
+            (snapshot.identity.sessionPath ?? undefined) !== (identity.sessionPath ?? undefined)
+        ) {
+            return false;
+        }
+        if (
+            current.snapshot &&
+            (snapshot.identity.revision < current.snapshot.identity.revision ||
+                (snapshot.identity.revision === current.snapshot.identity.revision &&
+                    snapshot.identity.leafId !== current.snapshot.identity.leafId))
+        ) {
+            return false;
+        }
+        globalStore.set(this.contextSnapshotAtom, {
+            identity: { ...identity },
+            status: "ready",
+            snapshot,
+        });
+        return true;
+    }
+
+    failContextInspection(identity: WorkspaceAgentContextIdentity, errorMessage: string): boolean {
+        const current = globalStore.get(this.contextSnapshotAtom);
+        if (!current || !contextIdentitiesEqual(current.identity, identity)) return false;
+        globalStore.set(this.contextSnapshotAtom, {
+            identity: { ...identity },
+            status: current.snapshot ? "out_of_date" : "error",
+            ...(current.snapshot ? { snapshot: current.snapshot } : {}),
+            errorMessage,
+        });
+        return true;
+    }
+
+    clearContextInspection(): void {
+        globalStore.set(this.contextSnapshotAtom, null);
     }
 
     reconcile(checkpoint: WorkspaceAgentCheckpoint, generation = this.generation): boolean {

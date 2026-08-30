@@ -93,6 +93,8 @@ export interface AgentHostState {
     contextSendRecovery?: ContextSendRecovery;
     commands: AgentPtySnapshot[];
     rewindState: AgentRewindSessionStateView;
+    contextSnapshot?: AgentContextSnapshotView;
+    contextInspectionError?: string;
 }
 
 export interface AgentComposerRestorePayload {
@@ -223,6 +225,9 @@ const UnavailableAgentRuntimeClient = {
         followUp: [],
         rewindState: EmptyRewindState,
     }),
+    inspectContext: async (): Promise<AgentInspectContextResult> => {
+        throw new Error("Workspace Agent runtime client is unavailable");
+    },
     send: async (): Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }> => {
         throw new Error("Workspace Agent runtime client is unavailable");
     },
@@ -800,11 +805,15 @@ export function AgentChatHost({
             contextSendRecovery: chat.contextSendRecovery,
             commands: chat.commands,
             rewindState: chat.rewindState,
+            contextSnapshot: chat.contextSnapshot,
+            contextInspectionError: chat.contextInspectionError,
         });
     }, [
         chat.commands,
         chat.contextSendRecovery,
         chat.contextState,
+        chat.contextInspectionError,
+        chat.contextSnapshot,
         chat.errorMessage,
         chat.queuedMessages,
         chat.rewindState,

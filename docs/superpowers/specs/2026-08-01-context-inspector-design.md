@@ -1,6 +1,8 @@
 # Context Inspector Design
 
-**Status:** Approved for implementation
+**Status:** Implemented in `codex/context-inspector`
+
+The implementation follows this design without changing its product boundary: the first release is read-only, runtime-owned, and represents the next effective model input rather than cumulative usage or the durable transcript.
 
 ## Goal
 
@@ -123,11 +125,18 @@ The panel also displays the full model window, output reserve, and remaining inp
 
 A part-to-whole bar shows the four semantic categories and any separately identified request overhead. Category rows show token count, percentage of used input context, source count, and a concise description.
 
-### Expandable inventory
+The category rows are also the inventory disclosures. The UI does not repeat the same four categories in a separate Sources section.
 
-- Expanding a category shows concrete source items.
+### Inline expandable inventory
+
+- The entire category row is a keyboard-accessible disclosure button with a chevron and `aria-expanded` state.
+- Multiple categories may remain expanded so users can compare their sources.
+- Expanding a category renders its concrete source items immediately below that row, inside the same Composition card.
+- A category with zero sources follows the same disclosure behavior and shows `No active sources.` when expanded.
 - Expanding a Conversation turn shows user, assistant, and tool activity.
 - Each item exposes enough preview and provenance to explain why it is present without defaulting to raw JSON.
+- Long Conversation inventories retain virtualization inside their expanded category.
+- Request overhead remains a non-expandable final row because it is unattributed provider framing rather than a semantic source inventory.
 
 ## Context Ring Semantics
 
@@ -313,6 +322,8 @@ The exact file-level implementation belongs in the implementation plan. The desi
 
 - clicking the context ring opens the right panel and selects Context;
 - the ring and panel display the same usage;
+- Composition category disclosures replace the separate Sources section;
+- multiple categories can remain expanded, including a zero-source category;
 - category and turn expansion work with mouse and keyboard;
 - status and accuracy labels reflect snapshot state;
 - narrow layouts reflow without clipping essential values;

@@ -20,6 +20,21 @@ export type {
     ContextSourceKind,
 };
 
+export type {
+    AgentContextSnapshot,
+    BuildContextSnapshotInput,
+    ContextAttributionReconciliation,
+    ContextSnapshotAccuracy,
+    ContextSnapshotCategory,
+    ContextSnapshotCategorySummary,
+    ContextSnapshotIdentity,
+    ContextSnapshotItem,
+    ContextSnapshotItemKind,
+    ContextSnapshotItemSource,
+    ContextSnapshotLifecycle,
+    ContextSnapshotProviderUsage,
+} from "./inspector-types";
+
 export type ContextBudgetStatus = "fits" | "references_over_budget" | "base_over_budget" | "counter_unavailable";
 
 export interface ContextReferenceConfig {

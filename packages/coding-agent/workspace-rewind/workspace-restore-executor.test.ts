@@ -74,6 +74,24 @@ test("executes a result-commit restore without any restore-time workspace captur
     expect(onCommitted).toHaveBeenCalledWith("session-1", "operation-1");
 }, 30_000);
 
+test("reports a committed restore when authoritative state publication fails", async () => {
+    const fixture = await makeFixture();
+    const publicationFailure = new Error("authoritative state publication failed");
+    const executor = makeExecutor(fixture, {
+        onCommitted: vi.fn(async () => {
+            throw publicationFailure;
+        }),
+    });
+
+    await expect(execute(executor, fixture, fixture.plan)).rejects.toThrow(
+        /workspace restore committed.*authoritative state refresh failed/i
+    );
+
+    expect(await readFile(join(fixture.workspace.canonicalRoot, "file.txt"), "utf8")).toBe("planned\n");
+    await expect(new PendingWorkspaceRestoreStore(fixture.store).readCandidate()).resolves.toEqual({ kind: "none" });
+    expect(await fixture.store.mutationLog.readHead()).not.toBe(fixture.source.id);
+}, 30_000);
+
 test("clears a committed pending record without entering Recovery on the normal path", async () => {
     const fixture = await makeFixture();
     const resolvePendingUnderLease = vi.fn(async () => {

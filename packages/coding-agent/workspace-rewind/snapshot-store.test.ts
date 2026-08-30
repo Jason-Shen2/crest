@@ -202,7 +202,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         const kinds = await fixture.store.readNodeKinds(after.ref, paths);
 
         expect([...kinds.values()]).toEqual(Array.from({ length: 100 }, () => "leaf"));
-        expect(run).toHaveBeenCalledTimes(5);
+        expect(run).toHaveBeenCalledTimes(3);
         expect(run.mock.calls.slice(-2).map(([args]) => args.slice(0, 2))).toEqual([
             ["ls-tree", "-z"],
             ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
@@ -226,7 +226,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
 
         expect(kinds.get("distributed-0")).toBe("tree");
         expect(paths.map((path) => kinds.get(path))).toEqual(Array.from({ length: 100 }, () => "leaf"));
-        expect(run).toHaveBeenCalledTimes(6);
+        expect(run).toHaveBeenCalledTimes(4);
         expect(run.mock.calls.filter(([args]) => args[0] === "ls-tree")).toHaveLength(2);
     }, 30_000);
 
@@ -241,7 +241,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
             eligibleEntryCount: after.coverage.eligibleEntryCount,
             exclusions: after.coverage.exclusions,
         });
-        expect(run).toHaveBeenCalledTimes(4);
+        expect(run).toHaveBeenCalledTimes(2);
         expect(run).toHaveBeenCalledWith(
             expect.arrayContaining(["diff-tree"]),
             expect.objectContaining({ gitDir: fixture.store.storeRoot })
@@ -263,7 +263,7 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
                 exclusions: after.coverage.exclusions,
             },
         });
-        expect(run).toHaveBeenCalledTimes(4);
+        expect(run).toHaveBeenCalledTimes(2);
         expect(run).toHaveBeenCalledWith(
             expect.arrayContaining(["diff-tree"]),
             expect.objectContaining({ gitDir: fixture.store.storeRoot })
@@ -371,12 +371,8 @@ describe("WorkspaceSnapshotStore V3 authority", () => {
         const changes = await fixture.store.diff(before.ref, after.ref);
 
         expect(changes.map((change) => change.path)).toEqual(paths.sort(compareTestPaths));
-        expect(run).toHaveBeenCalledTimes(8);
+        expect(run).toHaveBeenCalledTimes(4);
         expect(run.mock.calls.map(([args]) => args[0])).toEqual([
-            "cat-file",
-            "cat-file",
-            "cat-file",
-            "cat-file",
             "cat-file",
             "cat-file",
             "diff-tree",

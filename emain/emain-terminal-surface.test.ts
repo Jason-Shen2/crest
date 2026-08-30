@@ -95,8 +95,10 @@ describe("TerminalSurfaceController", () => {
     it("keeps a cold Terminal offscreen until ready, then shows, raises, and focuses it", async () => {
         const harness = makeHarness();
         const activation = harness.controller.request(harness.terminal("terminal-a", 1));
+        const view = harness.views.get("terminal-a");
 
         expect(harness.calls).toEqual(["create:terminal-a", "register:terminal-a", "hide:terminal-a"]);
+        expect(harness.controller.isViewReady(view)).toBe(false);
         expect(harness.statuses.at(-1)).toMatchObject({
             state: "loading",
             terminaltabid: "terminal-a",
@@ -106,6 +108,7 @@ describe("TerminalSurfaceController", () => {
         harness.readiness.get("terminal-a").resolve();
         await activation;
 
+        expect(harness.controller.isViewReady(view)).toBe(true);
         expect(harness.calls).toEqual([
             "create:terminal-a",
             "register:terminal-a",

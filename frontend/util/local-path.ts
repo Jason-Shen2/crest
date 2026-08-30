@@ -20,3 +20,18 @@ export function joinLocalPath(parent: string, child: string): string {
     const separator = normalizedParent.endsWith("/") ? "" : "/";
     return `${normalizedParent}${separator}${child}`;
 }
+
+export function getParentLocalPath(path: string): string {
+    const normalizedPath = path.replace(/\\/g, "/");
+    const lastSeparatorIndex = normalizedPath.lastIndexOf("/");
+    if (lastSeparatorIndex === -1) {
+        return ".";
+    }
+    if (lastSeparatorIndex === 0) {
+        return "/";
+    }
+    if (lastSeparatorIndex === 2 && /^[A-Za-z]:$/.test(normalizedPath.slice(0, 2))) {
+        return normalizedPath.slice(0, 3);
+    }
+    return normalizedPath.slice(0, lastSeparatorIndex);
+}

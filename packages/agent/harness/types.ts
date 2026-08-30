@@ -845,6 +845,7 @@ export interface AgentHarnessPromptOptions {
 export interface AgentHarnessTurnPreparationInput {
     userMessage: UserMessage;
     systemPrompt: string;
+    systemPromptMetadata?: unknown;
     messages: AgentMessage[];
     model: Model<Api>;
     activeTools: AgentTool[];
@@ -949,6 +950,37 @@ export interface BranchSummaryResult {
     modifiedFiles: string[];
 }
 
+export interface AgentHarnessSystemPrompt {
+    text: string;
+    metadata?: unknown;
+}
+
+export interface AgentHarnessProviderContextObservation {
+    model: Model<any>;
+    sessionId: string;
+    leafId: string | null;
+    systemPrompt: string;
+    systemPromptMetadata?: unknown;
+    messages: AgentMessage[];
+    messageEntryIds: Array<string | undefined>;
+    entries: SessionTreeEntry[];
+    activeTools: AgentTool[];
+    requestOptions: AgentHarnessStreamOptions;
+    payload: unknown;
+}
+
+export interface AgentHarnessContextInspection {
+    model: Model<any>;
+    sessionId: string;
+    leafId: string | null;
+    systemPrompt: string;
+    systemPromptMetadata?: unknown;
+    messages: AgentMessage[];
+    messageEntryIds: Array<string | undefined>;
+    entries: SessionTreeEntry[];
+    activeTools: AgentTool[];
+}
+
 export interface AgentHarnessOptions<
     TSkill extends Skill = Skill,
     TPromptTemplate extends PromptTemplate = PromptTemplate,
@@ -971,7 +1003,7 @@ export interface AgentHarnessOptions<
               thinkingLevel: ThinkingLevel;
               activeTools: TTool[];
               resources: AgentHarnessResources<TSkill, TPromptTemplate>;
-          }) => string | Promise<string>);
+          }) => string | AgentHarnessSystemPrompt | Promise<string | AgentHarnessSystemPrompt>);
     getApiKeyAndHeaders?: (
         model: Model<any>
     ) => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -986,6 +1018,10 @@ export interface AgentHarnessOptions<
         entries: SessionTreeEntry[];
         context: SessionContext;
     }) => Promise<SessionContext>;
+    /** Receives a read-only view of the final provider request without participating in request control flow. */
+    observeProviderContext?: (observation: AgentHarnessProviderContextObservation) => void | Promise<void>;
+    /** Reports isolated observation failures. Exceptions from this callback are ignored. */
+    onProviderContextObservationError?: (error: Error) => void;
 }
 
 export type { AgentHarness } from "./agent-harness";

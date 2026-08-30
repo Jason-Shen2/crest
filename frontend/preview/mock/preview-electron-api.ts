@@ -53,6 +53,7 @@ const previewElectronApi: ElectronApi = {
     respondWorkspaceClose: (_response: WorkspaceCloseResponse) => {},
     onWorkspaceCloseFinalize: (_callback: (finalize: WorkspaceCloseFinalize) => void) => () => {},
     setWorkspaceSurface: (_surface: WorkspaceSurfaceState) => {},
+    setWorkspaceOverlayVisible: (_visible: boolean) => {},
     onTerminalSurfaceStatus: (_callback: (status: TerminalSurfaceStatus) => void) => () => {},
     onWaveInit: (_callback: (initOpts: WaveInitOpts) => void) => {},
     onBuilderInit: (_callback: (initOpts: BuilderInitOpts) => void) => {},
@@ -78,6 +79,9 @@ const previewElectronApi: ElectronApi = {
     // model lists or persist ai.json. Only here to satisfy ElectronApi.
     ai: {
         listProviderModels: () => Promise.resolve([]),
+        listRegistryModels: () => Promise.resolve([]),
+        refreshRegistryModels: () => Promise.resolve([]),
+        onRegistryModelsRefreshed: () => () => {},
         getUserConfig: () => Promise.resolve({ status: "missing" }),
         writeUserConfig: () => Promise.resolve(),
     },
@@ -97,6 +101,7 @@ const previewElectronApi: ElectronApi = {
                 steer: [],
                 followUp: [],
             }),
+        inspectContext: () => Promise.reject(new Error("agent not available in preview env")),
         listTree: () =>
             Promise.resolve({
                 entries: [],

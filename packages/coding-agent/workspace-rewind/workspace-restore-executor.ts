@@ -122,7 +122,10 @@ export class WorkspaceRestoreExecutor {
             try {
                 await this.onCommitted(input.plan.sessionId, committed.operationId);
             } catch (error) {
-                console.warn("Workspace restore committed but renderer refresh failed", error);
+                throw new Error(
+                    "Workspace restore committed, but authoritative state refresh failed. Reopen the session to refresh.",
+                    { cause: error }
+                );
             }
             return this.makeResult(input, committed.sessionMetadata);
         } finally {

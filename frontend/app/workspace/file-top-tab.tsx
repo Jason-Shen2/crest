@@ -2,9 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { CodeEditor } from "@/app/view/codeeditor/codeeditor";
+import { cn } from "@/util/util";
 import type * as monaco from "monaco-editor";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { MarkdownFilePreview } from "./markdown-file-preview";
 import type { WorkspaceFileRuntime } from "./workspace-editor-registry";
+
+type FileViewMode = "preview" | "edit";
+
+function FileSaveError({ title, error }: { title: string; error: string }) {
+    return (
+        <div className="shrink-0 border-b border-border px-3 py-2 text-sm text-red-500" role="alert">
+            Unable to save {title}: {error}
+        </div>
+    );
+}
 
 export function FileTopTab({
     runtime,
@@ -15,13 +27,17 @@ export function FileTopTab({
     onClose?: () => void;
     onLocate?: () => void;
 }) {
-    const snapshot = useSyncExternalStore(
-        (listener) => runtime.subscribe(listener),
-        () => runtime.getSnapshot(),
-        () => runtime.getSnapshot()
-    );
+    const subscribe = useCallback((listener: () => void) => runtime.subscribe(listener), [runtime]);
+    const getSnapshot = useCallback(() => runtime.getSnapshot(), [runtime]);
+    const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
     const editorRef = useRef<monaco.editor.IStandaloneCodeEditor>(null);
     const attachedModelRef = useRef<monaco.editor.ITextModel>(runtime.model);
+    const isMarkdown = runtime.language === "markdown";
+    const [viewMode, setViewMode] = useState<FileViewMode>(() => (isMarkdown ? "preview" : "edit"));
+
+    useEffect(() => {
+        setViewMode(isMarkdown ? "preview" : "edit");
+    }, [isMarkdown]);
 
     useEffect(() => {
         const editor = editorRef.current;
@@ -36,7 +52,7 @@ export function FileTopTab({
         attachedModelRef.current = runtime.model;
     }, [runtime, runtime.model]);
 
-    if (snapshot.status === "error" && snapshot.operation !== "save") {
+    if (snapshot.status === "error" && snapshot.saveStatus !== "error") {
         return (
             <div className="flex h-full items-center justify-center p-6" role="alert">
                 <div className="flex max-w-lg flex-col gap-3">
@@ -66,27 +82,85 @@ export function FileTopTab({
         );
     }
 
-    return (
+    const editor = (
         <CodeEditor
             blockId={`workspace-file:${runtime.id}`}
             fileName={runtime.path}
             language={runtime.language}
             model={runtime.model}
             onChange={(value) => runtime.setValue(value)}
-            onMount={(editor) => {
-                editorRef.current = editor;
+            onMount={(mountedEditor) => {
+                editorRef.current = mountedEditor;
                 attachedModelRef.current = runtime.model;
                 if (runtime.viewState) {
-                    editor.restoreViewState(runtime.viewState);
+                    mountedEditor.restoreViewState(runtime.viewState);
                 }
-                runtime.attach(editor);
+                runtime.attach(mountedEditor);
                 return () => {
-                    runtime.detach(editor);
+                    if (editorRef.current !== mountedEditor) {
+                        return;
+                    }
+                    runtime.detach(mountedEditor);
                     editorRef.current = null;
                 };
             }}
             readonly={runtime.readonly}
             text={runtime.value}
         />
+    );
+    const saveError =
+        snapshot.saveStatus === "error" ? <FileSaveError title={snapshot.title} error={snapshot.error} /> : null;
+
+    if (!isMarkdown) {
+        return (
+            <div className="flex h-full min-h-0 flex-col">
+                {saveError}
+                <div className="min-h-0 flex-1">{editor}</div>
+            </div>
+        );
+    }
+
+    const breadcrumb = runtime.path.replaceAll("\\", "/").split("/").filter(Boolean).slice(-2).join(" / ");
+
+    return (
+        <div className="flex h-full min-h-0 flex-col">
+            <div className="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-border px-3">
+                <div className="min-w-0 truncate text-sm text-secondary" title={runtime.path}>
+                    {breadcrumb}
+                </div>
+                <div role="group" aria-label="Markdown view mode" className="flex shrink-0 items-center gap-1">
+                    <button
+                        aria-pressed={viewMode === "preview"}
+                        className={cn(
+                            "cursor-pointer rounded px-2 py-1 text-xs transition-colors",
+                            viewMode === "preview"
+                                ? "bg-fg-overlay-2 text-primary"
+                                : "text-secondary hover:bg-fg-overlay-1 hover:text-primary"
+                        )}
+                        onClick={() => setViewMode("preview")}
+                        type="button"
+                    >
+                        Preview
+                    </button>
+                    <button
+                        aria-pressed={viewMode === "edit"}
+                        className={cn(
+                            "cursor-pointer rounded px-2 py-1 text-xs transition-colors",
+                            viewMode === "edit"
+                                ? "bg-fg-overlay-2 text-primary"
+                                : "text-secondary hover:bg-fg-overlay-1 hover:text-primary"
+                        )}
+                        onClick={() => setViewMode("edit")}
+                        type="button"
+                    >
+                        Edit
+                    </button>
+                </div>
+            </div>
+            {saveError}
+            <div className="min-h-0 flex-1">
+                {viewMode === "preview" ? <MarkdownFilePreview path={runtime.path} text={runtime.value} /> : editor}
+            </div>
+        </div>
     );
 }

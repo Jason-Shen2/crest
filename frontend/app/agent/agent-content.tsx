@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { ToastModel } from "@/app/notifications/toast-model";
-import { CATALOG } from "@/app/store/ai-catalog";
+import { CATALOG, projectRegistryCatalog } from "@/app/store/ai-catalog";
 import { providerModelsMapAtom } from "@/app/store/ai-provider-models";
+import { fetchRegistryModels, registryModelsMapAtom } from "@/app/store/ai-registry-models";
 import { resolveAIConfig } from "@/app/store/ai-resolver";
 import { AgentSelection, ResolvedAIConfig, ResolveError } from "@/app/store/ai-types";
 import { aiUserConfigAtom } from "@/app/store/ai-user-config";
@@ -13,10 +14,12 @@ import {
     resolveContextReferenceUiConfig,
     type ContextReferenceSendDisabledReason,
 } from "@/app/store/context-references";
+import { modalsModel } from "@/app/store/modalmodel";
 import { EmptyRewindState, type PiAgentMessage, type PiTurn } from "@/app/store/use-pi-chat";
 import { ModelPickerInline } from "@/app/view/cmdblock/model-picker-popover";
 import { SessionSelector } from "@/app/view/cmdblock/session-selector";
 import type { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
+import { WorkspaceLayoutModel } from "@/app/workspace/workspace-layout-model";
 import { Button } from "@/shadcn/ui/button";
 import { useAtomValue } from "jotai";
 import { LoaderCircleIcon } from "lucide-react";
@@ -40,7 +43,6 @@ import {
     useAui,
     useCrestAssistantRuntime,
 } from "./assistant-ui";
-import type { CrestContextUsage } from "./assistant-ui/context-display";
 import { CheckpointQuotaBanner } from "./rewind/checkpoint-quota-banner";
 import { CheckpointQuotaDialog, type CheckpointPurgeRequest } from "./rewind/checkpoint-quota-dialog";
 import { DiffReviewDialog } from "./rewind/diff-review-dialog";
@@ -107,59 +109,9 @@ function emptyAttachedPanelState(): AgentAttachedPanelState {
     };
 }
 
-function finiteNumber(value: unknown): number | undefined {
-    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function usageField(usage: Record<string, unknown>, ...keys: string[]): number | undefined {
-    for (const key of keys) {
-        const value = finiteNumber(usage[key]);
-        if (value != null) return value;
-    }
-    return undefined;
-}
-
 function uiErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
-
-export function mapPiUsageToContextUsage(usage: unknown): CrestContextUsage | undefined {
-    if (!usage || typeof usage !== "object") return undefined;
-    const value = usage as Record<string, unknown>;
-    const inputTokens = usageField(value, "inputTokens", "input");
-    const outputTokens = usageField(value, "outputTokens", "output");
-    const cacheRead = usageField(value, "cachedInputTokens", "cacheRead") ?? 0;
-    const cacheWrite = usageField(value, "cacheWrite") ?? 0;
-    const cachedInputTokens = cacheRead + cacheWrite;
-    const reasoningTokens = usageField(value, "reasoningTokens");
-    const totalTokens =
-        usageField(value, "totalTokens") ??
-        (inputTokens ?? 0) + (outputTokens ?? 0) + cachedInputTokens + (reasoningTokens ?? 0);
-
-    if (!inputTokens && !outputTokens && !cachedInputTokens && !reasoningTokens && !totalTokens) return undefined;
-    return {
-        inputTokens: inputTokens ?? 0,
-        outputTokens: outputTokens ?? 0,
-        cachedInputTokens,
-        ...(reasoningTokens != null ? { reasoningTokens } : {}),
-        totalTokens,
-    };
-}
-
-export function getLatestAgentContextUsage(turns: PiTurn[]): CrestContextUsage | undefined {
-    for (let i = turns.length - 1; i >= 0; i--) {
-        const turn = turns[i];
-        for (let j = turn.responseMessages.length - 1; j >= 0; j--) {
-            const message = turn.responseMessages[j];
-            if (message.role !== "assistant") continue;
-            if (message.stopReason === "aborted" || message.stopReason === "error") continue;
-            const usage = mapPiUsageToContextUsage(message.usage);
-            if (usage) return usage;
-        }
-    }
-    return undefined;
-}
-
 function stripVendorPrefix(modelId: string): string {
     const i = modelId.lastIndexOf("/");
     if (i < 0 || i === modelId.length - 1) return modelId;
@@ -314,8 +266,11 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
     const contextReferencesEnabled = contextReferenceUiConfig.enabled;
     const agentStateValue = useAtomValue(model.stateAtom);
     const sessionRevision = useAtomValue(model.sessionGenerationAtom);
+    const contextSnapshotState = useAtomValue(model.contextSnapshotAtom);
     const modelErrorMessage = useAtomValue(model.errorAtom);
     const providerModelsMap = useAtomValue(providerModelsMapAtom);
+    const registryModelsMap = useAtomValue(registryModelsMapAtom);
+    const effectiveCatalog = useMemo(() => projectRegistryCatalog(CATALOG, registryModelsMap), [registryModelsMap]);
     const activeSelection = useMemo<AgentSelection | null>(() => {
         if (agentStateValue.selection?.provider && agentStateValue.selection?.model) {
             return {
@@ -334,9 +289,13 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         }
         return null;
     }, [agentStateValue.selection, userConfigState.config]);
+    useEffect(() => {
+        if (!activeSelection?.provider) return;
+        void fetchRegistryModels(activeSelection.provider);
+    }, [activeSelection?.provider]);
     const modelDisplayLabel = useMemo(() => {
         if (!activeSelection) return "Pick model";
-        const provider = CATALOG.find((p) => p.id === activeSelection.provider);
+        const provider = effectiveCatalog.find((p) => p.id === activeSelection.provider);
         const modelMeta = provider?.models.find((m) => m.id === activeSelection.model);
         const liveMatch = providerModelsMap[activeSelection.provider]?.models.find(
             (m) => m.id === activeSelection.model
@@ -344,7 +303,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         const fallbackId = stripVendorPrefix(activeSelection.model);
         const base = cleanModelLabel(modelMeta?.displayName ?? liveMatch?.name ?? fallbackId);
         return activeSelection.reasoning ? `${base} · ${activeSelection.reasoning}` : base;
-    }, [activeSelection, providerModelsMap]);
+    }, [activeSelection, effectiveCatalog, providerModelsMap]);
     const resolved = useMemo<{ resolvedAIConfig: ResolvedAIConfig | null; aiConfigError: ResolveError | null }>(() => {
         if (!activeSelection) {
             return {
@@ -355,10 +314,31 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                 },
             };
         }
-        const result = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, CATALOG);
+        const result = resolveAIConfig(activeSelection, userConfigState.config ?? undefined, effectiveCatalog);
         if ("config" in result) return { resolvedAIConfig: result.config, aiConfigError: null };
         return { resolvedAIConfig: null, aiConfigError: result.error };
-    }, [activeSelection, userConfigState.config]);
+    }, [activeSelection, effectiveCatalog, userConfigState.config]);
+    const contextInspectionIdentity = useMemo(
+        () =>
+            activeSelection
+                ? {
+                      workspaceGeneration: model.generation,
+                      sessionGeneration: sessionRevision,
+                      sessionPath: agentStateValue.activeSession?.path,
+                      modelKey: `${activeSelection.provider}/${activeSelection.model}`,
+                  }
+                : undefined,
+        [activeSelection, agentStateValue.activeSession?.path, model.generation, sessionRevision]
+    );
+    const contextInspectionIdentityRef = useRef(contextInspectionIdentity);
+    contextInspectionIdentityRef.current = contextInspectionIdentity;
+    useLayoutEffect(() => {
+        if (!contextInspectionIdentity) {
+            model.clearContextInspection();
+            return;
+        }
+        model.beginContextInspection(contextInspectionIdentity);
+    }, [contextInspectionIdentity, model]);
     const agentApiRef = useRef<AgentChatHostApi | null>(null);
     const composerAnchorRef = useRef<HTMLDivElement>(null);
     const activeSessionPath = agentStateValue.activeSession?.path;
@@ -539,6 +519,12 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
             };
             hostStateRef.current = normalized;
             setReceivedHostState(normalized);
+            const inspectionIdentity = contextInspectionIdentityRef.current;
+            if (inspectionIdentity && normalized.contextSnapshot) {
+                model.publishContextSnapshot(inspectionIdentity, normalized.contextSnapshot);
+            } else if (inspectionIdentity && normalized.contextInspectionError) {
+                model.failContextInspection(inspectionIdentity, normalized.contextInspectionError);
+            }
             if (!normalized.errorMessage) {
                 setDismissedHostError(undefined);
             }
@@ -549,7 +535,7 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                 onUserError("");
             }
         },
-        [activeSessionPath, contextReferencesEnabled, onUserError, sessionRevision]
+        [activeSessionPath, contextReferencesEnabled, model, onUserError, sessionRevision]
     );
     const onSelectionChange = useCallback(
         (next: AgentSelection) => {
@@ -561,6 +547,10 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         },
         [model]
     );
+    const onOpenModelSettings = useCallback(() => {
+        setAttachedPanelState((prev) => ({ ...prev, modelPickerOpen: false }));
+        modalsModel.pushModal("SettingsModal", { initialTab: "models" });
+    }, []);
     const onSessionChange = useCallback(
         (meta: AgentSessionMeta | undefined) => {
             model.selectSession(meta);
@@ -609,7 +599,17 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
         abort: () => agentApiRef.current?.abort(),
         isSendDisabled: contextHydrating || contextSendGate != null,
     });
-    const contextUsage = useMemo(() => getLatestAgentContextUsage(agentTurns), [agentTurns]);
+    const contextDisplayValue = contextSnapshotState?.snapshot
+        ? {
+              effectiveInputTokens: contextSnapshotState.snapshot.effectiveInputTokens,
+              inputCapacity: contextSnapshotState.snapshot.inputCapacity,
+              accuracy: contextSnapshotState.snapshot.accuracy,
+              lifecycle: contextSnapshotState.snapshot.lifecycle,
+          }
+        : undefined;
+    const openContextInspector = useCallback(() => {
+        WorkspaceLayoutModel.getInstance().openRightTool("context");
+    }, []);
     const contextIdentity = useMemo(
         () => ({
             targetSessionPath: hostState.context.targetSessionPath,
@@ -1003,8 +1003,8 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                                 modelPickerOpen: true,
                             })
                         }
-                        modelContextWindow={resolved.resolvedAIConfig?.contextwindow}
-                        contextUsage={contextUsage}
+                        contextDisplayValue={contextDisplayValue}
+                        onOpenContextInspector={openContextInspector}
                         workspaceDir={executionContext.workspaceDir}
                         onOpenFile={onOpenFile}
                         onOpenTurnDiff={onOpenTurnDiff}
@@ -1139,8 +1139,8 @@ export function AgentContent({ model, client, executionContext, onOpenFile, onOp
                                     userConfig={userConfigState.config}
                                     userConfigStatus={userConfigState.status}
                                     userConfigError={userConfigState.error}
-                                    catalog={CATALOG}
-                                    onOpenConfigFile={() => {}}
+                                    catalog={effectiveCatalog}
+                                    onOpenConfigFile={onOpenModelSettings}
                                     anchorRef={composerAnchorRef}
                                 />
                                 <AgentInlineNotification

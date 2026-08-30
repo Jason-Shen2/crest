@@ -69,6 +69,23 @@ describe("right tool panel state", () => {
         expect(third.activeTool).toBe("browser");
     });
 
+    it("persists and opens the Context inspector as a first-class right tool", () => {
+        const normalized = normalizeRightToolPanelState(
+            { openedTools: ["context"], activeTool: "context", toolState: { context: { category: "tools" } } },
+            1200
+        );
+        expect(normalized).toMatchObject({
+            openedTools: ["context"],
+            activeTool: "context",
+            toolState: { context: { category: "tools" } },
+        });
+        expect(openRightTool(DefaultRightToolPanelState, "context")).toMatchObject({
+            visible: true,
+            openedTools: ["context"],
+            activeTool: "context",
+        });
+    });
+
     it("ignores the temporarily unavailable editor tool", () => {
         const state = openRightTool(DefaultRightToolPanelState, "editor");
 

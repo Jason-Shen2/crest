@@ -10,7 +10,8 @@ Known deviations from upstream:
 
 - Image generation, Bedrock, Vertex, Azure, Codex, Mistral, and Faux providers are
   stripped — re-add by copying back from upstream.
-- `models-dev-overlay.ts` is crest-only and lives in `emain/` (Electron-coupled).
+- `model-catalog.ts` and `pi-model-catalog-source.ts` provide Crest's shared,
+  Electron-owned model metadata refresh layer.
 
 Boundary rule: nothing in this package may import `electron`, `emain/`, or `frontend/`
 (enforced by `packages/boundary.test.ts`).

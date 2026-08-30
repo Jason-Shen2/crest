@@ -13,7 +13,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { contextSendDisabledReason, createContextReferenceState } from "@/app/store/context-references";
-import type { PiTurn, UsePiChatReturn } from "@/app/store/use-pi-chat";
+import { EmptyRewindState, type PiTurn, type UsePiChatReturn } from "@/app/store/use-pi-chat";
 
 import {
     CanonicalComposerSubmissionLease,
@@ -51,6 +51,9 @@ function makeChat(overrides: Partial<UsePiChatReturn> = {}): UsePiChatReturn {
         errorMessage: undefined,
         sessionMetadata: undefined,
         queuedMessages: [],
+        commands: [],
+        isHydrating: false,
+        rewindState: EmptyRewindState,
         send: vi.fn(),
         abort: vi.fn(),
         contextState: createContextReferenceState(),
@@ -293,6 +296,12 @@ describe("piTurnsToAuiMessages", () => {
 });
 
 describe("createCrestAssistantRuntimeAdapter", () => {
+    it("marks the thread as loading while a persisted session hydrates", () => {
+        const adapter = createCrestAssistantRuntimeAdapter(makeChat({ isHydrating: true }));
+
+        expect(adapter.isLoading).toBe(true);
+    });
+
     it("bridges Pi turns and running state into an external-store adapter", () => {
         const adapter = createCrestAssistantRuntimeAdapter(
             makeChat({

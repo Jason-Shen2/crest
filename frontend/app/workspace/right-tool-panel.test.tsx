@@ -422,7 +422,15 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(
             <RightToolTopBar
                 activeTool="editor"
-                openedTools={["editor", "browser", "terminal", "codeReview", "sourceControl", "observability"]}
+                openedTools={[
+                    "editor",
+                    "browser",
+                    "terminal",
+                    "codeReview",
+                    "sourceControl",
+                    "observability",
+                    "context",
+                ]}
                 onOpenTool={() => null}
                 onSelectTool={() => null}
                 onCloseTool={() => null}
@@ -577,6 +585,14 @@ describe("RightToolPanel parts", () => {
         const markup = renderToStaticMarkup(<RightToolContent activeTool="observability" />);
 
         expect(markup).toContain('aria-label="Agent Observability"');
+    });
+
+    it("labels and renders Context as a first-class right tool", () => {
+        const launcher = renderToStaticMarkup(<RightToolLauncher supportedTools={["context"]} onOpenTool={() => null} />);
+        const content = renderToStaticMarkup(<RightToolContent activeTool="context" />);
+
+        expect(launcher).toContain("Context");
+        expect(content).toContain('aria-label="Context Inspector"');
     });
 
     it("renders a magnified backdrop behind the active right tool", () => {

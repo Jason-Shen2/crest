@@ -1088,7 +1088,8 @@ describe("agent selector popover", () => {
         expect(html).toContain("resume-row");
         expect(html).toContain("resume-row-grid");
         expect(html).toContain("resume-row-active");
-        expect(html).toContain("resume-meta");
+        expect(html).toContain("session-row-actions");
+        expect(html).not.toContain("resume-count");
     });
 
     it("omits the scope toggle for non-resume selectors", () => {
@@ -1123,16 +1124,21 @@ describe("agent selector popover", () => {
         expect(within(sourceOption).getByRole("button", { name: "Add Source session as context" })).toBeTruthy();
     });
 
-    it("puts Resume and Add context actions on each session row without a top action switch", async () => {
+    it("shows aligned Resume and Add context actions only on the active session row", async () => {
         render(<SessionSelector request={makeSessionRequest()} onClose={() => undefined} />);
 
         const source = await screen.findByRole("option", { name: /Source session/ });
+        const current = screen.getByRole("option", { name: /Current session/ });
         expect(screen.queryByRole("group", { name: "Session action" })).toBeNull();
         expect(within(source).getByRole("button", { name: "Resume Source session" })).toBeTruthy();
         expect(within(source).getByRole("button", { name: "Add Source session as context" })).toBeTruthy();
+        expect(within(current).queryByRole("button", { name: "Resume Current session" })).toBeNull();
+        expect(within(current).queryByRole("button", { name: "Add Current session as context" })).toBeNull();
+        expect(source.querySelector(".session-row-actions")?.className).toContain("grid-cols-[64px_92px_3ch]");
+        expect(current.querySelector(".session-row-actions")?.className).toContain("grid-cols-[64px_92px_3ch]");
     });
 
-    it("adds row actions without replacing the original resume row layout", async () => {
+    it("keeps the original resume row layout without message-count metadata", async () => {
         render(<SessionSelector request={makeSessionRequest()} onClose={() => undefined} />);
 
         const source = await screen.findByRole("option", { name: /Source session/ });
@@ -1141,7 +1147,8 @@ describe("agent selector popover", () => {
         expect(source.className).toContain("focus:outline-none");
         expect(source.querySelector(".resume-title")?.textContent).toBe("Source session");
         expect(source.querySelector(".resume-sub")?.textContent).toBe("/repo");
-        expect(source.querySelector(".resume-meta")).toBeTruthy();
+        expect(source.querySelector(".session-row-actions")).toBeTruthy();
+        expect(document.querySelector(".resume-count")).toBeNull();
     });
 
     it("switches the active session row action with Left and Right before Enter", async () => {
@@ -1554,6 +1561,8 @@ describe("agent selector popover", () => {
         render(<SessionSelector request={request} onClose={() => undefined} />);
 
         const current = await screen.findByRole("option", { name: /Current session/ });
+        fireEvent.mouseEnter(current);
+        await waitFor(() => expect(current.getAttribute("aria-selected")).toBe("true"));
         expect(
             within(current).getByRole("button", { name: "Add Current session as context" }).hasAttribute("disabled")
         ).toBe(true);

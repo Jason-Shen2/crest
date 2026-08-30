@@ -57,7 +57,7 @@ import {
 import { ElectronWshClient, initElectronWshClient } from "./emain-wsh";
 import { getLaunchSettings } from "./launchsettings";
 import { LspWebSocketBridge } from "./lsp/lsp-websocket-server";
-import { initModelsDevOverlay } from "./models-dev-overlay";
+import { bootDesktopModelCatalog, stopDesktopModelCatalog } from "./model-catalog";
 import { configureAutoUpdater, updater } from "./updater";
 
 const electronApp = electron.app;
@@ -283,6 +283,7 @@ electronApp.on("before-quit", (e) => {
     }
     const allWindows = getAllWaveWindows();
     const allBuilders = getAllBuilderWindows();
+    stopDesktopModelCatalog();
     setGlobalIsQuitting(true);
     updater?.stop();
     if (unamePlatform == "win32") {
@@ -394,7 +395,7 @@ async function appMain() {
     console.log("wavesrv ready signal received", ready, Date.now() - startTs, "ms");
     await electronApp.whenReady();
     configureAuthKeyRequestInjection(electron.session.defaultSession);
-    await initIpcHandlers();
+    await bootDesktopModelCatalog(initIpcHandlers);
     process.env.CREST_LSP_WEBSOCKET_URL = await lspWebSocketBridge.start();
 
     await sleep(10); // wait a bit for wavesrv to be ready
@@ -451,10 +452,6 @@ async function appMain() {
         registerGlobalHotkey(rawGlobalHotKey);
     }
     initGlobalHotkeyEventSubscription();
-    // Kick off a background refresh of the models.dev capability overlay.
-    // Never blocks startup; failures degrade silently to the on-disk
-    // cache and then the baked-in static snapshot.
-    fireAndForget(() => initModelsDevOverlay());
 }
 
 appMain().catch((e) => {

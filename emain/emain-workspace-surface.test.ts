@@ -101,6 +101,67 @@ describe("workspace surface integration", () => {
         expect(window.bringToFront).not.toHaveBeenCalled();
     });
 
+    it("keeps an unready terminal offscreen during periodic positioning", () => {
+        const terminal = makeView("terminal-1");
+        const window = {
+            workspaceView: {},
+            activeTabView: terminal,
+            allLoadedTabViews: new Map([["terminal-1", terminal]]),
+            bringToFront: vi.fn(),
+            canShowTerminal: vi.fn(() => false),
+        };
+        const windowBounds = { x: 0, y: 0, width: 1200, height: 800 };
+
+        applyWorkspaceSurface(
+            window,
+            {
+                kind: "terminal",
+                terminalTabId: "terminal-1",
+                workspaceId: identity.workspaceId,
+                generation: identity.generation,
+                revision: 1,
+                bounds: { x: 240, y: 72, width: 760, height: 680 },
+            },
+            windowBounds
+        );
+
+        expect(window.canShowTerminal).toHaveBeenCalledWith(terminal);
+        expect(terminal.positionTabOffScreen).toHaveBeenCalledWith(windowBounds);
+        expect(terminal.positionTabOnScreen).not.toHaveBeenCalled();
+        expect(window.bringToFront).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { width: 0, height: 680 },
+        { width: 760, height: 0 },
+    ])("keeps a terminal with $width x $height bounds offscreen", ({ width, height }) => {
+        const terminal = makeView("terminal-1");
+        const window = {
+            workspaceView: {},
+            activeTabView: terminal,
+            allLoadedTabViews: new Map([["terminal-1", terminal]]),
+            bringToFront: vi.fn(),
+        };
+        const windowBounds = { x: 0, y: 0, width: 1200, height: 800 };
+
+        applyWorkspaceSurface(
+            window,
+            {
+                kind: "terminal",
+                terminalTabId: "terminal-1",
+                workspaceId: identity.workspaceId,
+                generation: identity.generation,
+                revision: 1,
+                bounds: { x: 240, y: 72, width, height },
+            },
+            windowBounds
+        );
+
+        expect(terminal.positionTabOffScreen).toHaveBeenCalledWith(windowBounds);
+        expect(terminal.positionTabOnScreen).not.toHaveBeenCalled();
+        expect(window.bringToFront).not.toHaveBeenCalled();
+    });
+
     it("rejects malformed bounds and extra protocol fields", () => {
         expect(
             isWorkspaceSurfaceState({

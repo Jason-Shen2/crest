@@ -1147,6 +1147,28 @@ describe("createAgentChatHostApi", () => {
         const runtimeClient = {
             createSession: vi.fn(),
             getSessionState: vi.fn(),
+            inspectContext: vi.fn(async (options: AgentInspectContextOptions) => ({
+                snapshot: {
+                    schemaVersion: 1 as const,
+                    identity: {
+                        sessionPath: options.sessionMetadata?.path,
+                        leafId: null,
+                        modelKey: `${options.provider}/${options.model}`,
+                        revision: 1,
+                    },
+                    generatedAt: "2026-08-01T00:00:00.000Z",
+                    lifecycle: "ready" as const,
+                    accuracy: "estimated" as const,
+                    modelLabel: options.model,
+                    contextWindow: 100_000,
+                    outputReserve: 10_000,
+                    inputCapacity: 90_000,
+                    effectiveInputTokens: 0,
+                    remainingInputTokens: 90_000,
+                    categories: [],
+                    items: [],
+                },
+            })),
             send: vi.fn(),
             abort: vi.fn(),
             subscribe: vi.fn(() => () => {}),

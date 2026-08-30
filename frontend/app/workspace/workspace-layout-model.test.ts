@@ -11,6 +11,8 @@ import { LeftPanelMetaKey, RightToolPanelMetaKey, WorkspaceLayoutModel } from ".
 
 const mockGlobal = vi.hoisted(() => ({
     workspaceAtom: null as jotai.PrimitiveAtom<Workspace>,
+    staticTabIdAtom: null as jotai.PrimitiveAtom<string>,
+    staticTabAvailable: true,
     metaAtoms: new Map<string, jotai.PrimitiveAtom<any>>(),
     metaValues: new Map<string, Record<string, any>>(),
     settingsAtoms: new Map<string, jotai.PrimitiveAtom<any>>(),
@@ -25,6 +27,7 @@ const mockGlobal = vi.hoisted(() => ({
 vi.mock("@/store/global", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
     mockGlobal.workspaceAtom = jotaiActual.atom(null as Workspace) as jotai.PrimitiveAtom<Workspace>;
+    mockGlobal.staticTabIdAtom = jotaiActual.atom("tab-a") as jotai.PrimitiveAtom<string>;
 
     const getTestMetaAtom = (oref: string, key: string) => {
         const atomKey = `${oref}:${key}`;
@@ -50,6 +53,9 @@ vi.mock("@/store/global", async () => {
     return {
         atoms: {
             workspace: mockGlobal.workspaceAtom,
+            get staticTabId() {
+                return mockGlobal.staticTabAvailable ? mockGlobal.staticTabIdAtom : undefined;
+            },
         },
         getOrefMetaKeyAtom: getTestMetaAtom,
         getSettingsKeyAtom: getTestSettingsAtom,
@@ -75,7 +81,12 @@ vi.mock("@/layout/lib/layoutModelHooks", async () => {
     const jotaiActual = await vi.importActual<typeof import("jotai")>("jotai");
     mockGlobal.layoutModel.focusedNode = jotaiActual.atom(null) as jotai.PrimitiveAtom<any>;
     return {
-        getLayoutModelForStaticTab: () => mockGlobal.layoutModel,
+        getLayoutModelForStaticTab: () => {
+            if (!mockGlobal.staticTabAvailable) {
+                throw new TypeError("Invalid value used as weak map key");
+            }
+            return mockGlobal.layoutModel;
+        },
     };
 });
 
@@ -252,6 +263,7 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
         mockGlobal.metaAtoms.clear();
         mockGlobal.metaValues.clear();
         mockGlobal.settingsAtoms.clear();
+        mockGlobal.staticTabAvailable = true;
         mockGlobal.layoutModel.magnifiedNodeId = undefined;
         mockGlobal.layoutModel.magnifyNodeToggle.mockClear();
         WorkspaceLayoutModel.resetInstance();
@@ -541,6 +553,17 @@ describe("WorkspaceLayoutModel right tool panel state", () => {
 
         model.setRightToolPanelVisible(false);
         expect(model.toggleFocusedRightToolPanelMagnified()).toBe(false);
+    });
+
+    it("magnifies the right tool panel when the workspace renderer has no static tab", () => {
+        setWorkspace("ws-a");
+        const model = WorkspaceLayoutModel.getInstance();
+        model.openRightTool("browser");
+        mockGlobal.staticTabAvailable = false;
+
+        expect(() => model.setRightToolPanelMagnified(true)).not.toThrow();
+        expect(globalStore.get(model.rightToolPanelAtom).magnified).toBe(true);
+        expect(mockGlobal.layoutModel.magnifyNodeToggle).not.toHaveBeenCalled();
     });
 
     it("clears focus when hiding and requires real panel focus after a non-panel reopen for Cmd+M", () => {

@@ -1,13 +1,14 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Model } from "@crest/ai";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
 import type { ToolCallEvent } from "@crest/agent/harness/types";
-import type { ToolCallHook } from "./permissions";
+import { registerApiProvider, resetApiProviders, type Model, type SimpleStreamOptions } from "@crest/ai";
+import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import { buildAgentHarnessHost } from "./harness-factory";
+import type { ToolCallHook } from "./permissions";
 
 function fakeModel(): Model<any> {
     return {
@@ -25,6 +26,28 @@ function fakeModel(): Model<any> {
 }
 
 describe("AgentHarnessHost", () => {
+    afterEach(() => resetApiProviders());
+
+    it("exposes the generated system-prompt manifest on preparation snapshots", async () => {
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model: fakeModel(),
+            promptInputs: { cwd: "/first" },
+            contextFiles: [{ path: "/first/AGENTS.md", content: "Project rule" }],
+        });
+
+        const snapshot = await host.harness.createTurnPreparationSnapshot("hello");
+
+        expect(snapshot.systemPrompt).toContain("Project rule");
+        expect(snapshot.systemPromptMetadata).toMatchObject({
+            text: snapshot.systemPrompt,
+            segments: expect.arrayContaining([
+                expect.objectContaining({ id: "project:/first/AGENTS.md", kind: "project_instruction" }),
+            ]),
+        });
+    });
+
     it("threads the session-context transformer into the harness", async () => {
         const session = await new InMemorySessionRepo().create({});
         const transformSessionContext = vi.fn(async ({ context }) => context);
@@ -38,6 +61,53 @@ describe("AgentHarnessHost", () => {
         await host.harness.createTurnPreparationSnapshot("hello");
 
         expect(transformSessionContext).toHaveBeenCalledTimes(1);
+    });
+
+    it("threads provider-context observation through the host boundary", async () => {
+        const observation = vi.fn();
+        const model = { ...fakeModel(), api: "host-observer-test" } as Model<any>;
+        registerApiProvider({
+            api: model.api,
+            stream: () => new AssistantMessageEventStream(),
+            streamSimple: (activeModel: Model<any>, _context, options?: SimpleStreamOptions) => {
+                const stream = new AssistantMessageEventStream();
+                void (async () => {
+                    await options?.onPayload?.({ exact: true }, activeModel);
+                    const message = {
+                        role: "assistant" as const,
+                        content: [{ type: "text" as const, text: "done" }],
+                        api: activeModel.api,
+                        provider: activeModel.provider,
+                        model: activeModel.id,
+                        stopReason: "stop" as const,
+                        timestamp: Date.now(),
+                        usage: {
+                            input: 0,
+                            output: 0,
+                            cacheRead: 0,
+                            cacheWrite: 0,
+                            totalTokens: 0,
+                            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                        },
+                    };
+                    stream.push({ type: "start", partial: message });
+                    stream.push({ type: "done", reason: "stop", message });
+                })();
+                return stream;
+            },
+        });
+        const session = await new InMemorySessionRepo().create({});
+        const host = buildAgentHarnessHost({
+            session,
+            model,
+            promptInputs: { cwd: "/first" },
+            observeProviderContext: observation,
+        });
+
+        await host.harness.prompt("hello");
+        await Promise.resolve();
+
+        expect(observation).toHaveBeenCalledWith(expect.objectContaining({ payload: { exact: true } }));
     });
 
     it("exposes the current cwd after an execution-context update", async () => {

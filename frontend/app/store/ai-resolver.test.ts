@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { ProviderEntry } from "./ai-catalog";
+import { projectRegistryCatalog, ProviderEntry } from "./ai-catalog";
 import { resolveAIConfig } from "./ai-resolver";
 import { UserConfig } from "./ai-types";
 
@@ -44,9 +44,7 @@ const TEST_CATALOG: ProviderEntry[] = [
         defaultApiType: "google-gemini",
         tokenSecretName: "GOOGLE_AI_KEY",
         icon: "stars-01",
-        models: [
-            { id: "gemini-flash", displayName: "Gemini Flash", capabilities: ["tools"], contextWindow: 1000000 },
-        ],
+        models: [{ id: "gemini-flash", displayName: "Gemini Flash", capabilities: ["tools"], contextWindow: 1000000 }],
     },
     {
         // Aggregator — kind: "aggregator" + empty models[]. Resolver
@@ -108,22 +106,14 @@ describe("resolveAIConfig — happy paths", () => {
     });
 
     it("substitutes the {model} placeholder in the endpoint", () => {
-        const r = resolveAIConfig(
-            { provider: "google", model: "gemini-flash" },
-            BASE_CONFIG,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "google", model: "gemini-flash" }, BASE_CONFIG, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.endpoint).toBe("https://example.com/v1/models/gemini-flash:run");
     });
 
     it("forwards reasoning level when the model supports it", () => {
-        const r = resolveAIConfig(
-            { provider: "openai", model: "gpt-5", reasoning: "high" },
-            BASE_CONFIG,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "openai", model: "gpt-5", reasoning: "high" }, BASE_CONFIG, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.reasoning).toBe("high");
@@ -167,6 +157,30 @@ describe("resolveAIConfig — happy paths", () => {
         if (!r.ok) return;
         expect(r.config.tokensecretname).toBe("");
     });
+
+    it("uses context metadata from the projected registry catalog", () => {
+        const catalog = projectRegistryCatalog(TEST_CATALOG, {
+            openai: {
+                status: "ok",
+                models: [
+                    {
+                        id: "gpt-5",
+                        name: "GPT-5 refreshed",
+                        reasoning: true,
+                        thinkinglevels: ["low", "medium", "high"],
+                        inputmodalities: ["text", "image"],
+                        context: 250_000,
+                    },
+                ],
+                fetchedAt: 1,
+            },
+        });
+
+        const r = resolveAIConfig({ provider: "openai", model: "gpt-5" }, BASE_CONFIG, catalog);
+        expect(r.ok).toBe(true);
+        if (!r.ok) return;
+        expect(r.config.contextwindow).toBe(250_000);
+    });
 });
 
 describe("resolveAIConfig — custom_endpoints", () => {
@@ -194,11 +208,7 @@ describe("resolveAIConfig — custom_endpoints", () => {
     };
 
     it("resolves provider + model from custom_endpoints", () => {
-        const r = resolveAIConfig(
-            { provider: "vllm-local", model: "qwen-coder-32b" },
-            CFG,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "vllm-local", model: "qwen-coder-32b" }, CFG, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.endpoint).toBe("http://localhost:8000/v1/chat/completions");
@@ -215,11 +225,7 @@ describe("resolveAIConfig — custom_endpoints", () => {
                 },
             },
         };
-        const r = resolveAIConfig(
-            { provider: "vllm-local", model: "qwen-coder-32b" },
-            cfg,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "vllm-local", model: "qwen-coder-32b" }, cfg, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.endpoint).toBe("http://localhost:8000/models/qwen-coder-32b/run");
@@ -240,11 +246,7 @@ describe("resolveAIConfig — custom_models", () => {
                 },
             ],
         };
-        const r = resolveAIConfig(
-            { provider: "openai", model: "gpt-experimental" },
-            cfg,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "openai", model: "gpt-experimental" }, cfg, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.model).toBe("gpt-experimental");
@@ -266,11 +268,7 @@ describe("resolveAIConfig — custom_models", () => {
                 },
             ],
         };
-        const r = resolveAIConfig(
-            { provider: "openai", model: "ancient-completions" },
-            cfg,
-            TEST_CATALOG
-        );
+        const r = resolveAIConfig({ provider: "openai", model: "ancient-completions" }, cfg, TEST_CATALOG);
         expect(r.ok).toBe(true);
         if (!r.ok) return;
         expect(r.config.apitype).toBe("openai-chat");

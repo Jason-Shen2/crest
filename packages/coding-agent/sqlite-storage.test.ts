@@ -44,7 +44,7 @@ function sqliteDb(storage: SqliteSessionStorage): SqliteDb {
 }
 
 function historyReadCalls(calls: unknown[][]): unknown[][] {
-	return calls.filter(([sql]) => /SELECT\b.*\bdata\b.*\bFROM entries\b/i.test(String(sql)));
+	return calls.filter(([sql]) => /SELECT\b[\s\S]*\bdata\b[\s\S]*\bFROM entries\b/i.test(String(sql)));
 }
 
 describe("SqliteSessionStorage", () => {
@@ -367,10 +367,29 @@ describe("SqliteSessionStorage", () => {
 		await storage.appendEntry({ type: "message", id: a, parentId: null, timestamp: new Date().toISOString(), message: user("a") });
 		const b = await storage.createEntryId();
 		await storage.appendEntry({ type: "message", id: b, parentId: a, timestamp: new Date().toISOString(), message: assistant("b") });
+		const all = vi.spyOn(sqliteDb(storage), "all");
 
 		const path0 = await storage.getPathToRoot(b);
 		expect(path0.map((e) => e.id)).toEqual([a, b]);
+		expect(historyReadCalls(all.mock.calls)).toHaveLength(1);
 		expect(await storage.getPathToRoot(null)).toEqual([]);
+		storage.close();
+	});
+
+	it("getPathToRoot rejects a missing leaf and a broken parent chain", async () => {
+		const storage = SqliteSessionStorage.create(dbPath(), { cwd: "/c", sessionId: "s1" });
+		await expect(storage.getPathToRoot("missing")).rejects.toThrow(/Entry missing not found/);
+		sqliteDb(storage).run(
+			"INSERT INTO entries (id, parent_id, type, timestamp, target_id, data) VALUES (?, ?, ?, ?, ?, ?)",
+			"child",
+			"missing-parent",
+			"message",
+			new Date().toISOString(),
+			null,
+			JSON.stringify(messageEntry("child", "missing-parent")),
+		);
+
+		await expect(storage.getPathToRoot("child")).rejects.toThrow(/Entry missing-parent not found/);
 		storage.close();
 	});
 

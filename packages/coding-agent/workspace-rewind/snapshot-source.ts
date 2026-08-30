@@ -288,6 +288,13 @@ class CommitBackedWorkspaceCheckpointSnapshotSource implements WorkspaceCheckpoi
         if (discovered.status !== "complete") {
             throw new Error(`Workspace candidate discovery unavailable: ${discovered.reason}`);
         }
+        // A non-Git watcher is an eventual hint stream, not a terminal fence.
+        // An empty drain therefore cannot prove that a just-finished tool made
+        // no changes. Reconcile that ambiguous case; Git workspaces retain the
+        // O(changed paths) status/index path below.
+        if (boundary.kind === "non-git" && discovered.paths.length === 0) {
+            return await this.captureFullReconcile(signal);
+        }
         const captured = await this.captureCandidatePaths(base, metadata.scope, discovered.paths, signal);
         if (captured) return captured;
         if (boundary.kind === "git") {

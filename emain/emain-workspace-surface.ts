@@ -14,6 +14,7 @@ export type WorkspaceSurfaceWindow = {
     activeTabView: WorkspaceSurfaceView;
     allLoadedTabViews: Map<string, WorkspaceSurfaceView>;
     bringToFront: (view: WorkspaceSurfaceView) => void;
+    canShowTerminal?: (view: WorkspaceSurfaceView) => boolean;
 };
 
 type WorkspaceIdentity = Pick<WorkspaceInitOpts, "workspaceId" | "generation">;
@@ -135,8 +136,15 @@ export function applyWorkspaceSurface(
     surface: WorkspaceSurfaceState,
     windowBounds: Rectangle
 ): void {
-    const activeTerminal =
+    const terminalCandidate =
         surface.kind === "terminal" ? window.allLoadedTabViews.get(surface.terminalTabId) : undefined;
+    const activeTerminal =
+        terminalCandidate &&
+        surface.bounds.width > 0 &&
+        surface.bounds.height > 0 &&
+        (window.canShowTerminal?.(terminalCandidate) ?? true)
+            ? terminalCandidate
+            : undefined;
     for (const tabView of window.allLoadedTabViews.values()) {
         if (tabView === activeTerminal) {
             tabView.positionTabOnScreen(surface.bounds);

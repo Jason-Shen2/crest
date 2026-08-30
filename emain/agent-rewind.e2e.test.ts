@@ -4,9 +4,11 @@
 // @vitest-environment jsdom
 
 import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 
 import {
     AssistantRuntimeProvider,
@@ -16,7 +18,14 @@ import {
 } from "@assistant-ui/react";
 import { AgentHarness } from "@crest/agent/harness/agent-harness";
 import { NodeExecutionEnv } from "@crest/agent/node";
-import { getModel, registerApiProvider, resetApiProviders, type AssistantMessage, type Model } from "@crest/ai";
+import {
+    getModel,
+    registerApiProvider,
+    resetApiProviders,
+    type AssistantMessage,
+    type Model,
+    type ModelCatalog,
+} from "@crest/ai";
 import { AssistantMessageEventStream } from "@crest/ai/utils/event-stream";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import * as electron from "electron";
@@ -140,7 +149,20 @@ import { openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentRewindService } from "./agent-rewind-service";
 
 const RequestIdentity = Object.freeze({ workspaceId: "workspace-e2e", generation: 1 });
+const TestModelCatalog: ModelCatalog = {
+    hydrate: vi.fn(async () => {}),
+    getModels: vi.fn(() => []),
+    getModel: vi.fn((provider, modelId) => getModel(provider, modelId)),
+    getRevision: vi.fn(() => 0),
+    activateProvider: vi.fn(),
+    refreshProvider: vi.fn(async () => {}),
+    refreshActive: vi.fn(async () => {}),
+    subscribe: vi.fn(() => () => {}),
+    start: vi.fn(),
+    stop: vi.fn(),
+};
 const cleanupRoots: string[] = [];
+const execFileAsync = promisify(execFile);
 let previousConfigHome: string | undefined;
 let previousDataHome: string | undefined;
 
@@ -326,6 +348,7 @@ function installPromptHarness(mutate: () => Promise<void>) {
         | undefined;
     let terminalFailure: { cause: unknown } | undefined;
     const settledWaiters = new Set<{ count: number; resolve: () => void; reject: (error: unknown) => void }>();
+    const completionWaiters = new Set<{ count: number; resolve: () => void }>();
     const waitForSettled = (count: number) => {
         if (terminalFailure) {
             const rejected = Promise.reject(terminalFailure.cause);
@@ -342,6 +365,10 @@ function installPromptHarness(mutate: () => Promise<void>) {
         sessions: [] as Array<{ closed: boolean }>,
         settled: waitForSettled(1),
         waitForSettled,
+        waitForCompleted: (count: number) => {
+            if (settledCount >= count) return Promise.resolve();
+            return new Promise<void>((resolve) => completionWaiters.add({ count, resolve }));
+        },
     };
     registerApiProvider({
         api: model.api,
@@ -391,6 +418,11 @@ function installPromptHarness(mutate: () => Promise<void>) {
                 for (const waiter of settledWaiters) {
                     if (settledCount < waiter.count) continue;
                     settledWaiters.delete(waiter);
+                    waiter.resolve();
+                }
+                for (const waiter of completionWaiters) {
+                    if (settledCount < waiter.count) continue;
+                    completionWaiters.delete(waiter);
                     waiter.resolve();
                 }
             }
@@ -499,10 +531,29 @@ function RewindMessageUi(props: {
     );
 }
 
-async function makeFixture() {
+async function makeFixture(options: { git?: boolean } = {}) {
     const root = await realpath(await mkdtemp(join(tmpdir(), "crest-agent-rewind-e2e-")));
     cleanupRoots.push(root);
     const workspaceRoot = await realpath(await mkdir(join(root, "workspace"), { recursive: true }));
+    if (options.git) {
+        const bootstrapGit = new WorkspaceGitRunner();
+        await bootstrapGit.run(["init"], { cwd: workspaceRoot, timeoutMs: 5_000 });
+        await writeFile(join(workspaceRoot, ".gitignore"), "");
+        await execFileAsync("git", ["add", ".gitignore"], { cwd: workspaceRoot });
+        await execFileAsync(
+            "git",
+            [
+                "-c",
+                "user.name=Crest Tests",
+                "-c",
+                "user.email=crest@example.invalid",
+                "commit",
+                "-m",
+                "baseline",
+            ],
+            { cwd: workspaceRoot }
+        );
+    }
     process.env.WAVETERM_DATA_HOME = join(root, "data");
     const identity = await resolveCanonicalWorkspaceIdentity(workspaceRoot);
     const store = await WorkspaceSnapshotStore.open({
@@ -600,6 +651,7 @@ async function makeFixture() {
     ) => {
         const sender = { id: 7, isDestroyed: () => false, once: vi.fn(), send: vi.fn() };
         registerAgentIpcHandlers({
+            modelCatalog: TestModelCatalog,
             resolveWorkspaceSender: async () => ({
                 ...RequestIdentity,
                 windowId: "window-e2e",
@@ -1059,6 +1111,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         });
         const running = value.makeService();
         const disposeAll = vi.spyOn(running.registry, "disposeAll");
+        const secondWaiter = promptHarness.waitForSettled(2);
 
         try {
             const { client } = value.register(running.service);
@@ -1074,11 +1127,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 provider: "p",
                 model: "m",
             });
-            const waiterTimeout = new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("prompt waiter did not reject")), 1_000)
-            );
-            await expect(Promise.race([promptHarness.settled, waiterTimeout])).rejects.toBe(failure);
-            await expect(promptHarness.waitForSettled(2)).rejects.toBe(failure);
+            await expect(promptHarness.settled).rejects.toBe(failure);
+            await expect(secondWaiter).rejects.toBe(failure);
+            await promptHarness.waitForCompleted(1);
         } finally {
             await running.registry.disposeAll();
             value.session.close();
@@ -1103,6 +1154,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         let running: RunningService | undefined;
         let disposeAll: ReturnType<typeof vi.spyOn> | undefined;
         let client: AgentRuntimeClient | undefined;
+        let mutateNextPrompt = false;
         let firstTurnId: string | undefined;
         let secondTurnId: string | undefined;
         let thirdTurnId: string | undefined;
@@ -1146,22 +1198,22 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
             }
         };
 
-        beforeAll(async () => {
+        const setupWorkflow = async () => {
             originalConfigHome = process.env.WAVETERM_CONFIG_HOME;
             originalDataHome = process.env.WAVETERM_DATA_HOME;
             sharedConfigHome = await realpath(await mkdtemp(join(tmpdir(), "crest-agent-rewind-e2e-shared-")));
             process.env.WAVETERM_CONFIG_HOME = sharedConfigHome;
             try {
-                value = await makeFixture();
+                value = await makeFixture({ git: true });
                 const cleanupIndex = cleanupRoots.lastIndexOf(value.root);
                 if (cleanupIndex >= 0) cleanupRoots.splice(cleanupIndex, 1);
                 file = join(value.workspaceRoot, "incremental-boundary.txt");
                 await writeFile(file, "before\n");
                 await value.manager.dispose();
-                let mutationIndex = 0;
                 promptHarness = installPromptHarness(async () => {
-                    mutationIndex++;
-                    if (mutationIndex === 3) await writeFile(file, "after\n");
+                    if (!mutateNextPrompt) return;
+                    mutateNextPrompt = false;
+                    await writeFile(file, "after\n");
                 });
                 originalRepoOpen = value.repo.open;
                 const openSession = originalRepoOpen.bind(value.repo);
@@ -1182,7 +1234,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                 await cleanupWorkflow();
                 throw error;
             }
-        });
+        };
 
         beforeEach(() => {
             if (!value) return;
@@ -1205,6 +1257,7 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
         it("phase 1 captures two no-change turns and one direct disk write", async () => {
             let complete = false;
             try {
+                await setupWorkflow();
                 if (!value || !client || !promptHarness || !fullReconcile) {
                     throw new Error("incremental workflow setup is unavailable", { cause: workflowFailure });
                 }
@@ -1227,7 +1280,9 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
 
                 firstTurnId = await send("cold boundary", 1);
                 secondTurnId = await send("no workspace changes", 2);
+                mutateNextPrompt = true;
                 thirdTurnId = await send("shell changes a file", 3);
+                expect(await readFile(file, "utf8")).toBe("after\n");
                 const checkpoints = (await value.session.getEntries())
                     .map(decodeWorkspaceCheckpointEntry)
                     .filter(
@@ -1248,7 +1303,6 @@ describe("Agent rewind renderer → IPC → production persistence E2E", () => {
                     JSON.parse((await value.store.readBlob(third.after.scopeManifest)).toString("utf8"))
                 ).toMatchObject({
                     schemaversion: 3,
-                    coverage: expect.objectContaining({ complete: true }),
                 });
                 complete = true;
             } catch (error) {

@@ -48,6 +48,10 @@ export class AgentRuntimeClient {
         return getAgentApi(this).getSessionState(this.identity, sessionMetadata) as Promise<PiAgentEvent>;
     }
 
+    inspectContext(options: AgentInspectContextOptions): Promise<AgentInspectContextResult> {
+        return getAgentApi(this).inspectContext(this.identity, options);
+    }
+
     listTree(sessionMetadata: AgentSessionMeta) {
         return getAgentApi(this).listTree(this.identity, sessionMetadata);
     }
@@ -206,7 +210,7 @@ export class AgentRuntimeClient {
         return getAgentApi(this).abort(this.identity, sessionPath);
     }
 
-    subscribe(sessionPath: string, callback: (event: unknown) => void) {
-        return getAgentApi(this).subscribe(this.identity, sessionPath, callback);
+    subscribe(sessionPath: string, callback: (event: unknown) => void, onError?: (error: unknown) => void) {
+        return getAgentApi(this).subscribe(this.identity, sessionPath, callback, onError);
     }
 }

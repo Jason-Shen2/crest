@@ -326,17 +326,26 @@ export class SqliteSessionStorage implements SessionStorage<JsonlSessionMetadata
 
 	async getPathToRoot(leafId: string | null): Promise<SessionTreeEntry[]> {
 		if (leafId === null) return [];
-		const path: SessionTreeEntry[] = [];
-		let current = await this.getEntry(leafId);
-		if (!current) throw new SessionError("not_found", `Entry ${leafId} not found`);
-		while (current) {
-			path.unshift(current);
-			if (!current.parentId) break;
-			const parent = await this.getEntry(current.parentId);
-			if (!parent) throw invalidSession(this.location, `Entry ${current.parentId} not found`);
-			current = parent;
+		const rows = this.db.all<{ data: string; parent_id: string | null; depth: number }>(
+			`WITH RECURSIVE branch(data, parent_id, depth) AS (
+				SELECT data, parent_id, 0 FROM entries WHERE id = ?
+				UNION ALL
+				SELECT entries.data, entries.parent_id, branch.depth + 1
+				FROM entries
+				JOIN branch ON entries.id = branch.parent_id
+			)
+			SELECT data, parent_id, depth FROM branch ORDER BY depth`,
+			leafId,
+		);
+		if (rows.length === 0) {
+			throw new SessionError("not_found", `Entry ${leafId} not found`);
 		}
-		return path;
+		const oldest = rows[rows.length - 1];
+		if (oldest.parent_id) {
+			throw invalidSession(this.location, `Entry ${oldest.parent_id} not found`);
+		}
+		rows.reverse();
+		return rows.map((row) => deserializeEntry(row, this.location));
 	}
 
 	async getEntries(): Promise<SessionTreeEntry[]> {

@@ -66,6 +66,24 @@ function makeRewindState(overrides: Partial<AgentRewindSessionStateView> = {}): 
     };
 }
 
+function makeContextSnapshot(sessionPath?: string, modelKey = "openai/gpt-test"): AgentContextSnapshotView {
+    return {
+        schemaVersion: 1,
+        identity: { sessionPath, leafId: null, modelKey, revision: 1 },
+        generatedAt: "2026-08-01T00:00:00Z",
+        lifecycle: "ready",
+        accuracy: "estimated",
+        modelLabel: modelKey,
+        contextWindow: 100_000,
+        outputReserve: 10_000,
+        inputCapacity: 90_000,
+        effectiveInputTokens: 12,
+        remainingInputTokens: 89_988,
+        categories: [],
+        items: [],
+    };
+}
+
 function deferred<T>() {
     let resolve!: (value: T | PromiseLike<T>) => void;
     let reject!: (reason?: unknown) => void;
@@ -77,7 +95,10 @@ function deferred<T>() {
 }
 
 function makeClient() {
-    const subscribers = new Map<string, Array<(event: unknown) => void>>();
+    const subscribers = new Map<
+        string,
+        Array<{ onEvent: (event: unknown) => void; onError?: (error: unknown) => void }>
+    >();
     const unsubscribed: string[] = [];
     const client = {
         createSession: vi.fn(async () => makeSession("/repo/.agent/new.jsonl")),
@@ -90,6 +111,9 @@ function makeClient() {
             followUp: [],
             commands: [],
         })),
+        inspectContext: vi.fn(async (options: AgentInspectContextOptions) => ({
+            snapshot: makeContextSnapshot(options.sessionMetadata?.path, `${options.provider}/${options.model}`),
+        })),
         prepareContextDraft: vi.fn(),
         summarizeContextDraft: vi.fn(),
         discardContextDraft: vi.fn(),
@@ -100,24 +124,31 @@ function makeClient() {
             turnId: "turn-1",
         })),
         abort: vi.fn(async () => {}),
-        subscribe: vi.fn((sessionPath: string, callback: (event: unknown) => void) => {
-            const list = subscribers.get(sessionPath) ?? [];
-            list.push(callback);
-            subscribers.set(sessionPath, list);
-            return () => {
-                unsubscribed.push(sessionPath);
-            };
-        }),
+        subscribe: vi.fn(
+            (sessionPath: string, onEvent: (event: unknown) => void, onError?: (error: unknown) => void) => {
+                const list = subscribers.get(sessionPath) ?? [];
+                list.push({ onEvent, onError });
+                subscribers.set(sessionPath, list);
+                return () => {
+                    unsubscribed.push(sessionPath);
+                };
+            }
+        ),
         emit(sessionPath: string, event: unknown) {
-            for (const callback of subscribers.get(sessionPath) ?? []) {
-                callback(event);
+            for (const subscriber of subscribers.get(sessionPath) ?? []) {
+                subscriber.onEvent(event);
+            }
+        },
+        failSubscription(sessionPath: string, error: unknown) {
+            for (const subscriber of subscribers.get(sessionPath) ?? []) {
+                subscriber.onError?.(error);
             }
         },
         emitCaptured(callback: (event: unknown) => void, event: unknown) {
             callback(event);
         },
         getSubscriber(sessionPath: string, index = 0) {
-            return subscribers.get(sessionPath)?.[index];
+            return subscribers.get(sessionPath)?.[index]?.onEvent;
         },
         unsubscribed,
     };
@@ -125,6 +156,40 @@ function makeClient() {
 }
 
 describe("usePiChat lifecycle", () => {
+    it("inspects pre-session context without minting a session and ignores a stale identity", async () => {
+        const client = makeClient();
+        const first = deferred<AgentInspectContextResult>();
+        client.inspectContext.mockImplementationOnce(() => first.promise);
+        const { result, rerender } = renderHook(
+            ({ model }) =>
+                usePiChat({
+                    client,
+                    executionContext: makeExecutionContext(),
+                    modelSelection: model,
+                }),
+            { initialProps: { model: makeModel() } }
+        );
+
+        expect(client.inspectContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                context: expect.objectContaining({ workspaceId: "workspace-a", sessionPath: undefined }),
+                sessionMetadata: undefined,
+                provider: "openai",
+                model: "gpt-test",
+            })
+        );
+        expect(client.createSession).not.toHaveBeenCalled();
+
+        rerender({ model: { ...makeModel(), model: "gpt-next" } });
+        await waitFor(() => expect(client.inspectContext).toHaveBeenCalledTimes(2));
+        await act(async () => {
+            first.resolve({ snapshot: makeContextSnapshot(undefined, "openai/gpt-test") });
+            await first.promise;
+        });
+
+        await waitFor(() => expect(result.current.contextSnapshot?.identity.modelKey).toBe("openai/gpt-next"));
+    });
+
     it("sends through the injected client with authenticated workspace context and no block id", async () => {
         const client = makeClient();
         const context = makeExecutionContext();
@@ -172,7 +237,58 @@ describe("usePiChat lifecycle", () => {
         await waitFor(() => expect(client.subscribe).toHaveBeenCalledOnce());
 
         expect(client.getSessionState).not.toHaveBeenCalled();
-        expect(client.subscribe).toHaveBeenCalledWith(session.path, expect.any(Function));
+        expect(client.subscribe).toHaveBeenCalledWith(session.path, expect.any(Function), expect.any(Function));
+    });
+
+    it("hydrates an existing session before inspecting its context", async () => {
+        const client = makeClient();
+        const session = makeSession("/repo/.agent/existing.db");
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                initialSession: session,
+                executionContext: makeExecutionContext({ sessionPath: session.path }),
+                modelSelection: makeModel(),
+            })
+        );
+
+        expect(result.current.isHydrating).toBe(true);
+        expect(client.inspectContext).not.toHaveBeenCalled();
+
+        act(() => {
+            client.emit(session.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                commands: [],
+            });
+        });
+
+        await waitFor(() => expect(result.current.isHydrating).toBe(false));
+        await waitFor(() => expect(client.inspectContext).toHaveBeenCalledOnce());
+    });
+
+    it("ends hydration and surfaces an initial subscription failure", async () => {
+        const client = makeClient();
+        const session = makeSession("/repo/.agent/broken.db");
+        const { result } = renderHook(() =>
+            usePiChat({
+                client,
+                initialSession: session,
+                executionContext: makeExecutionContext({ sessionPath: session.path }),
+                modelSelection: makeModel(),
+            })
+        );
+        await waitFor(() => expect(client.subscribe).toHaveBeenCalledOnce());
+
+        act(() => client.failSubscription(session.path, new Error("session unavailable")));
+
+        expect(result.current.isHydrating).toBe(false);
+        expect(result.current.status).toBe("error");
+        expect(result.current.errorMessage).toBe("session unavailable");
     });
 
     it("hydrates and wholesale replaces authoritative rewind state from subscription replay", async () => {
@@ -332,7 +448,9 @@ describe("usePiChat lifecycle", () => {
             { initialProps: { session: sessionA } }
         );
 
-        await waitFor(() => expect(client.subscribe).toHaveBeenCalledWith(sessionA.path, expect.any(Function)));
+        await waitFor(() =>
+            expect(client.subscribe).toHaveBeenCalledWith(sessionA.path, expect.any(Function), expect.any(Function))
+        );
         act(() => {
             client.emit(sessionA.path, {
                 type: "session_state",
@@ -347,7 +465,10 @@ describe("usePiChat lifecycle", () => {
         });
         rerender({ session: sessionB });
 
-        await waitFor(() => expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function)));
+        await waitFor(() =>
+            expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function), expect.any(Function))
+        );
+        expect(result.current.isHydrating).toBe(true);
         expect(client.unsubscribed).toContain(sessionA.path);
         expect(client.getSessionState).not.toHaveBeenCalled();
         expect(result.current.messages).toEqual([]);
@@ -357,6 +478,19 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.status).toBe("idle");
         expect(result.current.errorMessage).toBeUndefined();
         expect(result.current.rewindState.redo).toBeUndefined();
+
+        act(() => {
+            client.emit(sessionB.path, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+                commands: [],
+            });
+        });
+        expect(result.current.isHydrating).toBe(false);
     });
 
     it("explicitly clearing a controlled session resets session-local state and releases its subscription", async () => {
@@ -374,7 +508,9 @@ describe("usePiChat lifecycle", () => {
             { initialProps: { session } }
         );
 
-        await waitFor(() => expect(client.subscribe).toHaveBeenCalledWith(session.path, expect.any(Function)));
+        await waitFor(() =>
+            expect(client.subscribe).toHaveBeenCalledWith(session.path, expect.any(Function), expect.any(Function))
+        );
         act(() => {
             client.emit(session.path, {
                 type: "session_state",
@@ -396,6 +532,7 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.commands).toEqual([]);
         expect(result.current.status).toBe("idle");
         expect(result.current.errorMessage).toBeUndefined();
+        expect(result.current.isHydrating).toBe(false);
     });
 
     it("does not clear a locally minted session when the initial session prop was omitted", async () => {
@@ -418,7 +555,11 @@ describe("usePiChat lifecycle", () => {
         rerender({ marker: 1 });
 
         expect(result.current.sessionMetadata?.path).toBe("/repo/.agent/new.jsonl");
-        expect(client.subscribe).toHaveBeenCalledWith("/repo/.agent/new.jsonl", expect.any(Function));
+        expect(client.subscribe).toHaveBeenCalledWith(
+            "/repo/.agent/new.jsonl",
+            expect.any(Function),
+            expect.any(Function)
+        );
     });
 
     it("ignores a pending send result after the controlled session switches from A to B", async () => {
@@ -441,7 +582,9 @@ describe("usePiChat lifecycle", () => {
             { initialProps: { session: sessionA } }
         );
 
-        await waitFor(() => expect(client.subscribe).toHaveBeenCalledWith(sessionA.path, expect.any(Function)));
+        await waitFor(() =>
+            expect(client.subscribe).toHaveBeenCalledWith(sessionA.path, expect.any(Function), expect.any(Function))
+        );
         let sending!: Promise<void>;
         act(() => {
             sending = result.current.send("pending A");
@@ -449,7 +592,9 @@ describe("usePiChat lifecycle", () => {
         await waitFor(() => expect(client.send).toHaveBeenCalledOnce());
 
         rerender({ session: sessionB });
-        await waitFor(() => expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function)));
+        await waitFor(() =>
+            expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function), expect.any(Function))
+        );
         pendingSend.resolve({ sessionMetadata: sessionA, turnId: "turn-a" });
         await act(async () => {
             await sending;
@@ -670,7 +815,7 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.chat.sessionMetadata).toEqual(createdSession);
         expect(result.current.chat.status).toBe("streaming");
         expect(result.current.chat.errorMessage).toBeUndefined();
-        expect(client.subscribe).toHaveBeenCalledWith(createdSession.path, expect.any(Function));
+        expect(client.subscribe).toHaveBeenCalledWith(createdSession.path, expect.any(Function), expect.any(Function));
     });
 
     it("acknowledges a genuinely different runtime session path once", async () => {
@@ -716,7 +861,7 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.control).toEqual({ metadata: sessionB, revision: 1 });
         expect(result.current.chat.sessionMetadata).toEqual(sessionB);
         expect(result.current.chat.status).toBe("streaming");
-        expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function));
+        expect(client.subscribe).toHaveBeenCalledWith(sessionB.path, expect.any(Function), expect.any(Function));
     });
 
     it("shares one pending session creation across rapid submits", async () => {
@@ -842,6 +987,7 @@ describe("usePiChat lifecycle", () => {
                 commands: [],
             });
         });
+        await waitFor(() => expect(result.current.contextSnapshot).toBeDefined());
         const rendersAfterSnapshot = renderCount;
 
         act(() => activity.setActive(false));
@@ -936,6 +1082,17 @@ describe("usePiChat lifecycle", () => {
         expect(result.current.rewindState.redo).toBeUndefined();
         await waitFor(() => expect(client.getSubscriber(sessionB.path)).toBeDefined());
         act(() => {
+            client.emitCaptured(oldCallback!, {
+                type: "session_state",
+                messages: [],
+                turns: [],
+                status: "idle",
+                steer: [],
+                followUp: [],
+            });
+        });
+        expect(result.current.isHydrating).toBe(true);
+        act(() => {
             client.emit(sessionB.path, {
                 type: "session_state",
                 messages: [{ role: "user", content: [{ type: "text", text: `snapshot:${sessionB.path}` }] }],
@@ -951,6 +1108,7 @@ describe("usePiChat lifecycle", () => {
                 }),
             });
         });
+        expect(result.current.isHydrating).toBe(false);
 
         act(() => {
             client.emitCaptured(oldCallback!, {

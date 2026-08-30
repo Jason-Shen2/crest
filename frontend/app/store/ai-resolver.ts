@@ -18,15 +18,7 @@
 //   6. Compose ResolvedAIConfig; return as a discriminated union with
 //      typed error codes for the UI to switch on.
 
-import {
-    CATALOG,
-    ProviderEntry,
-    ModelEntry,
-    ApiType,
-    Capability,
-    resolveApiType,
-    resolveEndpoint,
-} from "./ai-catalog";
+import { ApiType, Capability, CATALOG, ModelEntry, ProviderEntry, resolveApiType, resolveEndpoint } from "./ai-catalog";
 import {
     AgentSelection,
     ResolvedAIConfig,
@@ -69,8 +61,7 @@ export function resolveAIConfig(
     // built-ins).  Result is a tuple of (provider data, isCustom) so
     // the rest of the resolver can branch on origin where needed.
     const catalogProvider = catalog.find((p) => p.id === effective.provider);
-    const customEndpoint =
-        userConfig.custom_endpoints?.[effective.provider] as UserCustomEndpoint | undefined;
+    const customEndpoint = userConfig.custom_endpoints?.[effective.provider] as UserCustomEndpoint | undefined;
     if (!catalogProvider && !customEndpoint) {
         return {
             ok: false,
@@ -99,27 +90,10 @@ export function resolveAIConfig(
         );
         if (custom) model = viewFromCustomModel(custom, catalogProvider, customEndpoint);
     }
-    // Catalog-provider-defaults fallback. Two cases this serves:
-    //
-    //   1. kind: "aggregator" (OpenRouter et al) — catalog.models[] is
-    //      empty by design, live /models is authoritative. The id the
-    //      user picked came from the live list; we use provider defaults
-    //      for endpoint/apitype since aggregators don't vary those per
-    //      model.
-    //
-    //   2. kind: "direct" (OpenAI, Anthropic, Google) — user picked a
-    //      newer model the curated catalog hasn't picked up yet but
-    //      that's in the provider's live /models response. Same path:
-    //      provider defaults for endpoint/apitype work because direct
-    //      providers also don't vary those per model (apiTypeOverride
-    //      on ModelEntry is the explicit per-model escape hatch, and
-    //      it only applies when the model IS in catalog.models).
-    //
-    // Capabilities / contextWindow default to the empty shape — the
-    // backend treats them as "unknown" rather than failing. UX win in
-    // Phase D: the chip / picker shows live name+context, the resolver
-    // synthesizes a request, the agent runs. Catalog and live now use
-    // the same fallback chain — no more "configured but unsendable".
+    // Provider-default fallback for a provisional ID discovered only
+    // through the credential-scoped /models response. The renderer
+    // deliberately leaves capabilities and context unknown. Electron
+    // performs its own authoritative catalog lookup before execution.
     if (!model && catalogProvider) {
         model = viewFromCatalogProviderDefaults(effective.model, catalogProvider);
     }
@@ -154,10 +128,7 @@ export function resolveAIConfig(
     // model doesn't support it (rather than error) so the UI can
     // safely persist `reasoning` on a selection and have it survive a
     // model switch.
-    const reasoning =
-        effective.reasoning && model.capabilities.includes("reasoning")
-            ? effective.reasoning
-            : undefined;
+    const reasoning = effective.reasoning && model.capabilities.includes("reasoning") ? effective.reasoning : undefined;
 
     // Step 5 — compose.  Token literal wins over secret name when
     // both are set (testing path).  Only one of the two is forwarded
@@ -173,8 +144,8 @@ export function resolveAIConfig(
         ...(creds.token
             ? { token: creds.token }
             : creds.tokensecretname != null
-                ? { tokensecretname: creds.tokensecretname }
-                : {}),
+              ? { tokensecretname: creds.tokensecretname }
+              : {}),
     };
     return { ok: true, config };
 }
@@ -221,10 +192,7 @@ function viewFromCustomEndpointModel(
     };
 }
 
-function viewFromCatalogProviderDefaults(
-    modelId: string,
-    provider: ProviderEntry
-): ResolvedModelView {
+function viewFromCatalogProviderDefaults(modelId: string, provider: ProviderEntry): ResolvedModelView {
     return {
         id: modelId,
         endpoint: provider.defaultEndpoint.replace("{model}", modelId),

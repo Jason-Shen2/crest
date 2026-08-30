@@ -240,6 +240,7 @@ declare global {
         respondWorkspaceClose: (response: WorkspaceCloseResponse) => void; // workspace-close-response
         onWorkspaceCloseFinalize: (callback: (finalize: WorkspaceCloseFinalize) => void) => () => void; // workspace-close-finalize
         setWorkspaceSurface: (surface: WorkspaceSurfaceState) => void; // workspace-surface
+        setWorkspaceOverlayVisible: (visible: boolean) => void; // workspace-overlay-visible
         onTerminalSurfaceStatus: (callback: (status: TerminalSurfaceStatus) => void) => () => void; // terminal-surface-status
         onWaveInit: (callback: (initOpts: WaveInitOpts) => void) => void; // wave-init
         onBuilderInit: (callback: (initOpts: BuilderInitOpts) => void) => void; // builder-init
@@ -271,6 +272,9 @@ declare global {
         // boundary, where the concrete type is already in scope.
         ai: {
             listProviderModels: (input: ListProviderModelsInput) => Promise<AiProviderModelInfo[]>;
+            listRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
+            refreshRegistryModels: (provider: string) => Promise<RegistryModelInfo[]>;
+            onRegistryModelsRefreshed: (callback: (providerId: string) => void) => () => void;
             getUserConfig: () => Promise<AIUserConfigReadResult>;
             writeUserConfig: (cfg: unknown) => Promise<void>;
         };
@@ -289,6 +293,10 @@ declare global {
                 context: WorkspaceAgentRequestContext,
                 sessionMetadata: AgentSessionMeta
             ) => Promise<unknown>; // agent:get-session-state
+            inspectContext: (
+                context: WorkspaceAgentRequestContext,
+                options: AgentInspectContextOptions
+            ) => Promise<AgentInspectContextResult>; // agent:inspect-context
             listTree: (
                 context: WorkspaceAgentRequestContext,
                 sessionMetadata: AgentSessionMeta
@@ -435,7 +443,8 @@ declare global {
             subscribe: (
                 context: WorkspaceAgentRequestContext,
                 sessionPath: string,
-                callback: (event: unknown) => void
+                callback: (event: unknown) => void,
+                onError?: (error: unknown) => void
             ) => () => void;
         };
         agentObservability: {
@@ -557,6 +566,21 @@ declare global {
         inputmodalities?: string[];
         tokenizer?: string;
         ismoderated?: boolean;
+        reasoning?: boolean;
+        supportstools?: boolean;
+    };
+
+    type RegistryModelInfo = {
+        id: string;
+        name?: string;
+        reasoning: boolean;
+        supportstools?: boolean;
+        thinkinglevels: string[];
+        inputmodalities: string[];
+        context?: number;
+        maxoutputtokens?: number;
+        promptcost?: number;
+        completioncost?: number;
     };
 
     type AgentContextSourceKind = "turn" | "session";
@@ -737,6 +761,68 @@ declare global {
         /** Ordered composer references. Main validates ownership and representation. */
         contextAttachments?: AgentContextAttachmentDraftInput[];
     };
+
+    type AgentInspectContextOptions = Omit<AgentSendOptions, "text" | "images" | "contextAttachments"> & {
+        sessionMetadata?: AgentSessionMeta;
+    };
+
+    type AgentContextSnapshotLifecycleView =
+        | "ready"
+        | "in_use"
+        | "waiting_for_tool"
+        | "updating"
+        | "out_of_date"
+        | "unavailable";
+    type AgentContextSnapshotAccuracyView = "exact" | "estimated" | "unavailable";
+    type AgentContextSnapshotCategoryView = "agent_instructions" | "tools" | "conversation" | "added_context";
+    type AgentContextSnapshotItemView = {
+        id: string;
+        category: AgentContextSnapshotCategoryView;
+        kind: string;
+        title: string;
+        preview: string;
+        content?: unknown;
+        tokens?: number;
+        tokenAccuracy: "estimated" | "unavailable";
+        source: {
+            entryIds?: string[];
+            path?: string;
+            skillName?: string;
+            toolName?: string;
+            toolCallId?: string;
+            pairedResultEntryId?: string;
+            coveredEntryIds?: string[];
+            attachmentEntryId?: string;
+            artifactEntryId?: string;
+        };
+        children?: AgentContextSnapshotItemView[];
+        diagnostic?: string;
+    };
+    type AgentContextSnapshotView = {
+        schemaVersion: 1;
+        identity: {
+            sessionPath?: string;
+            sessionId?: string;
+            leafId: string | null;
+            modelKey: string;
+            revision: number;
+        };
+        generatedAt: string;
+        lifecycle: AgentContextSnapshotLifecycleView;
+        accuracy: AgentContextSnapshotAccuracyView;
+        modelLabel: string;
+        contextWindow: number;
+        outputReserve: number;
+        inputCapacity: number;
+        effectiveInputTokens?: number;
+        remainingInputTokens?: number;
+        requestOverheadTokens?: number;
+        attributionDeltaTokens?: number;
+        categories: Array<{ category: AgentContextSnapshotCategoryView; tokens?: number; itemCount: number }>;
+        items: AgentContextSnapshotItemView[];
+        diagnostic?: string;
+    };
+    type AgentInspectContextResult = { snapshot: AgentContextSnapshotView };
 
     type AgentCommandSource = "builtin" | "skill" | "prompt";
 

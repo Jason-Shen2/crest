@@ -307,7 +307,7 @@ async function readRawTreeEntry(
 }
 
 describe("Workspace checkpoint snapshot source", () => {
-    it("uses candidate-only capture after the one-time non-Git baseline", async () => {
+    it("full-reconciles when a non-Git watcher has not delivered the terminal write yet", async () => {
         const root = await mkdtemp(join(tmpdir(), "crest-candidate-source-"));
         TemporaryRoots.push(root);
         const workspaceRoot = join(root, "workspace");
@@ -336,11 +336,10 @@ describe("Workspace checkpoint snapshot source", () => {
         const before = await source.readHead();
 
         await writeFile(join(workspaceRoot, "file.txt"), "after");
-        feed.record("file.txt");
         const after = await source.synchronizeExternal();
 
         expect(after.ref.tree).not.toBe(before.ref.tree);
-        expect(fullReconcile).toHaveBeenCalledOnce();
+        expect(fullReconcile).toHaveBeenCalledTimes(2);
         await source.dispose?.();
     });
 
@@ -457,6 +456,7 @@ describe("Workspace checkpoint snapshot source", () => {
         };
 
         await writeFile(join(workspaceRoot, "a.txt"), "a-v1");
+        feed.record("a.txt");
         const after = await source.synchronizeExternal();
         const state = await store.readPathState(after.ref, "a.txt");
 
@@ -536,6 +536,7 @@ describe("Workspace checkpoint snapshot source", () => {
         };
 
         await writeFile(join(workspaceRoot, "a.txt"), "a-v1");
+        feed.record("a.txt");
         await expect(source.synchronizeExternal()).rejects.toThrow(/changed during candidate capture/i);
         await expect(source.readHead()).resolves.toMatchObject({ ref: { id: before.ref.id } });
         await source.dispose?.();

@@ -10,8 +10,8 @@
 //   - anthropic-messages (Anthropic, header + x-api-key)
 //   - google-gemini (?key=... query string, displayName/inputTokenLimit shape)
 
-import { getModels, getSupportedThinkingLevels } from "@crest/ai/models";
-import { getCapabilityOverlay } from "../models-dev-overlay";
+import type { ModelCatalog } from "@crest/ai/model-catalog";
+import { getSupportedThinkingLevels } from "@crest/ai/models";
 import type { Api, Model } from "@crest/ai/types";
 import { getSecret } from "./secrets";
 
@@ -32,17 +32,14 @@ export interface ProviderModelInfo {
     inputmodalities?: string[];
     tokenizer?: string;
     ismoderated?: boolean;
-    // Derived from OpenRouter's supported_parameters array. These are the
-    // only authoritative *capability* facts the live /models response
-    // carries — without them aggregator rows fall back to a stale static
-    // snapshot. true = the model accepts that parameter; absent = the
-    // endpoint didn't report it (non-OpenRouter providers).
+    // Diagnostic hints from OpenRouter's supported_parameters array.
+    // They do not update the shared capability catalog.
     reasoning?: boolean;
     supportstools?: boolean;
 }
 
 // Capability-rich model metadata sourced from the authoritative
-// emain/ai model registry (models.generated.ts). Unlike ProviderModelInfo
+// Shared Electron model catalog. Unlike ProviderModelInfo
 // (a thin /models HTTP echo), this carries the same reasoning / input
 // modality / thinking-level facts the *backend* uses when actually
 // building a request — so the picker can show capabilities that match
@@ -55,6 +52,10 @@ export interface RegistryModelInfo {
     id: string;
     name?: string;
     reasoning: boolean;
+    // Optional because the shared Model shape does not yet expose this
+    // fact for every provider. Consumers preserve an existing renderer
+    // fact when it is absent.
+    supportstools?: boolean;
     // pi ThinkingLevels the model actually accepts ("off" filtered out).
     // Empty when reasoning is false.
     thinkinglevels: string[];
@@ -65,48 +66,22 @@ export interface RegistryModelInfo {
     completioncost?: number;
 }
 
-function toRegistryModelInfo(provider: string, model: Model<Api>): RegistryModelInfo {
-    // Static snapshot baseline.
-    const base: RegistryModelInfo = {
+function toRegistryModelInfo(model: Model<Api>): RegistryModelInfo {
+    return {
         id: model.id,
         name: model.name,
         reasoning: !!model.reasoning,
         thinkinglevels: model.reasoning ? getSupportedThinkingLevels(model).filter((lvl) => lvl !== "off") : [],
-        inputmodalities: model.input ?? [],
+        inputmodalities: [...(model.input ?? [])],
         context: model.contextWindow,
         maxoutputtokens: model.maxTokens,
         promptcost: model.cost?.input,
         completioncost: model.cost?.output,
     };
-    // Overlay fresher capability facts from models.dev when available.
-    // Each field is only overwritten when models.dev actually carries it,
-    // so missing entries keep the static snapshot value. thinkinglevels
-    // is intentionally NOT overlaid: the exact accepted levels come from
-    // the registry's thinkingLevelMap (request-building authority), which
-    // models.dev doesn't model — we only refresh whether reasoning is on.
-    const ov = getCapabilityOverlay(provider, model.id);
-    if (ov) {
-        if (ov.reasoning !== undefined) {
-            base.reasoning = ov.reasoning;
-            if (!ov.reasoning) base.thinkinglevels = [];
-        }
-        if (ov.inputmodalities !== undefined) base.inputmodalities = ov.inputmodalities;
-        if (ov.context !== undefined) base.context = ov.context;
-        if (ov.maxoutputtokens !== undefined) base.maxoutputtokens = ov.maxoutputtokens;
-        if (ov.promptcost !== undefined) base.promptcost = ov.promptcost;
-        if (ov.completioncost !== undefined) base.completioncost = ov.completioncost;
-    }
-    return base;
 }
 
-// listRegistryModels — return the authoritative registry models for a
-// provider (e.g. all of OpenRouter's baked-in models with correct
-// reasoning/input metadata). Returns [] for providers not present in the
-// registry (direct providers the renderer already covers via its own
-// catalog, or unknown custom endpoints). No network call.
-export function listRegistryModels(provider: string): RegistryModelInfo[] {
-    const models = getModels(provider as never) as Model<Api>[];
-    return models.map((m) => toRegistryModelInfo(provider, m));
+export function listRegistryModels(catalog: ModelCatalog, provider: string): RegistryModelInfo[] {
+    return catalog.getModels(provider).map(toRegistryModelInfo);
 }
 
 export interface ListProviderModelsInput {

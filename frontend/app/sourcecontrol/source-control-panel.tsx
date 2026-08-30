@@ -4,6 +4,7 @@
 import { workspaceDirAtom } from "@/app/fileexplorer/file-explorer-atoms";
 import { getFileIcon } from "@/app/fileexplorer/file-icon";
 import { Icon } from "@/app/icon/Icon";
+import { WorkspaceModalOverlay } from "@/app/modals/workspace-modal-overlay";
 import { useWorkspaceTopTabController } from "@/app/workspace/top-tab-controller-context";
 import { cn } from "@/util/util";
 import { useAtom, useAtomValue } from "jotai";
@@ -550,32 +551,35 @@ function DiscardDialog({
 }) {
     if (!pending) return null;
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
-            <div className="w-[90%] max-w-[400px] rounded-lg border border-border bg-panel p-5 shadow-2xl">
-                <h3 className="text-[14px] font-semibold text-foreground">Discard changes?</h3>
-                <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
-                    {pending.scope === "all"
-                        ? `This will discard ${pending.label} and cannot be undone.`
-                        : `Discard changes in "${pending.label}"? This cannot be undone.`}
-                </p>
-                <div className="mt-4 flex justify-end gap-2">
-                    <button
-                        type="button"
-                        onClick={onCancel}
-                        className="cursor-pointer rounded px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
-                    >
-                        Cancel
-                    </button>
-                    <button
-                        type="button"
-                        onClick={onConfirm}
-                        className="cursor-pointer rounded bg-rose-600/90 px-3 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-rose-600"
-                    >
-                        Discard
-                    </button>
+        <>
+            <WorkspaceModalOverlay visible />
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
+                <div className="w-[90%] max-w-[400px] rounded-lg border border-border bg-panel p-5 shadow-2xl">
+                    <h3 className="text-[14px] font-semibold text-foreground">Discard changes?</h3>
+                    <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">
+                        {pending.scope === "all"
+                            ? `This will discard ${pending.label} and cannot be undone.`
+                            : `Discard changes in "${pending.label}"? This cannot be undone.`}
+                    </p>
+                    <div className="mt-4 flex justify-end gap-2">
+                        <button
+                            type="button"
+                            onClick={onCancel}
+                            className="cursor-pointer rounded px-3 py-1.5 text-[12px] text-muted-foreground transition-colors hover:bg-fg-overlay-2 hover:text-foreground"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onConfirm}
+                            className="cursor-pointer rounded bg-rose-600/90 px-3 py-1.5 text-[12px] font-medium text-foreground transition-colors hover:bg-rose-600"
+                        >
+                            Discard
+                        </button>
+                    </div>
                 </div>
             </div>
-        </div>
+        </>
     );
 }
 

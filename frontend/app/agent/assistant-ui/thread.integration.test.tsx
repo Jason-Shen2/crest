@@ -66,11 +66,17 @@ const messages: ThreadMessageLike[] = [
 ];
 
 const RuntimeProvider: FC<
-    PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo; isRunning?: boolean }>
-> = ({ children, composerQuote, messages: runtimeMessages = messages, isRunning }) => {
+    PropsWithChildren<{
+        messages?: ThreadMessageLike[];
+        composerQuote?: QuoteInfo;
+        isRunning?: boolean;
+        isLoading?: boolean;
+    }>
+> = ({ children, composerQuote, messages: runtimeMessages = messages, isRunning, isLoading = false }) => {
     const runtime = useExternalStoreRuntime<ThreadMessageLike>({
         messages: runtimeMessages,
         isRunning,
+        isLoading,
         convertMessage: (message) => message,
         onNew: async () => {},
     } satisfies ExternalStoreAdapter<ThreadMessageLike>);
@@ -103,6 +109,14 @@ function renderThreadWithComposerQuote(props?: ThreadProps): string {
 function renderEmptyThread(props?: ThreadProps): string {
     return renderToStaticMarkup(
         <RuntimeProvider messages={[]}>
+            <Thread {...props} />
+        </RuntimeProvider>
+    );
+}
+
+function renderLoadingThread(props?: ThreadProps): string {
+    return renderToStaticMarkup(
+        <RuntimeProvider messages={[]} isLoading>
             <Thread {...props} />
         </RuntimeProvider>
     );
@@ -166,6 +180,14 @@ describe("Thread assistant-ui integration", () => {
         expect(onOpenTurnDiff).toHaveBeenCalledWith("turn-card", "frontend/app/card.tsx");
         expect(openReview).toHaveBeenCalledWith("turn-card");
         expect(openMutation).toHaveBeenCalledWith("turn-card");
+    });
+
+    it("renders a loading state instead of the welcome view while history hydrates", () => {
+        const html = renderLoadingThread();
+
+        expect(html).toContain('data-slot="aui_thread-loading"');
+        expect(html).toContain("Loading conversation…");
+        expect(html).not.toContain("How can I help you today?");
     });
 
     it("discovers /session and /info while keeping /resume hidden", () => {
@@ -812,17 +834,16 @@ describe("Thread assistant-ui integration", () => {
     it("renders local context usage ring in the composer action row", () => {
         const html = renderThread({
             modelLabel: "MiniMax-M3",
-            modelContextWindow: 128000,
-            contextUsage: {
-                inputTokens: 72000,
-                cachedInputTokens: 12000,
-                outputTokens: 6000,
-                totalTokens: 90000,
+            contextDisplayValue: {
+                effectiveInputTokens: 72000,
+                inputCapacity: 128000,
+                accuracy: "estimated",
+                lifecycle: "ready",
             },
         } as ThreadProps);
 
         expect(html).toContain("aui-context-display-ring");
-        expect(html).toContain("70%");
+        expect(html).toContain("56%");
         expect(html).toContain("MiniMax-M3");
         expect(html).toContain("aui-composer-left-actions");
         expect(html).toContain("aui-composer-right-actions");

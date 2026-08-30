@@ -383,6 +383,23 @@ overlap 和 exact restore 矩阵，且没有 full-reconcile fallback；真实 Cr
 - 外部编辑器和后台进程具备与 Crest Session 相同的 owner 证明；
 - 全仓 TypeScript baseline 已闭合。
 
+### 15.1 合入 main 前复审补充（2026-08-30）
+
+完整 E2E 串行运行暴露了一个只在热路径出现的边界：Non-Git Workspace 的 Parcel/FSEvents callback
+是异步 hint，文件已经写完时，terminal capture 仍可能先于 callback 入队。空 hint 因此不能证明“本 turn
+没有文件变化”。最终没有引入 watcher cursor、固定 sleep 或新的协调层，而是采用最小安全降级：
+
+- Git Workspace 继续使用同步 Git evidence、watcher hint 和 candidate capture，三 turn E2E 断言不发生 full reconcile；
+- Non-Git Workspace 仅在实际获得 writer lease 且 terminal hint 为空时 full reconcile；只读或没有写工具的 turn
+  仍直接复用 workspace head；
+- 独立回归测试证明“磁盘已变化但 watcher 尚未投递”不会再提交空 checkpoint。
+
+复审还确认了一个长期存储边界：`refs/crest/workspace-head` 的 mutation ancestry 会保留历史 tree/blob 可达性。
+删除 Session owner 可以释放 Session 级引用，但不保证立即回收仍可从 workspace head 祖先到达的内容。当前 5 GB
+soft quota 会 fail closed，避免无界占盘；但 cleanup 不能承诺长期活跃 Workspace 的旧内容都可回收。这里暂不引入
+第二套 mutation log 或重写历史。只有 production 生命周期数据证明它成为实际配额问题时，才设计“路径 mutation
+元数据与内容保留解耦”的可迁移格式，并同时证明 pending restore、Redo 和 owner retention 不会失去所需 snapshot。
+
 未来只有在 production profiling 证明现有 commit-history 查询、Git metadata 或 writer serialization 是实际瓶颈时，
 才考虑增加可从 commit chain 重建的 cache。任何新状态都必须回答两个问题：它是否真的必要，以及它损坏时能否
 完全从唯一 authority 重建。否则不进入核心架构。

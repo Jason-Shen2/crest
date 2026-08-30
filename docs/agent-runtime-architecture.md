@@ -268,9 +268,9 @@ Pi's `NodeExecutionEnv.cwd: string` is a public mutable field (`emain/agent/harn
 
 ```ts
 interface AgentHarnessHost {
-    readonly harness: AgentHarness;
-    /** Update mutable workspace state. Call before each send if anything changed. */
-    update(inputs: SystemPromptInputs): void;
+  readonly harness: AgentHarness;
+  /** Update mutable workspace state. Call before each send if anything changed. */
+  update(inputs: SystemPromptInputs): void;
 }
 ```
 
@@ -454,6 +454,23 @@ event log or separate Path MVCC database is added. See
 [`2026-08-08-agent-workspace-rewind-shadow-git-design.md`](superpowers/specs/2026-08-08-agent-workspace-rewind-shadow-git-design.md).
 This paragraph records the accepted successor design, not current runtime
 behavior.
+
+### 7.12 Effective-context inspection is runtime-owned and read-only
+
+The Context Inspector describes the input projection that the current Agent will carry into its next model call. It is not reconstructed from cumulative provider usage and it is not a second transcript browser.
+
+The inspection pipeline has two observation levels:
+
+- `packages/coding-agent/context/inspector.ts` builds the semantic inventory from the system-prompt manifest, tool definitions, the effective active-branch messages, and explicitly added context. This preserves provenance and stable categories even when provider rendering later changes message shape.
+- `AgentHarness` observes the final provider-ready request after model-specific transforms. When the provider exposes an exact counter, that result is authoritative; otherwise the inspector reports an estimate and keeps unattributed request overhead or discrepancy explicit instead of rescaling semantic categories.
+
+`AgentSessionRuntime` owns the live snapshot and its monotonically increasing revision. It publishes lifecycle changes (`in_use`, `waiting_for_tool`, `updating`, `out_of_date`, or `unavailable`) without allowing inspection failures to fail a send, tool execution, or session persistence. The same snapshot is carried through session state and live runtime events, so the context ring and right-panel inspector share one numerator, denominator, lifecycle, and accuracy source.
+
+`agent:inspect-context` supports two paths. An existing managed session asks its runtime for the current snapshot. Before a session exists, the IPC handler builds a stateless preview with an in-memory session repository; opening the panel therefore exposes instructions and tools without creating a session or writing history.
+
+The renderer stores this data in a transient atom rather than persisted workspace state. Every publish is checked against workspace generation, session generation/path, model key, active leaf, and snapshot revision. A model or session switch clears the old identity immediately, and late responses are discarded. A refresh failure may retain only the same-identity snapshot, marked `out_of_date`.
+
+The first release is intentionally read-only. A future management feature can alter the next-call projection while preserving transcript history, but it must extend this provenance and identity model rather than deleting durable messages from the inspector UI.
 
 ---
 

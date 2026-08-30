@@ -3,6 +3,8 @@
 // @vitest-environment jsdom
 
 import { ToastModel } from "@/app/notifications/toast-model";
+import { registryModelsMapAtom } from "@/app/store/ai-registry-models";
+import { aiUserConfigAtom } from "@/app/store/ai-user-config";
 import { globalStore } from "@/app/store/jotaiStore";
 import { WorkspaceAgentModel } from "@/app/workspace/workspace-agent-model";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -57,6 +59,26 @@ const composerProps = vi.hoisted(() => ({
     setText: vi.fn(),
 }));
 
+const modelPickerProps = vi.hoisted(() => ({
+    latest: null as any,
+}));
+
+const modalMocks = vi.hoisted(() => ({
+    pushModal: vi.fn(),
+}));
+
+const layoutProps = vi.hoisted(() => ({ openRightTool: vi.fn() }));
+const catalogMocks = vi.hoisted(() => ({ fetchRegistryModels: vi.fn() }));
+
+vi.mock("@/app/store/ai-registry-models", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@/app/store/ai-registry-models")>()),
+    fetchRegistryModels: catalogMocks.fetchRegistryModels,
+}));
+
+vi.mock("@/app/workspace/workspace-layout-model", () => ({
+    WorkspaceLayoutModel: { getInstance: () => layoutProps },
+}));
+
 vi.mock("./agent-chat-host", () => ({
     AgentChatHost: (props: any) => {
         hostProps.latest = props;
@@ -98,6 +120,19 @@ vi.mock("@/app/view/cmdblock/session-selector", () => ({
     SessionSelector: (props: any) => {
         selectorProps.latest = props;
         return null;
+    },
+}));
+
+vi.mock("@/app/view/cmdblock/model-picker-popover", () => ({
+    ModelPickerInline: (props: any) => {
+        modelPickerProps.latest = props;
+        return null;
+    },
+}));
+
+vi.mock("@/app/store/modalmodel", () => ({
+    modalsModel: {
+        pushModal: modalMocks.pushModal,
     },
 }));
 
@@ -433,11 +468,147 @@ afterEach(async () => {
     quotaDialogProps.latest = null;
     hostProps.agentSubmit.mockReset();
     composerProps.setText.mockReset();
+    modelPickerProps.latest = null;
+    modalMocks.pushModal.mockReset();
+    layoutProps.openRightTool.mockClear();
+    catalogMocks.fetchRegistryModels.mockReset();
+    globalStore.set(registryModelsMapAtom, {});
+    globalStore.set(aiUserConfigAtom, { status: "loading", config: null });
     vi.useRealTimers();
     await WorkspaceAgentModel.resetInstances();
 });
 
 describe("AgentContent", () => {
+    it("uses the projected catalog for model labels, context, and picker data", async () => {
+        const model = makeModel();
+        globalStore.set(aiUserConfigAtom, {
+            status: "ok",
+            config: {
+                providers: { openai: { tokensecretname: "OPENAI_API_KEY" } },
+                default: { provider: "openai", model: "gpt-5" },
+            },
+        });
+        globalStore.set(registryModelsMapAtom, {
+            openai: {
+                status: "ok",
+                models: [
+                    {
+                        id: "gpt-5",
+                        name: "GPT-5 Fresh",
+                        reasoning: true,
+                        thinkinglevels: ["low", "medium", "high"],
+                        inputmodalities: ["text", "image"],
+                        context: 250_000,
+                    },
+                ],
+                fetchedAt: 1,
+            },
+        });
+
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        await waitFor(() => expect(catalogMocks.fetchRegistryModels).toHaveBeenCalledWith("openai"));
+        expect(threadProps.latest.modelLabel).toBe("GPT-5 Fresh");
+        expect(modelPickerProps.latest.catalog[0].models[0]).toMatchObject({
+            id: "gpt-5",
+            displayName: "GPT-5 Fresh",
+            contextWindow: 250_000,
+        });
+    });
+
+    it("opens Settings on Models and closes the model picker from Add", () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        act(() => hostProps.latest.onOpenModelPicker());
+        expect(modelPickerProps.latest.open).toBe(true);
+
+        act(() => modelPickerProps.latest.onOpenConfigFile());
+
+        expect(modelPickerProps.latest.open).toBe(false);
+        expect(modalMocks.pushModal).toHaveBeenCalledWith("SettingsModal", { initialTab: "models" });
+    });
+
+    it("opens the Context right tool through the composer ring callback", () => {
+        const model = makeModel();
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+
+        act(() => threadProps.latest.onOpenContextInspector());
+        expect(layoutProps.openRightTool).toHaveBeenCalledWith("context");
+    });
+
+    it("publishes only the host context snapshot matching the current renderer identity", () => {
+        const model = makeModel();
+        model.selectModel({ provider: "openai", model: "gpt-test", reasoning: "low" });
+        render(
+            <Provider store={globalStore}>
+                <AgentContent
+                    model={model}
+                    client={{} as any}
+                    executionContext={{ workspaceId: "workspace-1", workspaceDir: "/repo", environment: {} }}
+                />
+            </Provider>
+        );
+        const inspection = globalStore.get(model.contextSnapshotAtom);
+        expect(inspection?.status).toBe("loading");
+        const persistedStateBeforeSnapshot = globalStore.get(model.stateAtom);
+        const snapshot = {
+            schemaVersion: 1,
+            identity: {
+                leafId: null,
+                modelKey: inspection.identity.modelKey,
+                revision: 1,
+            },
+            generatedAt: "2026-08-01T00:00:00Z",
+            lifecycle: "ready",
+            accuracy: "estimated",
+            modelLabel: inspection.identity.modelKey,
+            contextWindow: 100_000,
+            outputReserve: 10_000,
+            inputCapacity: 90_000,
+            effectiveInputTokens: 20,
+            remainingInputTokens: 89_980,
+            categories: [],
+            items: [],
+        } satisfies AgentContextSnapshotView;
+
+        act(() => {
+            hostProps.latest.onStateChange({
+                status: "idle",
+                queuedMessages: [],
+                commands: [],
+                contextSnapshot: snapshot,
+            });
+        });
+
+        expect(globalStore.get(model.contextSnapshotAtom)).toMatchObject({ status: "ready", snapshot });
+        expect(globalStore.get(model.stateAtom)).toEqual(persistedStateBeforeSnapshot);
+    });
+
     it("routes card file clicks to immutable turn diff without changing the ordinary file callback", () => {
         const onOpenFile = vi.fn();
         const onOpenTurnDiff = vi.fn();

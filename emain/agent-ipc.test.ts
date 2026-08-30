@@ -111,7 +111,7 @@ import { SqliteSessionRepo } from "@crest/agent/harness/session/sqlite-repo";
 import { SqliteSessionStorage } from "@crest/agent/harness/session/sqlite-storage";
 import type { JsonlSessionMetadata } from "@crest/agent/harness/types";
 import type { AgentMessage } from "@crest/agent/types";
-import { getModel } from "@crest/ai";
+import { getModel, type Api, type Model, type ModelCatalog } from "@crest/ai";
 import { AgentRuntimeRegistry } from "@crest/coding-agent/agent-runtime-registry";
 import { AgentSessionRuntime } from "@crest/coding-agent/agent-session-runtime";
 import { buildAgentHarnessHost } from "@crest/coding-agent/harness-factory";
@@ -119,6 +119,7 @@ import {
     _setSessionsRepoForTests,
     createPaneSession,
     defaultSessionsDir,
+    listSessionsForCwd,
     openPaneSessionByPath,
 } from "@crest/coding-agent/sessions";
 import { loadAgentSkills } from "@crest/coding-agent/skills-loader";
@@ -141,12 +142,13 @@ import {
     listAgentTreeForIpc,
     makeProductionAgentWorkspaceRecoveryGate,
     navigateAgentTreeForIpc,
-    registerAgentIpcHandlers as registerAgentIpcHandlersImpl,
+    registerAgentIpcHandlers as registerAgentIpcHandlersWithCatalog,
     releaseTrackerAfterCheckpointManager,
     renameAgentSessionForIpc,
     runAgentCommandForIpc,
     subscribeAgentSessionForIpc,
     unsubscribeAgentSessionForIpc,
+    type AgentIpcRegistrationOptions,
 } from "./agent-ipc";
 import { acquireAgentRewindFeature, openAgentRewindFeature } from "./agent-rewind-feature";
 import { AgentPtyHost } from "./agent-tools/agent-pty-host";
@@ -169,17 +171,44 @@ function makeRecoveryGate(overrides: Partial<AgentWorkspaceRecoveryGate> = {}): 
     };
 }
 
+const TestModelCatalog: ModelCatalog = {
+    hydrate: vi.fn().mockResolvedValue(undefined),
+    getModels: vi.fn(() => []),
+    getModel: vi.fn((provider: string, modelId: string) => {
+        return (getModel as unknown as (provider: string, modelId: string) => Model<Api> | undefined)(
+            provider,
+            modelId
+        );
+    }),
+    getRevision: vi.fn(() => 0),
+    activateProvider: vi.fn(),
+    refreshProvider: vi.fn().mockResolvedValue(undefined),
+    refreshActive: vi.fn().mockResolvedValue(undefined),
+    subscribe: vi.fn(() => vi.fn()),
+    start: vi.fn(),
+    stop: vi.fn(),
+};
+
+function registerAgentIpcHandlersImpl(options: Omit<AgentIpcRegistrationOptions, "modelCatalog">): void {
+    registerAgentIpcHandlersWithCatalog({ modelCatalog: TestModelCatalog, ...options });
+}
+
 function getTrustedCwd(channel: string, args: unknown[]): string {
     const input = args[0] as Record<string, unknown> | undefined;
     const metadata =
-        channel === "agent:send"
+        channel === "agent:send" || channel === "agent:inspect-context"
             ? (input?.sessionMetadata as JsonlSessionMetadata | undefined)
             : channel === "agent:list-tree" ||
                 channel === "agent:get-session-state" ||
                 channel === "agent:list-fork-points"
               ? (input as unknown as JsonlSessionMetadata)
               : (input?.sessionMetadata as JsonlSessionMetadata | undefined);
-    return metadata?.cwd || (typeof input?.cwd === "string" ? input.cwd : "/tmp");
+    const executionContext = input?.context as Record<string, unknown> | undefined;
+    return (
+        metadata?.cwd ||
+        (typeof executionContext?.workspaceDir === "string" ? executionContext.workspaceDir : undefined) ||
+        (typeof input?.cwd === "string" ? input.cwd : "/tmp")
+    );
 }
 
 function registerAgentIpcHandlers(): void {
@@ -213,7 +242,7 @@ function registerAgentIpcHandlers(): void {
                     send: vi.fn(),
                 },
             };
-            if (channel === "agent:send") {
+            if (channel === "agent:send" || channel === "agent:inspect-context") {
                 const input = args[0] as Record<string, unknown>;
                 const context = {
                     workspaceId: TrustedRequestContext.workspaceId,
@@ -236,7 +265,7 @@ function assistant(text: string): AgentMessage {
 }
 
 function makeHarnessHostMock() {
-    const model = { provider: "p", id: "m", api: "openai" };
+    const model = { provider: "p", id: "m", api: "openai", name: "Model", contextWindow: 1000, maxTokens: 100 };
     return {
         harness: {
             subscribe: vi.fn(() => () => {}),
@@ -246,6 +275,16 @@ function makeHarnessHostMock() {
             setModel: vi.fn(async () => {}),
             getThinkingLevel: vi.fn(() => "off"),
             setThinkingLevel: vi.fn(async () => {}),
+            inspectCurrentContext: vi.fn(async () => ({
+                model,
+                sessionId: "preview-session",
+                leafId: null,
+                systemPrompt: "system",
+                messages: [],
+                messageEntryIds: [],
+                entries: [],
+                activeTools: [],
+            })),
         },
         session: {
             close: vi.fn(),
@@ -255,6 +294,7 @@ function makeHarnessHostMock() {
         update: vi.fn(),
         setAuthResolver: vi.fn(),
         setToolCallHook: vi.fn(),
+        setProviderContextObserver: vi.fn(),
         resolveAuth: vi.fn(),
         runToolCallHook: vi.fn(),
     };
@@ -391,6 +431,11 @@ describe("agent-ipc command helpers", () => {
         vi.mocked(electron.ipcMain.on).mockClear();
         vi.mocked(loadAgentSkills).mockClear();
         vi.mocked(loadAgentSkills).mockResolvedValue([]);
+        vi.mocked(getModel).mockReset();
+        vi.mocked(TestModelCatalog.getModel).mockClear();
+        vi.mocked(TestModelCatalog.activateProvider).mockClear();
+        vi.mocked(TestModelCatalog.refreshProvider).mockReset();
+        vi.mocked(TestModelCatalog.refreshProvider).mockResolvedValue(undefined);
         await _resetAgentIpcForTests();
         previousConfigHome = process.env.WAVETERM_CONFIG_HOME;
         tmpConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-ipc-test-"));
@@ -801,25 +846,31 @@ describe("agent-ipc command helpers", () => {
             once: vi.fn(),
             send: vi.fn(),
         } as unknown as electron.WebContents;
+        const getBranch = vi.spyOn(Session.prototype, "getBranch");
 
-        await subscribeAgentSessionForIpc(sender, aliasPath);
+        try {
+            await subscribeAgentSessionForIpc(sender, aliasPath);
 
-        expect(sender.send).toHaveBeenCalledWith(
-            "agent:event",
-            expect.objectContaining({
-                sessionPath: aliasPath,
-                event: expect.objectContaining({
-                    type: "session_state",
-                    messages: expect.arrayContaining([
-                        expect.objectContaining({
-                            role: "user",
-                            content: [expect.objectContaining({ text: "restore after refresh" })],
-                        }),
-                    ]),
-                    turns: expect.arrayContaining([expect.objectContaining({ turnId: expect.any(String) })]),
-                }),
-            })
-        );
+            expect(sender.send).toHaveBeenCalledWith(
+                "agent:event",
+                expect.objectContaining({
+                    sessionPath: aliasPath,
+                    event: expect.objectContaining({
+                        type: "session_state",
+                        messages: expect.arrayContaining([
+                            expect.objectContaining({
+                                role: "user",
+                                content: [expect.objectContaining({ text: "restore after refresh" })],
+                            }),
+                        ]),
+                        turns: expect.arrayContaining([expect.objectContaining({ turnId: expect.any(String) })]),
+                    }),
+                })
+            );
+            expect(getBranch).toHaveBeenCalledOnce();
+        } finally {
+            getBranch.mockRestore();
+        }
     });
 
     it("rejects forged paths for send existing sessions and subscription helpers", async () => {
@@ -908,7 +959,139 @@ describe("agent-ipc command helpers", () => {
             })
         );
         expect(result.turnId).toBe("entry-xyz");
+        expect(TestModelCatalog.activateProvider).toHaveBeenCalledWith("p");
+        expect(TestModelCatalog.refreshProvider).toHaveBeenCalledWith("p");
         sendConfiguredSpy.mockRestore();
+    });
+
+    it("returns a stateless context preview without creating a persisted session", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-inspect-preview-"));
+        vi.mocked(getModel).mockReturnValue({
+            provider: "p",
+            id: "m",
+            api: "openai",
+            name: "Model",
+            contextWindow: 1000,
+            maxTokens: 100,
+        } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        registerAgentIpcHandlers();
+        const before = await listSessionsForCwd(cwd);
+
+        const result = (await registeredHandlers().get("agent:inspect-context")?.(
+            {},
+            {
+                context: { workspaceId: TrustedRequestContext.workspaceId, workspaceDir: cwd, environment: {} },
+                provider: "p",
+                model: "m",
+            }
+        )) as { snapshot: AgentContextSnapshotView };
+
+        expect(result.snapshot).toMatchObject({
+            lifecycle: "ready",
+            identity: { leafId: null, modelKey: "p/m" },
+            inputCapacity: 900,
+        });
+        expect(result.snapshot.identity).not.toHaveProperty("sessionPath");
+        expect(result.snapshot.identity).not.toHaveProperty("sessionId");
+        expect(await listSessionsForCwd(cwd)).toEqual(before);
+    });
+
+    it("returns context inspection for an existing persisted session", async () => {
+        const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "crest-agent-inspect-session-"));
+        const { metadata, session } = await createPaneSession(cwd);
+        session.close();
+        vi.mocked(getModel).mockReturnValue({
+            provider: "p",
+            id: "m",
+            api: "openai",
+            name: "Model",
+            contextWindow: 1000,
+            maxTokens: 100,
+        } as never);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        registerAgentIpcHandlers();
+
+        const result = (await registeredHandlers().get("agent:inspect-context")?.(
+            {},
+            {
+                sessionMetadata: metadata,
+                context: {
+                    workspaceId: TrustedRequestContext.workspaceId,
+                    workspaceDir: cwd,
+                    sessionPath: metadata.path,
+                    environment: {},
+                },
+                provider: "p",
+                model: "m",
+            }
+        )) as { snapshot: AgentContextSnapshotView };
+
+        expect(result.snapshot).toMatchObject({
+            lifecycle: "ready",
+            identity: { sessionPath: await fs.realpath(metadata.path), modelKey: "p/m" },
+        });
+    });
+
+    it("refreshes an uncached provider before rejecting or resolving the selected model", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-refresh-model");
+        const refreshedModel = { provider: "p", id: "new", api: "openai", baseUrl: "http://new" } as never;
+        vi.mocked(getModel).mockReturnValueOnce(undefined).mockReturnValueOnce(refreshedModel);
+        vi.mocked(buildAgentHarnessHost).mockReturnValue(makeHarnessHostMock() as never);
+        const sendConfiguredSpy = vi
+            .spyOn(AgentSessionRuntime.prototype, "sendWithExecutionConfig")
+            .mockResolvedValue("entry-refreshed");
+        registerAgentIpcHandlers();
+        const sendHandler = registeredHandlers().get("agent:send");
+
+        try {
+            await expect(
+                sendHandler?.(
+                    {},
+                    {
+                        sessionMetadata: metadata,
+                        blockId: "block-1",
+                        cwd: metadata.cwd,
+                        text: "hello",
+                        provider: "p",
+                        model: "new",
+                    }
+                )
+            ).resolves.toMatchObject({ turnId: "entry-refreshed" });
+
+            expect(TestModelCatalog.refreshProvider).toHaveBeenCalledWith("p");
+            expect(sendConfiguredSpy).toHaveBeenCalledWith(
+                "hello",
+                expect.objectContaining({ model: refreshedModel }),
+                expect.anything()
+            );
+        } finally {
+            sendConfiguredSpy.mockRestore();
+        }
+    });
+
+    it("reports an unknown model after on-demand catalog refresh", async () => {
+        const { metadata } = await createPaneSession("/tmp/agent-ipc-unknown-model");
+        vi.mocked(getModel).mockReturnValue(undefined);
+        registerAgentIpcHandlers();
+        const sendHandler = registeredHandlers().get("agent:send");
+
+        await expect(
+            sendHandler?.(
+                {},
+                {
+                    sessionMetadata: metadata,
+                    blockId: "block-1",
+                    cwd: metadata.cwd,
+                    text: "hello",
+                    provider: "p",
+                    model: "missing",
+                }
+            )
+        ).rejects.toThrow('unknown provider/model "p/missing"');
+
+        expect(TestModelCatalog.refreshProvider).toHaveBeenCalledWith("p");
+        expect(TestModelCatalog.getModel).toHaveBeenCalledTimes(2);
     });
 
     it("registers authenticated hosted command IPC endpoints", async () => {
@@ -996,8 +1179,9 @@ describe("agent-ipc command helpers", () => {
         }
     });
 
-    it("reuses one runtime and applies current execution config", async () => {
+    it("reuses one runtime and applies refreshed model metadata on the next send", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-config");
+        const getBranch = vi.spyOn(Session.prototype, "getBranch");
         vi.mocked(buildAgentHarnessHost).mockClear();
         vi.mocked(getModel)
             .mockReturnValueOnce({
@@ -1051,8 +1235,11 @@ describe("agent-ipc command helpers", () => {
                     activatePreparation: expect.any(Function),
                 })
             );
+            expect(TestModelCatalog.activateProvider).toHaveBeenCalledTimes(2);
+            expect(getBranch).toHaveBeenCalledOnce();
         } finally {
             sendConfiguredSpy.mockRestore();
+            getBranch.mockRestore();
         }
     });
 
@@ -1485,6 +1672,7 @@ describe("agent-ipc command helpers", () => {
                 provider: "p",
                 model: "m",
             },
+            TestModelCatalog,
             "workspace-test"
         ).catch((error) => error);
 
@@ -1528,6 +1716,7 @@ describe("agent-ipc command helpers", () => {
                     provider: "p",
                     model: "m",
                 },
+                TestModelCatalog,
                 "workspace-test"
             )
         ).rejects.toBe(constructionFailure);
@@ -2011,6 +2200,7 @@ describe("agent-ipc command helpers", () => {
             ["agent:list-session-details", []],
             ["agent:list-commands", []],
             ["agent:get-session-state", [{}]],
+            ["agent:inspect-context", [{}]],
             ["agent:send", [{}]],
             ["agent:abort", ["/tmp/session"]],
             ["agent:subscribe", ["/tmp/session"]],
@@ -2056,6 +2246,22 @@ describe("agent-ipc command helpers", () => {
             ["agent:list-session-details", []],
             ["agent:list-commands", []],
             ["agent:get-session-state", [metadata]],
+            [
+                "agent:inspect-context",
+                [
+                    {
+                        context: {
+                            workspaceId: "workspace-other",
+                            workspaceDir: identity.workspaceDir,
+                            sessionPath: metadata.path,
+                            environment: {},
+                        },
+                        sessionMetadata: metadata,
+                        provider: "p",
+                        model: "m",
+                    },
+                ],
+            ],
             [
                 "agent:send",
                 [
@@ -3082,7 +3288,7 @@ describe("agent-ipc command helpers", () => {
         { kind: "pending", liveRuntime: false, senderId: 67 },
         { kind: "live-runtime", liveRuntime: true, senderId: 68 },
     ])(
-        "rejects a concurrent archive while failed $kind restoration still owns the path",
+        "serializes failed $kind restoration before a concurrent archive reuses the path",
         async ({ liveRuntime, senderId }) => {
             const cwd = await fs.mkdtemp(
                 path.join(os.tmpdir(), `crest-agent-restore-serialization-${liveRuntime ? "live" : "pending"}-`)
@@ -3414,7 +3620,6 @@ describe("agent-ipc command helpers", () => {
                 workspaceWithAgentState(identity.workspaceId, 4, {
                     activesession: metadata,
                     selection,
-                    preferredterminaltabid: "terminal-1",
                 }),
             saveWorkspaceAgentState,
         });
@@ -3436,21 +3641,20 @@ describe("agent-ipc command helpers", () => {
                 expectedrevision: 4,
                 state: {
                     selection,
-                    preferredterminaltabid: "terminal-1",
                 },
             });
 
             saveGate.resolve({
                 workspaceid: identity.workspaceId,
                 revision: 5,
-                state: { selection, preferredterminaltabid: "terminal-1" },
+                state: { selection },
             });
             await archiving;
         } finally {
             saveGate.resolve({
                 workspaceid: identity.workspaceId,
                 revision: 5,
-                state: { selection, preferredterminaltabid: "terminal-1" },
+                state: { selection },
             });
             await archiving.catch(() => {});
         }

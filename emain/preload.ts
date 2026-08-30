@@ -22,6 +22,7 @@ ipcRenderer.on("dir-changed", (_event, path: string, eventType: string, filename
 // Workspace identity as well as path so a renderer generation cannot consume
 // stale subscription events.
 const agentEventCallbacks = new Map<string, Set<(event: unknown) => void>>();
+const agentEventErrorCallbacks = new Map<string, Map<(event: unknown) => void, (error: unknown) => void>>();
 function getAgentCallbackKey(context: unknown, sessionPath: string): string {
     const identity = context as { workspaceId?: unknown; generation?: unknown };
     return JSON.stringify([identity.workspaceId, identity.generation, sessionPath]);
@@ -152,6 +153,7 @@ contextBridge.exposeInMainWorld("api", {
     },
     sendWorkspaceCommand: (command) => ipcRenderer.send("workspace-command", command),
     setWorkspaceSurface: (surface) => ipcRenderer.send("workspace-surface", surface),
+    setWorkspaceOverlayVisible: (visible) => ipcRenderer.send("workspace-overlay-visible", visible),
     onTerminalSurfaceStatus: (callback) => {
         const listener = (_event: Electron.IpcRendererEvent, status: TerminalSurfaceStatus) => callback(status);
         ipcRenderer.on("terminal-surface-status", listener);
@@ -224,6 +226,12 @@ contextBridge.exposeInMainWorld("api", {
     ai: {
         listProviderModels: (input: unknown) => ipcRenderer.invoke("ai:list-provider-models", input),
         listRegistryModels: (provider: string) => ipcRenderer.invoke("ai:list-registry-models", provider),
+        refreshRegistryModels: (provider: string) => ipcRenderer.invoke("ai:refresh-registry-models", provider),
+        onRegistryModelsRefreshed: (callback: (providerId: string) => void) => {
+            const listener = (_event: Electron.IpcRendererEvent, providerId: string) => callback(providerId);
+            ipcRenderer.on("ai:registry-models-refreshed", listener);
+            return () => ipcRenderer.removeListener("ai:registry-models-refreshed", listener);
+        },
         getUserConfig: () => ipcRenderer.invoke("ai:get-user-config"),
         writeUserConfig: (cfg: unknown) => ipcRenderer.invoke("ai:write-user-config", cfg),
     },
@@ -237,6 +245,8 @@ contextBridge.exposeInMainWorld("api", {
         listCommands: (context: unknown) => ipcRenderer.invoke("agent:list-commands", context),
         getSessionState: (context: unknown, sessionMetadata: unknown) =>
             ipcRenderer.invoke("agent:get-session-state", context, sessionMetadata),
+        inspectContext: (context: unknown, options: unknown) =>
+            ipcRenderer.invoke("agent:inspect-context", context, options),
         listTree: (context: unknown, sessionMetadata: unknown) =>
             ipcRenderer.invoke("agent:list-tree", context, sessionMetadata),
         listForkPoints: (context: unknown, sessionMetadata: unknown) =>
@@ -299,7 +309,12 @@ contextBridge.exposeInMainWorld("api", {
             invokeAgentContext("agent:list-context-state", context, input),
         send: (context: unknown, opts: unknown) => invokeAgentContext("agent:send", context, opts),
         abort: (context: unknown, sessionPath: string) => ipcRenderer.invoke("agent:abort", context, sessionPath),
-        subscribe: (context: unknown, sessionPath: string, callback: (event: unknown) => void): (() => void) => {
+        subscribe: (
+            context: unknown,
+            sessionPath: string,
+            callback: (event: unknown) => void,
+            onError?: (error: unknown) => void
+        ): (() => void) => {
             const key = getAgentCallbackKey(context, sessionPath);
             let entry = agentEventCallbacks.get(key);
             const isNew = !entry;
@@ -308,15 +323,35 @@ contextBridge.exposeInMainWorld("api", {
                 agentEventCallbacks.set(key, entry);
             }
             entry.add(callback);
+            if (onError) {
+                let errorEntry = agentEventErrorCallbacks.get(key);
+                if (!errorEntry) {
+                    errorEntry = new Map();
+                    agentEventErrorCallbacks.set(key, errorEntry);
+                }
+                errorEntry.set(callback, onError);
+            }
             if (isNew) {
-                void ipcRenderer
-                    .invoke("agent:subscribe", context, sessionPath)
-                    .catch((err) => console.error("agent:subscribe failed", err));
+                void ipcRenderer.invoke("agent:subscribe", context, sessionPath).catch((err) => {
+                    console.error("agent:subscribe failed", err);
+                    for (const notify of agentEventErrorCallbacks.get(key)?.values() ?? []) {
+                        try {
+                            notify(err);
+                        } catch (callbackError) {
+                            console.error("agent:subscribe error callback failed", callbackError);
+                        }
+                    }
+                });
             }
             return () => {
                 const cur = agentEventCallbacks.get(key);
                 if (!cur) return;
                 cur.delete(callback);
+                const errorEntry = agentEventErrorCallbacks.get(key);
+                errorEntry?.delete(callback);
+                if (errorEntry?.size === 0) {
+                    agentEventErrorCallbacks.delete(key);
+                }
                 if (cur.size === 0) {
                     agentEventCallbacks.delete(key);
                     void ipcRenderer

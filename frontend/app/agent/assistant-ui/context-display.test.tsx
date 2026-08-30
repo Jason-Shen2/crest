@@ -1,14 +1,17 @@
 // Copyright 2026, Command Line Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+// @vitest-environment jsdom
+
+import { fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
     ContextDisplayRing,
     formatContextTokenCount,
     getContextUsagePercent,
-    type CrestContextUsage,
+    type CrestContextDisplayValue,
 } from "./context-display";
 
 describe("ContextDisplayRing", () => {
@@ -22,21 +25,48 @@ describe("ContextDisplayRing", () => {
     });
 
     it("renders a compact local context ring without the AI SDK adapter", () => {
-        const usage: CrestContextUsage = {
-            inputTokens: 72000,
-            cachedInputTokens: 12000,
-            outputTokens: 6000,
-            totalTokens: 90000,
+        const value: CrestContextDisplayValue = {
+            effectiveInputTokens: 72_000,
+            inputCapacity: 128_000,
+            accuracy: "estimated",
+            lifecycle: "ready",
         };
 
-        const html = renderToStaticMarkup(<ContextDisplayRing modelContextWindow={128000} usage={usage} />);
+        const html = renderToStaticMarkup(<ContextDisplayRing value={value} />);
 
         expect(html).toContain('data-slot="context-display-trigger"');
-        expect(html).toContain('aria-label="Context usage"');
-        expect(html).toContain("70%");
+        expect(html).toContain('aria-label="Open Context Inspector, 56 percent used"');
+        expect(html).toContain("56%");
         expect(html).toContain('width="22"');
         expect(html).toContain("aui-context-display-ring-trigger size-6");
-        expect(html).toContain("stroke-amber-500");
+        expect(html).toContain("stroke-emerald-500");
         expect(html).not.toContain("react-ai-sdk");
+    });
+
+    it("opens the inspector and remains visible before the first prompt", () => {
+        const onOpen = vi.fn();
+        render(
+            <ContextDisplayRing
+                value={{
+                    effectiveInputTokens: 0,
+                    inputCapacity: 100_000,
+                    accuracy: "exact",
+                    lifecycle: "ready",
+                }}
+                onOpen={onOpen}
+            />
+        );
+
+        fireEvent.click(screen.getByRole("button", { name: "Open Context Inspector, 0 percent used" }));
+        expect(onOpen).toHaveBeenCalledOnce();
+    });
+
+    it("announces unavailable usage without inventing a zero percent count", () => {
+        const html = renderToStaticMarkup(<ContextDisplayRing />);
+
+        expect(html).toContain('aria-label="Open Context Inspector, token count unavailable"');
+        expect(html).toContain("Token count unavailable");
+        expect(html).not.toContain("0 percent used");
+        expect(html).not.toContain("Estimated before provider request");
     });
 });
