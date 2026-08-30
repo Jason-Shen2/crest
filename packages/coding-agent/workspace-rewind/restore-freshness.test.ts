@@ -109,21 +109,12 @@ describe("confirmed restore freshness", () => {
         ).rejects.toThrow(/normal rewind/i);
     });
 
-    it("allows confirmed external same-path drift only in force mode", async () => {
+    it("rejects external same-path drift added after a Force preview", async () => {
         const findForeignOverlap = vi.fn(async () => [{ commit: CurrentHead, path: "src/file.ts" }]);
 
         await expect(
             assertConfirmedRestoreFresh({
                 confirmation: confirmation("forceable-drift"),
-                currentHead: CurrentHead,
-                mode: "force-drift",
-                mutationLog: { findForeignOverlap },
-            })
-        ).resolves.toBeUndefined();
-
-        await expect(
-            assertConfirmedRestoreFresh({
-                confirmation: confirmation(),
                 currentHead: CurrentHead,
                 mode: "force-drift",
                 mutationLog: { findForeignOverlap },

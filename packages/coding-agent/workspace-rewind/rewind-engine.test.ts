@@ -342,6 +342,40 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.snapshotSource.readHead).not.toHaveBeenCalled();
     });
 
+    it("checks the recovery gate before a Force preview synchronizes disk state", async () => {
+        const value = makeHarness({
+            plan: restorePlan({
+                paths: [
+                    {
+                        path: "file.txt",
+                        operation: "write",
+                        target: { state: "file", oid: OldOid, executable: false },
+                        expectedCurrent: { state: "file", oid: NewOid, executable: false },
+                        liveFingerprint: CleanFingerprint,
+                        conflict: "forceable-drift",
+                        reason: "files changed on disk since the agent last wrote them",
+                    },
+                ],
+                forceRequired: true,
+            }),
+        });
+        vi.spyOn(value.engine, "assertWorkspaceWritable").mockRejectedValueOnce(
+            new Error("Workspace recovery required")
+        );
+
+        await expect(
+            value.engine.previewRewind({
+                session: value.session.session,
+                sessionId: "session-1",
+                workspace: Workspace,
+                semanticLeafId: "old-leaf",
+                targetTurnId: "turn-1",
+            })
+        ).rejects.toThrow(/recovery required/i);
+
+        expect(value.snapshotSource.synchronizeExternal).not.toHaveBeenCalled();
+    });
+
     it("constructs one pending store and Resolver shared by every restore path", () => {
         const store = {
             storeRoot: "/store",

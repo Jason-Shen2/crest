@@ -497,19 +497,24 @@ export class WorkspaceRewindEngine {
         if (!snapshotSource) {
             throw new Error("Force preview requires the shared checkpoint snapshot source");
         }
-        return this.withRestoreLease(sessionId, "force-drift", async (source) => {
-            let stableSource = source;
-            for (let attempt = 0; attempt < 2; attempt++) {
-                const refreshed = await this.computeAtStableHead(compute);
-                if (!refreshed.plan.forceRequired || refreshed.plan.hardBlocked) return this.preview(refreshed);
-                const verified = await snapshotSource.synchronizeExternal();
-                if (stableSource.id === refreshed.authorityHead && verified.ref.id === stableSource.id) {
-                    return this.preview(refreshed, stableSource);
+        return this.withRestoreLease(
+            sessionId,
+            "force-drift",
+            async (source) => {
+                let stableSource = source;
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    const refreshed = await this.computeAtStableHead(compute);
+                    if (!refreshed.plan.forceRequired || refreshed.plan.hardBlocked) return this.preview(refreshed);
+                    const verified = await snapshotSource.synchronizeExternal();
+                    if (stableSource.id === refreshed.authorityHead && verified.ref.id === stableSource.id) {
+                        return this.preview(refreshed, stableSource);
+                    }
+                    stableSource = verified.ref;
                 }
-                stableSource = verified.ref;
-            }
-            throw new Error("Workspace changed while preparing the Force preview");
-        });
+                throw new Error("Workspace changed while preparing the Force preview");
+            },
+            () => this.assertWorkspaceWritable()
+        );
     }
 
     private async preview(
@@ -764,7 +769,8 @@ export class WorkspaceRewindEngine {
     private async withRestoreLease<T>(
         sessionId: string,
         mode: "normal" | "force-drift",
-        operation: (source: WorkspaceSnapshotRefV1) => Promise<T>
+        operation: (source: WorkspaceSnapshotRefV1) => Promise<T>,
+        beforeSource?: () => Promise<void>
     ): Promise<T> {
         if (!this.snapshotSource) {
             throw new Error("Workspace rewind mutation requires the shared checkpoint snapshot source");
@@ -775,6 +781,7 @@ export class WorkspaceRewindEngine {
             boundaryToken: `restore-${randomUUID()}`,
         });
         try {
+            await beforeSource?.();
             const source =
                 mode === "force-drift"
                     ? await this.snapshotSource.synchronizeExternal()

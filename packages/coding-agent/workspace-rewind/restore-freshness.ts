@@ -18,7 +18,6 @@ export async function assertConfirmedRestoreFresh(input: {
     if (input.currentHead === input.confirmation.authorityHead) return;
 
     const plan = input.confirmation.plan;
-    const paths = new Map(plan.paths.map((path) => [path.path, path]));
     const overlaps = await input.mutationLog.findForeignOverlap({
         afterCommit: input.confirmation.authorityHead,
         head: input.currentHead,
@@ -27,11 +26,6 @@ export async function assertConfirmedRestoreFresh(input: {
         ownerSessionId: plan.sessionId,
     });
     for (const overlap of overlaps) {
-        const path = paths.get(overlap.path);
-        const confirmedExternalForce =
-            overlap.sessionId == null && input.mode === "force-drift" && path?.conflict === "forceable-drift";
-        if (!confirmedExternalForce) {
-            throw new Error(`Rewind confirmation is stale for path: ${overlap.path}`);
-        }
+        throw new Error(`Rewind confirmation is stale for path: ${overlap.path}`);
     }
 }
