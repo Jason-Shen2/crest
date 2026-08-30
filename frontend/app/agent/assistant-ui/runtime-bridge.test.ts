@@ -51,6 +51,7 @@ function makeChat(overrides: Partial<UsePiChatReturn> = {}): UsePiChatReturn {
         errorMessage: undefined,
         sessionMetadata: undefined,
         queuedMessages: [],
+        commands: [],
         isHydrating: false,
         send: vi.fn(),
         abort: vi.fn(),
