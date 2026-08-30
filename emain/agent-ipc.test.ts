@@ -631,25 +631,31 @@ describe("agent-ipc command helpers", () => {
             once: vi.fn(),
             send: vi.fn(),
         } as unknown as electron.WebContents;
+        const getBranch = vi.spyOn(Session.prototype, "getBranch");
 
-        await subscribeAgentSessionForIpc(sender, aliasPath);
+        try {
+            await subscribeAgentSessionForIpc(sender, aliasPath);
 
-        expect(sender.send).toHaveBeenCalledWith(
-            "agent:event",
-            expect.objectContaining({
-                sessionPath: aliasPath,
-                event: expect.objectContaining({
-                    type: "session_state",
-                    messages: expect.arrayContaining([
-                        expect.objectContaining({
-                            role: "user",
-                            content: [expect.objectContaining({ text: "restore after refresh" })],
-                        }),
-                    ]),
-                    turns: expect.arrayContaining([expect.objectContaining({ turnId: expect.any(String) })]),
-                }),
-            })
-        );
+            expect(sender.send).toHaveBeenCalledWith(
+                "agent:event",
+                expect.objectContaining({
+                    sessionPath: aliasPath,
+                    event: expect.objectContaining({
+                        type: "session_state",
+                        messages: expect.arrayContaining([
+                            expect.objectContaining({
+                                role: "user",
+                                content: [expect.objectContaining({ text: "restore after refresh" })],
+                            }),
+                        ]),
+                        turns: expect.arrayContaining([expect.objectContaining({ turnId: expect.any(String) })]),
+                    }),
+                })
+            );
+            expect(getBranch).toHaveBeenCalledOnce();
+        } finally {
+            getBranch.mockRestore();
+        }
     });
 
     it("rejects forged paths for send existing sessions and subscription helpers", async () => {
@@ -960,6 +966,7 @@ describe("agent-ipc command helpers", () => {
 
     it("reuses one runtime and applies refreshed model metadata on the next send", async () => {
         const { metadata } = await createPaneSession("/tmp/agent-ipc-config");
+        const getBranch = vi.spyOn(Session.prototype, "getBranch");
         vi.mocked(buildAgentHarnessHost).mockClear();
         vi.mocked(getModel)
             .mockReturnValueOnce({
@@ -1014,8 +1021,10 @@ describe("agent-ipc command helpers", () => {
                 })
             );
             expect(TestModelCatalog.activateProvider).toHaveBeenCalledTimes(2);
+            expect(getBranch).toHaveBeenCalledOnce();
         } finally {
             sendConfiguredSpy.mockRestore();
+            getBranch.mockRestore();
         }
     });
 

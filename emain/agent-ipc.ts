@@ -46,6 +46,7 @@ import * as path from "node:path";
 
 import { convertToLlm } from "@crest/agent/harness/messages";
 import { InMemorySessionRepo } from "@crest/agent/harness/session/memory-repo";
+import { buildSessionContext } from "@crest/agent/harness/session/session";
 import type {
     AgentHarnessTurnPreparation,
     AgentHarnessTurnPreparationInput,
@@ -875,8 +876,8 @@ async function createAgentRuntimeFromSession(
     // never missing a turn that finishes before a renderer subscribes.
     // Seed it with the persisted transcript so a reopened session shows its
     // history (a fresh session's buildContext is empty).
-    const seed = await piSession.buildContext();
     const initialEntries = await piSession.getBranch();
+    const seed = buildSessionContext(initialEntries);
     const initialTurns = buildPersistedTurnsFromSessionEntries(initialEntries);
     const onTurnFinished = async (turn: AgentTurn): Promise<void> => {
         const operations = extractChangeOperationsFromMessages(turn.responseMessages.filter(isToolResultModelMessage), {
@@ -1143,8 +1144,8 @@ async function sendPersistedSessionState(
         canonicalPath = await validateSessionPath(sessionPath);
         const session = await openPaneSessionByPath(canonicalPath);
         try {
-            const context = await session.buildContext();
             const branch = await session.getBranch();
+            const context = buildSessionContext(branch);
             const contextState = buildContextStateFromSessionEntries(branch);
             const liveRuntime = lookupLiveAgentRuntime(canonicalPath);
             if (liveRuntime) {
