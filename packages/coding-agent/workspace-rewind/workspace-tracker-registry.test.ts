@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { CanonicalWorkspaceIdentity } from "./workspace-identity";
+import * as WorkspaceTrackerModule from "./workspace-tracker-registry";
 import { WorkspaceTrackerRegistry } from "./workspace-tracker-registry";
 
 const ProcessOwner = {
@@ -69,6 +70,12 @@ function makeRegistry() {
 }
 
 describe("WorkspaceTrackerRegistry", () => {
+    it("keeps process trackers warm across normal user review intervals", () => {
+        expect(
+            (WorkspaceTrackerModule as unknown as Record<string, number>).ProcessWorkspaceTrackerIdleTtlMs
+        ).toBeGreaterThanOrEqual(5 * 60_000);
+    });
+
     it("has no tracker factory or tracker resource after the authority cutover", () => {
         const registry = new WorkspaceTrackerRegistry();
 

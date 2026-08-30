@@ -54,12 +54,19 @@ export interface ForeignOverlap {
     sessionId?: string;
 }
 
+interface ValidatedWorkspaceMutation {
+    parent?: string;
+    tree: string;
+    metadata: WorkspaceMutationMetadataV1;
+}
+
 export class WorkspaceMutationLog {
     readonly git: WorkspaceGitRunner;
     readonly gitDir: string;
     readonly workspaceIdentity: string;
     readonly workspaceIncarnation: string;
     private readonly preparedMutations = new WeakSet<PreparedWorkspaceMutation>();
+    readonly validatedMutations = new Map<string, ValidatedWorkspaceMutation>();
 
     constructor(input: {
         git: WorkspaceGitRunner;
@@ -149,12 +156,10 @@ export class WorkspaceMutationLog {
         return prepared.commit;
     }
 
-    async read(commit: string): Promise<{
-        parent?: string;
-        tree: string;
-        metadata: WorkspaceMutationMetadataV1;
-    }> {
+    async read(commit: string): Promise<ValidatedWorkspaceMutation> {
         validateSha1(commit);
+        const cached = this.validatedMutations.get(commit);
+        if (cached) return cloneValidatedMutation(cached);
         const result = await this.git.run(["cat-file", "commit", commit], {
             gitDir: this.gitDir,
             timeoutMs: GitTimeoutMs,
@@ -180,7 +185,9 @@ export class WorkspaceMutationLog {
         }
         const message = result.stdout.subarray(separator + 2);
         const metadata = decodeMetadata(message, this.workspaceIdentity, this.workspaceIncarnation);
-        return { ...(parent == null ? {} : { parent }), tree, metadata };
+        const mutation = { ...(parent == null ? {} : { parent }), tree, metadata };
+        this.validatedMutations.set(commit, cloneValidatedMutation(mutation));
+        return cloneValidatedMutation(mutation);
     }
 
     async changedPaths(commit: string): Promise<string[]> {
@@ -262,6 +269,14 @@ export class WorkspaceMutationLog {
         }
         return overlaps;
     }
+}
+
+function cloneValidatedMutation(mutation: ValidatedWorkspaceMutation): ValidatedWorkspaceMutation {
+    return {
+        ...(mutation.parent == null ? {} : { parent: mutation.parent }),
+        tree: mutation.tree,
+        metadata: { ...mutation.metadata },
+    };
 }
 
 async function requireObjectType(

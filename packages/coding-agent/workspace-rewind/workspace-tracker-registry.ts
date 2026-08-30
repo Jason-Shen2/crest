@@ -10,7 +10,7 @@ import { ParcelWorkspaceChangeFeed, type WorkspaceChangeFeed } from "./workspace
 import { discoverWorkspaceScope } from "./workspace-scope";
 import { WorkspaceWriterLeaseRegistry } from "./workspace-writer-lease";
 
-const ProcessWorkspaceTrackerIdleTtlMs = 5_000;
+export const ProcessWorkspaceTrackerIdleTtlMs = 5 * 60_000;
 
 export interface WorkspaceTrackerLease {
     store: WorkspaceSnapshotStore;
@@ -95,10 +95,7 @@ export class WorkspaceTrackerRegistry {
     readonly idleTtlMs: number;
     readonly entries = new Map<string, WorkspaceTrackerRegistryEntry>();
 
-    constructor(
-        dependencies: Partial<WorkspaceTrackerRegistryDependencies> = {},
-        idleTtlMs = 0
-    ) {
+    constructor(dependencies: Partial<WorkspaceTrackerRegistryDependencies> = {}, idleTtlMs = 0) {
         this.dependencies = { ...DefaultDependencies, ...dependencies };
         this.idleTtlMs = idleTtlMs;
     }

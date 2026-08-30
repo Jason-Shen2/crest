@@ -80,6 +80,24 @@ describe.sequential("WorkspaceMutationLog", () => {
         await expect(fixture.log.readHead()).resolves.toBe(prepared.commit);
     });
 
+    test("reuses a validated immutable commit without spawning more Git readers", async () => {
+        const fixture = await makeFixture(roots);
+        const commit = await fixture.log.append({
+            tree: await writeTree(fixture, { "shared.txt": "cached" }),
+            metadata: makeMetadata("agent-turn", "session-a"),
+        });
+        const run = vi.spyOn(fixture.git, "run");
+
+        const first = await fixture.log.read(commit);
+        const callsAfterFirstRead = run.mock.calls.length;
+        first.metadata.kind = "external";
+
+        await expect(fixture.log.read(commit)).resolves.toMatchObject({
+            metadata: { kind: "agent-turn", sessionid: "session-a" },
+        });
+        expect(run).toHaveBeenCalledTimes(callsAfterFirstRead);
+    });
+
     test("uses one head validation before update-ref CAS", async () => {
         const fixture = await makeFixture(roots);
         const base = await fixture.log.append({

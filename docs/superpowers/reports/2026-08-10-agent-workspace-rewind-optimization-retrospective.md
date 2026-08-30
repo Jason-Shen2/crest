@@ -435,3 +435,33 @@ classifier。
 1,500 ms，但只有 0.49 ms 余量。剩余成本主要来自结果 commit、
 pending durability、文件安全应用/验证和 cleanup；它们承担实际安全语义，现阶段没有必要为了几十到一百毫秒引入
 常驻 worker、后台预建 commit 或第二套 cache。完整数据和 phase breakdown 见 V3 规模门禁的 2026-08-29 章节。
+
+## 19. 真实 Electron Preview 延迟收口（2026-08-30）
+
+用户实测打开 Turn Undo Preview 约需 3 秒。main-process 分段 profile 排除了 Renderer、Session SQLite 和 diff
+渲染：旧冷态后端约 2.39 秒，其中 workspace tracker 初始化约 0.55 秒、planner 约 1.75–1.87 秒，最终文件 diff
+只有约 0.05–0.07 秒。planner 的主要成本是重复启动 Git reader，重新证明已经验证过的 immutable mutation commit
+和 snapshot authority。
+
+旧的 5 秒 tracker grace 只覆盖 Preview 紧接 Apply 的单次交互；用户浏览消息后再打开 Preview 时，资源和进程内
+snapshot trust 已被释放，因此正常路径反复退化成 cold open。最终调整保持架构不变：
+
+1. process workspace tracker 的 idle grace 改为 5 分钟，覆盖正常的审阅、关闭、再次打开和 Undo/Redo 往返；
+2. `WorkspaceMutationLog` 按 content-addressed commit OID 缓存已经完整解析和验证的 immutable mutation，并为每个
+   caller 返回副本，避免调用方修改污染缓存；
+3. 每次 Preview 仍重新读取 authority head、检查 commit suffix、检查 live disk fingerprint、计算冲突和生成精确
+   diff；不缓存最终 RestorePlan，也不跳过磁盘冲突检查。
+
+没有新增 durable cache、数据库、后台 worker 或新的失效协议。缓存随 workspace tracker 销毁；Git commit 由 OID
+寻址，成功验证后内容不可变，因此只缓存 commit 解析结果，不缓存可变的 head、文件状态或冲突结论。
+
+同一真实 Session 的优化前后数据：
+
+| 场景 | 优化前 | 优化后 |
+| --- | ---: | ---: |
+| cold/首次 Preview 后端 | 约 2.39 秒 | 约 0.90 秒 |
+| warm Preview 后端 | 约 1.05 秒 | 约 0.48–0.57 秒 |
+| 超过旧 5 秒回收点再次 Preview | 再次 cold，约 2.3 秒 | 保持 warm，约 0.50–0.57 秒 |
+
+剩余约 0.5 秒主要用于 snapshot association、exact tree diff、stable authority head 和 live disk conflict 检查。这些
+直接支撑“预览内容等于将执行内容”和多 Session 不覆盖语义；现阶段不再为节省数百毫秒增加第二层 authority cache。
