@@ -376,6 +376,49 @@ describe("WorkspaceRewindEngine transaction", () => {
         expect(value.snapshotSource.synchronizeExternal).not.toHaveBeenCalled();
     });
 
+    it("rechecks recovery after acquiring the restore lease and before Force Apply synchronizes", async () => {
+        const forcedPlan = restorePlan({
+            paths: [
+                {
+                    path: "file.txt",
+                    operation: "write",
+                    target: { state: "file", oid: OldOid, executable: false },
+                    expectedCurrent: { state: "file", oid: NewOid, executable: false },
+                    liveFingerprint: CleanFingerprint,
+                    conflict: "forceable-drift",
+                    reason: "files changed on disk since the agent last wrote them",
+                },
+            ],
+            forceRequired: true,
+        });
+        const value = makeHarness({ plan: forcedPlan });
+        const preview = await value.engine.previewRewind({
+            session: value.session.session,
+            sessionId: "session-1",
+            workspace: Workspace,
+            semanticLeafId: "old-leaf",
+            targetTurnId: "turn-1",
+        });
+        vi.mocked(value.snapshotSource.synchronizeExternal).mockClear();
+        vi.spyOn(value.engine, "assertWorkspaceWritable").mockRejectedValueOnce(
+            new Error("Workspace recovery required after waiting for the restore lease")
+        );
+
+        await expect(
+            value.engine.applyRewind({
+                session: value.session.session,
+                sessionId: "session-1",
+                workspace: Workspace,
+                semanticLeafId: "old-leaf",
+                targetTurnId: "turn-1",
+                mode: "force-drift",
+                confirmation: value.confirmations.take(preview.confirmationToken!),
+            })
+        ).rejects.toThrow(/recovery required after waiting/i);
+
+        expect(value.snapshotSource.synchronizeExternal).not.toHaveBeenCalled();
+    });
+
     it("constructs one pending store and Resolver shared by every restore path", () => {
         const store = {
             storeRoot: "/store",

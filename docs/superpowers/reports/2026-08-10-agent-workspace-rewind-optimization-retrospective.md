@@ -411,9 +411,11 @@ snapshot、基于新 authority 重新规划，并用稳定的 snapshot 生成预
 Apply 若遇到预览后的新写入仍按现有 authority/fingerprint fence 失效。这样用户审阅的正是可能丢失的外部编辑，而不是
 Agent 上一次写入的历史内容。
 
-由于 Force 预览的这次同步会推进 workspace authority，它不再是纯读操作。最终 gate 在同一个 writer lease 内、首次
-同步前检查 pending Recovery；只要存在未完成 restore 就直接冻结预览，绝不改变 head。Force 预览签发 confirmation 后，
-目标路径出现任何新的 external commit 也一律 stale，用户必须重新打开预览审阅最新的 `live -> target`。
+由于 Force 预览的这次同步会推进 workspace authority，它不再是纯读操作。最终把 authoritative Recovery gate 统一
+放进所有 restore writer lease：拿到锁后、读取或同步 source 前再次检查 pending。这样既覆盖 Force 预览，也覆盖 Apply
+排队期间另一 Session 崩溃留下 pending 的竞态；只要存在未完成 restore 就直接冻结当前操作，绝不改变 head。Force 预览
+签发 confirmation 后，目标路径出现任何新的 external commit 也一律 stale，用户必须重新打开预览审阅最新的
+`live -> target`。
 
 未来只有在 production profiling 证明现有 commit-history 查询、Git metadata 或 writer serialization 是实际瓶颈时，
 才考虑增加可从 commit chain 重建的 cache。任何新状态都必须回答两个问题：它是否真的必要，以及它损坏时能否
