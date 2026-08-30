@@ -252,6 +252,7 @@ export interface UsePiChatReturn {
     messages: PiAgentMessage[];
     turns: PiTurn[];
     status: UsePiChatStatus;
+    isHydrating: boolean;
     errorMessage: string | undefined;
     sessionMetadata: AgentSessionMeta | undefined;
     /**
@@ -289,7 +290,11 @@ interface AgentApiSurface {
     listContextState: (input: AgentListContextStateInput) => Promise<AgentContextState>;
     send: (opts: AgentSendOptions) => Promise<{ sessionMetadata: AgentSessionMeta; turnId: string }>;
     abort: (sessionPath: string) => Promise<void>;
-    subscribe: (sessionPath: string, callback: (event: unknown) => void) => () => void;
+    subscribe: (
+        sessionPath: string,
+        callback: (event: unknown) => void,
+        onError?: (error: unknown) => void
+    ) => () => void;
 }
 
 export function resolveAbortSessionPath(
@@ -458,6 +463,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
     const [messages, setMessages] = useState<PiAgentMessage[]>([]);
     const [turns, setTurns] = useState<PiTurn[]>([]);
     const [status, setStatus] = useState<UsePiChatStatus>("idle");
+    const [isHydrating, setIsHydrating] = useState(!!initialSessionMetadata?.path);
     const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined);
     const [queuedMessages, setQueuedMessages] = useState<PiAgentMessage[]>([]);
     const [commands, setCommands] = useState<AgentPtySnapshot[]>([]);
@@ -555,6 +561,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         }
         sessionMetadataRef.current = next;
         activeSessionPathRef.current = next?.path ?? "";
+        setIsHydrating(!!next?.path);
         setMessages([]);
         setTurns([]);
         setStatus("idle");
@@ -566,13 +573,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         setSessionMetadata(next);
         dispatchContext({ type: "target_changed", targetSessionPath: next?.path });
         setContextRecovery(undefined);
-    }, [
-        controlledSessionPath,
-        controlledSessionRevision,
-        dispatchContext,
-        hasControlledSession,
-        setContextRecovery,
-    ]);
+    }, [controlledSessionPath, controlledSessionRevision, dispatchContext, hasControlledSession, setContextRecovery]);
 
     const sessionPath = sessionMetadata?.path;
     useEffect(() => {
@@ -584,6 +585,11 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         const api = runtimeClientRef.current;
         const selection = modelSelectionRef.current;
         if (!api || !selection.provider || !selection.model) {
+            setContextSnapshot(undefined);
+            setContextInspectionError(undefined);
+            return;
+        }
+        if (sessionPath && isHydrating) {
             setContextSnapshot(undefined);
             setContextInspectionError(undefined);
             return;
@@ -639,6 +645,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
         opts.modelSelection.reasoning,
         opts.modelSelection.token,
         opts.modelSelection.tokenSecretName,
+        isHydrating,
         sessionPath,
     ]);
 
@@ -666,10 +673,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             });
         }
         const metadata = await createRequest.promise;
-        if (
-            requestEpoch !== requestEpochRef.current ||
-            !matchesContextTarget(contextStateRef.current, mintTarget)
-        ) {
+        if (requestEpoch !== requestEpochRef.current || !matchesContextTarget(contextStateRef.current, mintTarget)) {
             const current = sessionMetadataRef.current;
             if (current?.path) {
                 dispatchContext({ type: "target_changed", targetSessionPath: current.path });
@@ -708,82 +712,94 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
                 subscriptionEpochRef.current === epoch &&
                 activeSessionPathRef.current === sessionPath &&
                 matchesContextTarget(contextStateRef.current, targetIdentity);
-            unsubscribeSession = api.subscribe(sessionPath, (raw) => {
+            const onSubscriptionError = (error: unknown): void => {
                 if (!isCurrentSubscription()) return;
-                const event = raw as PiAgentEvent;
-                if (event.contextSnapshot) {
-                    const expectedModel = modelSelectionRef.current;
-                    if (
-                        event.contextSnapshot.identity.modelKey === `${expectedModel.provider}/${expectedModel.model}` &&
-                        (event.contextSnapshot.identity.sessionPath ?? undefined) === sessionPath
-                    ) {
-                        setContextSnapshot(event.contextSnapshot);
-                        setContextInspectionError(undefined);
+                setIsHydrating(false);
+                setStatus("error");
+                setErrorMessage(getErrorMessage(error));
+            };
+            unsubscribeSession = api.subscribe(
+                sessionPath,
+                (raw) => {
+                    if (!isCurrentSubscription()) return;
+                    const event = raw as PiAgentEvent;
+                    if (event.contextSnapshot) {
+                        const expectedModel = modelSelectionRef.current;
+                        if (
+                            event.contextSnapshot.identity.modelKey ===
+                                `${expectedModel.provider}/${expectedModel.model}` &&
+                            (event.contextSnapshot.identity.sessionPath ?? undefined) === sessionPath
+                        ) {
+                            setContextSnapshot(event.contextSnapshot);
+                            setContextInspectionError(undefined);
+                        }
                     }
-                }
-                setMessages((prev) => reducePiChatEvent(prev, event));
-                const reportMap = { ...contextStateRef.current.reportsByTurn };
-                if (event.type === "session_state" && event.contextReports) {
-                    for (const key of Object.keys(reportMap)) delete reportMap[key];
-                    for (const report of event.contextReports ?? []) reportMap[report.targetTurnId] = report;
-                } else if (event.type === "context_projection" && event.report) {
-                    reportMap[event.report.targetTurnId] = event.report;
-                }
-                setTurns((prev) =>
-                    attachContextReportsToTurns(reducePiTurnsEvent(prev, event), Object.values(reportMap))
-                );
-                switch (event.type) {
-                    case "session_state": {
-                        applySessionState(event, setStatus, setErrorMessage, setQueuedMessages, setCommands);
-                        const authoritative = contextStateFromEvent(event);
-                        dispatchContext({
-                            type: "authoritative_state_received",
-                            ...targetIdentity,
-                            reports: authoritative.contextReports,
-                        });
-                        break;
+                    setMessages((prev) => reducePiChatEvent(prev, event));
+                    const reportMap = { ...contextStateRef.current.reportsByTurn };
+                    if (event.type === "session_state" && event.contextReports) {
+                        for (const key of Object.keys(reportMap)) delete reportMap[key];
+                        for (const report of event.contextReports ?? []) reportMap[report.targetTurnId] = report;
+                    } else if (event.type === "context_projection" && event.report) {
+                        reportMap[event.report.targetTurnId] = event.report;
                     }
-                    case "context_projection":
-                        if (event.report) {
+                    setTurns((prev) =>
+                        attachContextReportsToTurns(reducePiTurnsEvent(prev, event), Object.values(reportMap))
+                    );
+                    switch (event.type) {
+                        case "session_state": {
+                            setIsHydrating(false);
+                            applySessionState(event, setStatus, setErrorMessage, setQueuedMessages, setCommands);
+                            const authoritative = contextStateFromEvent(event);
                             dispatchContext({
-                                type: "projection_received",
+                                type: "authoritative_state_received",
                                 ...targetIdentity,
-                                report: event.report,
+                                reports: authoritative.contextReports,
                             });
+                            break;
                         }
-                        break;
-                    case "queue_update":
-                        // Authoritative pending-queue state from the owner; the
-                        // harness emits this on every enqueue AND drain, so the
-                        // mirror stays exact (empty when nothing is pending).
-                        setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
-                        break;
-                    case "agent_start":
-                    case "turn_start":
-                        setStatus("streaming");
-                        setErrorMessage(undefined);
-                        break;
-                    case "message_end": {
-                        const m = event.message;
-                        if (m.role === "assistant" && m.stopReason === "error") {
-                            setStatus("error");
-                            setErrorMessage(m.errorMessage ?? "agent error");
+                        case "context_projection":
+                            if (event.report) {
+                                dispatchContext({
+                                    type: "projection_received",
+                                    ...targetIdentity,
+                                    report: event.report,
+                                });
+                            }
+                            break;
+                        case "queue_update":
+                            // Authoritative pending-queue state from the owner; the
+                            // harness emits this on every enqueue AND drain, so the
+                            // mirror stays exact (empty when nothing is pending).
+                            setQueuedMessages([...(event.steer ?? []), ...(event.followUp ?? [])]);
+                            break;
+                        case "agent_start":
+                        case "turn_start":
+                            setStatus("streaming");
+                            setErrorMessage(undefined);
+                            break;
+                        case "message_end": {
+                            const m = event.message;
+                            if (m.role === "assistant" && m.stopReason === "error") {
+                                setStatus("error");
+                                setErrorMessage(m.errorMessage ?? "agent error");
+                            }
+                            break;
                         }
-                        break;
+                        case "agent_end":
+                            // The owner may emit agent_end after an error message, but
+                            // its authoritative status remains error until a retry.
+                            setStatus((current) => (current === "error" ? current : "idle"));
+                            break;
+                        case "abort":
+                            setStatus("idle");
+                            setErrorMessage(undefined);
+                            break;
+                        default:
+                            break;
                     }
-                    case "agent_end":
-                        // The owner may emit agent_end after an error message, but
-                        // its authoritative status remains error until a retry.
-                        setStatus((current) => (current === "error" ? current : "idle"));
-                        break;
-                    case "abort":
-                        setStatus("idle");
-                        setErrorMessage(undefined);
-                        break;
-                    default:
-                        break;
-                }
-            });
+                },
+                onSubscriptionError
+            );
         };
         const stopSubscription = (): void => {
             if (!unsubscribeSession) return;
@@ -1067,6 +1083,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             messages,
             turns,
             status,
+            isHydrating,
             errorMessage,
             sessionMetadata,
             queuedMessages,
@@ -1091,6 +1108,7 @@ export function usePiChat(opts: UsePiChatOptions): UsePiChatReturn {
             contextState,
             discardContextDraft,
             errorMessage,
+            isHydrating,
             messages,
             prepareContextDraft,
             queuedMessages,
