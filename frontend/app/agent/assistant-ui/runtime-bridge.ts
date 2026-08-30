@@ -36,6 +36,7 @@ type PiContentPart = NonNullable<PiAgentMessage["content"]>[number];
 export interface CrestAssistantRuntimeBridge {
     turns: PiTurn[];
     status: UsePiChatStatus;
+    isHydrating?: boolean;
     submit: (text: string, images?: string[]) => boolean | Promise<boolean | void> | void;
     abort: () => void;
     isSendDisabled?: boolean;
@@ -60,6 +61,7 @@ export function createCrestAssistantRuntimeAdapter(
     const submissionLease = "submissionLease" in source ? source.submissionLease : undefined;
     return {
         messages: piTurnsToAuiMessages(source.turns),
+        isLoading: source.isHydrating ?? false,
         isRunning: source.status === "streaming",
         ...(!("send" in source) ? { isSendDisabled: source.isSendDisabled } : {}),
         adapters: {

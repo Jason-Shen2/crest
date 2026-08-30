@@ -147,6 +147,7 @@ function groupCrestAssistantPart(
 // the composer mounts centered. Loads after startup keep the docked layout.
 const isNewChatView = (s: AssistantState) =>
     s.thread.messages.length === 0 && (!s.thread.isLoading || s.threads.isLoading);
+const isHydratingThread = (s: AssistantState) => s.thread.isLoading && !s.threads.isLoading;
 
 export const Thread: FC<ThreadProps> = ({
     components = EMPTY_COMPONENTS,
@@ -203,6 +204,10 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                         isEmpty && "justify-center"
                     )}
                 >
+                    <AuiIf condition={isHydratingThread}>
+                        <ThreadLoading />
+                    </AuiIf>
+
                     <AuiIf condition={isNewChatView}>
                         <Welcome />
                     </AuiIf>
@@ -233,6 +238,20 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
                 <MessageSelectionToolbar />
             </ThreadPrimitive.Viewport>
         </ThreadPrimitive.Root>
+    );
+};
+
+const ThreadLoading: FC = () => {
+    return (
+        <div
+            role="status"
+            aria-live="polite"
+            data-slot="aui_thread-loading"
+            className="text-muted-foreground flex flex-1 items-center justify-center gap-2 text-sm"
+        >
+            <RefreshCwIcon className="size-4 animate-spin" aria-hidden="true" />
+            <span>Loading conversation…</span>
+        </div>
     );
 };
 

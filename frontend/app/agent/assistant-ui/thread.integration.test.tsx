@@ -42,13 +42,12 @@ const messages: ThreadMessageLike[] = [
     },
 ];
 
-const RuntimeProvider: FC<PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo }>> = ({
-    children,
-    composerQuote,
-    messages: runtimeMessages = messages,
-}) => {
+const RuntimeProvider: FC<
+    PropsWithChildren<{ messages?: ThreadMessageLike[]; composerQuote?: QuoteInfo; isLoading?: boolean }>
+> = ({ children, composerQuote, messages: runtimeMessages = messages, isLoading = false }) => {
     const runtime = useExternalStoreRuntime<ThreadMessageLike>({
         messages: runtimeMessages,
+        isLoading,
         convertMessage: (message) => message,
         onNew: async () => {},
     } satisfies ExternalStoreAdapter<ThreadMessageLike>);
@@ -86,7 +85,23 @@ function renderEmptyThread(props?: ThreadProps): string {
     );
 }
 
+function renderLoadingThread(props?: ThreadProps): string {
+    return renderToStaticMarkup(
+        <RuntimeProvider messages={[]} isLoading>
+            <Thread {...props} />
+        </RuntimeProvider>
+    );
+}
+
 describe("Thread assistant-ui integration", () => {
+    it("renders a loading state instead of the welcome view while history hydrates", () => {
+        const html = renderLoadingThread();
+
+        expect(html).toContain('data-slot="aui_thread-loading"');
+        expect(html).toContain("Loading conversation…");
+        expect(html).not.toContain("How can I help you today?");
+    });
+
     it("discovers /session and /info while keeping /resume hidden", () => {
         const byId = new Map(registryThreadTesting.SlashCommands.map((command) => [command.id, command]));
 
