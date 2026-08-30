@@ -54,7 +54,8 @@ describe("AgentRuntimeClient", () => {
         await client.deleteSession({ path: "/session" } as AgentSessionMeta);
         await client.send({ text: "hello" } as never);
         await client.abort("/session");
-        client.subscribe("/session", vi.fn());
+        const onSubscriptionError = vi.fn();
+        client.subscribe("/session", vi.fn(), onSubscriptionError);
 
         const identity = { workspaceId: "workspace-1", generation: 7 };
         expect(agent.createSession).toHaveBeenCalledWith(identity);
@@ -95,7 +96,7 @@ describe("AgentRuntimeClient", () => {
         expect(agent.deleteSession).toHaveBeenCalledWith(identity, expect.objectContaining({ path: "/session" }));
         expect(agent.send).toHaveBeenCalledWith(identity, expect.objectContaining({ text: "hello" }));
         expect(agent.abort).toHaveBeenCalledWith(identity, "/session");
-        expect(agent.subscribe).toHaveBeenCalledWith(identity, "/session", expect.any(Function));
+        expect(agent.subscribe).toHaveBeenCalledWith(identity, "/session", expect.any(Function), onSubscriptionError);
         expect(Object.isFrozen(client.identity)).toBe(true);
         expect("agent" in client).toBe(false);
     });

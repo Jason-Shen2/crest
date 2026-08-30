@@ -379,7 +379,8 @@ declare global {
             subscribe: (
                 context: WorkspaceAgentRequestContext,
                 sessionPath: string,
-                callback: (event: unknown) => void
+                callback: (event: unknown) => void,
+                onError?: (error: unknown) => void
             ) => () => void;
         };
         agentObservability: {

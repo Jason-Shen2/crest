@@ -132,7 +132,7 @@ export class AgentRuntimeClient {
         return getAgentApi(this).abort(this.identity, sessionPath);
     }
 
-    subscribe(sessionPath: string, callback: (event: unknown) => void) {
-        return getAgentApi(this).subscribe(this.identity, sessionPath, callback);
+    subscribe(sessionPath: string, callback: (event: unknown) => void, onError?: (error: unknown) => void) {
+        return getAgentApi(this).subscribe(this.identity, sessionPath, callback, onError);
     }
 }
